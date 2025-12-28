@@ -34,41 +34,77 @@ Heretic is a mutation testing tool for Clojure that leverages ClojureStorm's ins
 
 Build a mapping of which tests exercise which code locations. This is a one-time cost (per test suite change) that enables efficient Phase 2.
 
+### Storage Layout
+
+Coverage data is split across multiple files for incremental updates:
+
+```
+.heretic/
+├── meta.edn                         # Global metadata + form registry
+├── coverage/
+│   ├── my.app.core-test.edn         # Coverage for this test namespace
+│   ├── my.app.util-test.edn         # Coverage for this test namespace
+│   └── ...
+└── index.edn                        # Derived inverse index (rebuilt from parts)
+```
+
 ### Data Structures
 
+**Per-test-namespace file** (`.heretic/coverage/my.app.core-test.edn`):
+
 ```clojure
-;; Primary output: test → form → coords
-{:test-coverage
- {my.app-test/test-addition {12345 #{"3" "3,1" "3,2"}
-                              12346 #{"1" "2,1"}}
-  my.app-test/test-subtraction {12345 #{"3" "4"}
-                                 12347 #{"1"}}}}
+{:test-ns my.app.core-test
 
-;; Inverse index (derived): form+coord → tests
-{:coord-to-tests
- {[12345 "3"]     #{my.app-test/test-addition my.app-test/test-subtraction}
-  [12345 "3,2"]   #{my.app-test/test-addition}
-  [12345 "3,2,1"] #{my.app-test/test-addition}
-  [12345 "4"]     #{my.app-test/test-subtraction}
-  ...}}
+ ;; Coverage: test-var → form-id → coords
+ :coverage
+ {my.app.core-test/test-addition {12345 #{"3" "3,1" "3,2"}
+                                   12346 #{"1" "2,1"}}
+  my.app.core-test/test-subtraction {12345 #{"3" "4"}
+                                      12347 #{"1"}}}
 
-;; Form registry (from ClojureStorm FormRegistry/getAllForms)
-;; Returns: {form-id -> form-metadata}
-{:forms
+ ;; Dependencies: source files this test namespace touched
+ :source-deps #{"src/my/app/core.clj" "src/my/app/util.clj"}
+
+ ;; Staleness: hashes for this test namespace only
+ :hashes {:test-file "abc123..."       ;; Hash of test file
+          :source-files "def456..."    ;; Hash of touched source files
+          :config "ghi789..."}}        ;; Hash of heretic config
+```
+
+**Global metadata** (`.heretic/meta.edn`):
+
+```clojure
+{;; Form registry (from ClojureStorm FormRegistry/getAllForms)
+ :forms
  {12345 {:form/ns "my.app.core"
          :form/form (defn foo [x] (+ x 1))
          :form/emitted-coords #{"3" "3,1" "3,2"}}
   12346 {:form/ns "my.app.core"
          :form/form (defn bar [a b] (* a b))
          :form/emitted-coords #{"3" "3,1" "3,2"}}
-  ...}}
+  ...}
 
-;; Metadata for staleness checking
-{:metadata
- {:collected-at 1703789012345
-  :source-hash "abc123..."      ;; Hash of all source files
-  :test-hash "def456..."        ;; Hash of all test files
-  :config-hash "ghi789..."}}    ;; Hash of heretic config
+ ;; Global metadata
+ :collected-at 1703789012345
+ :heretic-version "0.1.0"}
+```
+
+**Derived inverse index** (`.heretic/index.edn`):
+
+```clojure
+;; Rebuilt from all coverage files - not authoritative
+{:coord-to-tests
+ {[12345 "3"]     #{my.app.core-test/test-addition my.app.core-test/test-subtraction}
+  [12345 "3,2"]   #{my.app.core-test/test-addition}
+  [12345 "3,2,1"] #{my.app.core-test/test-addition}
+  [12345 "4"]     #{my.app.core-test/test-subtraction}
+  ...}
+
+ ;; Which test namespaces are included
+ :included-test-ns #{my.app.core-test my.app.util-test}
+
+ ;; When index was rebuilt
+ :rebuilt-at 1703789012400}
 ```
 
 ### Components
@@ -183,11 +219,13 @@ Runs each test individually and collects its coverage. This approach:
 
 #### 3. Coverage Map Builder
 
-Process raw coverage into queryable indexes.
+Process raw coverage into per-namespace files and rebuild indexes.
 
 ```clojure
 (ns heretic.coverage-map
-  (:require [heretic.collector :as collector])
+  (:require [heretic.collector :as collector]
+            [heretic.persistence :as persist]
+            [clojure.java.io :as io])
   (:import [clojure.storm FormRegistry]))
 
 (defn get-form-registry
@@ -196,108 +234,264 @@ Process raw coverage into queryable indexes.
   []
   (into {} (FormRegistry/getAllForms)))
 
-(defn build-inverse-index
-  "Build form+coord -> tests index from test-coverage"
-  [test-coverage]
-  (reduce-kv
-    (fn [idx test-id form-coords]
-      (reduce-kv
-        (fn [idx form-id coords]
-          (reduce
-            (fn [idx coord]
-              (update idx [form-id coord] (fnil conj #{}) test-id))
-            idx
-            coords))
-        idx
-        form-coords))
-    {}
-    test-coverage))
+(defn- extract-source-deps
+  "Given coverage data, determine which source files were touched.
+   Uses FormRegistry to map form-ids to namespaces, then to file paths."
+  [coverage forms source-paths]
+  (let [touched-ns (into #{}
+                         (for [[_ form-coords] coverage
+                               form-id (keys form-coords)
+                               :let [ns-str (get-in forms [form-id :form/ns])]
+                               :when ns-str]
+                           ns-str))]
+    ;; Map namespaces to actual file paths
+    (into #{}
+          (for [ns-str touched-ns
+                :let [path (-> ns-str
+                               (clojure.string/replace "." "/")
+                               (clojure.string/replace "-" "_")
+                               (str ".clj"))
+                      full-path (some #(let [f (io/file % path)]
+                                         (when (.exists f) (.getPath f)))
+                                      source-paths)]
+                :when full-path]
+            full-path))))
 
-(defn build-coverage-map
-  "Build complete coverage map with all indexes"
-  [test-namespaces source-paths test-paths config]
-  (let [{:keys [test-coverage]} (collector/collect-all-coverage test-namespaces)
-        forms (get-form-registry)
-        coord-to-tests (build-inverse-index test-coverage)]
-    {:test-coverage test-coverage
-     :coord-to-tests coord-to-tests
-     :forms forms
-     :metadata {:collected-at (System/currentTimeMillis)
-                :source-hash (hash-files source-paths)
-                :test-hash (hash-files test-paths)
-                :config-hash (hash config)}}))
+(defn collect-test-namespace!
+  "Collect coverage for a single test namespace.
+   Returns per-namespace coverage data structure."
+  [test-ns forms source-paths config]
+  (let [{:keys [test-coverage]} (collector/collect-coverage-for-ns test-ns)
+        source-deps (extract-source-deps test-coverage forms source-paths)
+        test-file (-> (str test-ns)
+                      (clojure.string/replace "." "/")
+                      (clojure.string/replace "-" "_")
+                      (str ".clj"))]
+    {:test-ns test-ns
+     :coverage test-coverage
+     :source-deps source-deps
+     :hashes {:test-file (persist/hash-file test-file)
+              :source-files (persist/hash-files source-deps)
+              :config (hash config)}}))
+
+(defn build-inverse-index
+  "Build form+coord -> tests index from all coverage files"
+  [coverage-files]
+  (reduce
+    (fn [idx {:keys [coverage]}]
+      (reduce-kv
+        (fn [idx test-id form-coords]
+          (reduce-kv
+            (fn [idx form-id coords]
+              (reduce
+                (fn [idx coord]
+                  (update idx [form-id coord] (fnil conj #{}) test-id))
+                idx
+                coords))
+            idx
+            form-coords))
+        idx
+        coverage))
+    {}
+    coverage-files))
+
+(defn rebuild-index!
+  "Rebuild inverse index from all coverage files.
+   Called after incremental updates."
+  [heretic-dir]
+  (let [coverage-dir (io/file heretic-dir "coverage")
+        coverage-files (for [f (.listFiles coverage-dir)
+                             :when (.endsWith (.getName f) ".edn")]
+                         (persist/load-edn f))
+        coord-to-tests (build-inverse-index coverage-files)
+        included-ns (into #{} (map :test-ns coverage-files))]
+    (persist/save-edn! (io/file heretic-dir "index.edn")
+                       {:coord-to-tests coord-to-tests
+                        :included-test-ns included-ns
+                        :rebuilt-at (System/currentTimeMillis)})))
 
 (defn tests-for-location
   "Given a form-id and optional coord, return tests that hit it"
-  ([coverage-map form-id]
+  ([index form-id]
+   ;; For form-level lookup, scan all coords for this form-id
    (into #{}
-         (for [[test-id forms] (:test-coverage coverage-map)
-               :when (contains? forms form-id)]
-           test-id)))
+         (for [[[fid _] tests] (:coord-to-tests index)
+               :when (= fid form-id)
+               test tests]
+           test)))
 
-  ([coverage-map form-id coord]
-   (get-in coverage-map [:coord-to-tests [form-id coord]] #{})))
+  ([index form-id coord]
+   (get-in index [:coord-to-tests [form-id coord]] #{})))
 ```
 
 #### 4. Persistence
 
-Save/load coverage maps with atomic writes to prevent corruption.
+Save/load coverage with atomic writes and per-namespace staleness checking.
 
 ```clojure
 (ns heretic.persistence
   (:require [clojure.edn :as edn]
-            [clojure.java.io :as io])
+            [clojure.java.io :as io]
+            [clojure.string :as str])
   (:import [java.io File]
            [java.nio.file Files StandardCopyOption]))
 
-(def default-path ".heretic/coverage-map.edn")
+(def default-dir ".heretic")
+
+;; ============================================================
+;; Atomic File Operations
+;; ============================================================
 
 (defn- atomic-spit!
   "Write content atomically using temp file + rename.
    Prevents corruption if process crashes mid-write."
   [path content]
   (let [file (io/file path)
-        parent (.getParentFile file)
-        temp-file (File/createTempFile "heretic" ".tmp" parent)]
-    (try
-      (spit temp-file content)
-      (Files/move (.toPath temp-file)
-                  (.toPath file)
-                  (into-array [StandardCopyOption/REPLACE_EXISTING
-                               StandardCopyOption/ATOMIC_MOVE]))
-      (catch Exception e
-        (.delete temp-file)
-        (throw e)))))
+        parent (.getParentFile file)]
+    (io/make-parents path)
+    (let [temp-file (File/createTempFile "heretic" ".tmp" parent)]
+      (try
+        (spit temp-file content)
+        (Files/move (.toPath temp-file)
+                    (.toPath file)
+                    (into-array [StandardCopyOption/REPLACE_EXISTING
+                                 StandardCopyOption/ATOMIC_MOVE]))
+        (catch Exception e
+          (.delete temp-file)
+          (throw e))))))
 
-(defn save-coverage-map!
-  "Save coverage map atomically"
-  [coverage-map path]
-  (io/make-parents path)
-  (atomic-spit! path (pr-str coverage-map)))
+(defn save-edn!
+  "Save EDN data atomically"
+  [path data]
+  (atomic-spit! path (pr-str data)))
 
-(defn load-coverage-map
-  "Load coverage map from disk"
+(defn load-edn
+  "Load EDN data from disk"
   [path]
-  (when (.exists (io/file path))
-    (edn/read-string (slurp path))))
+  (let [f (io/file path)]
+    (when (.exists f)
+      (edn/read-string (slurp f)))))
 
-(defn- hash-files
-  "Compute hash of file contents for staleness detection"
+;; ============================================================
+;; Hashing for Staleness Detection
+;; ============================================================
+
+(defn hash-file
+  "Compute hash of a single file's contents"
+  [path]
+  (let [f (io/file path)]
+    (when (.exists f)
+      (hash (slurp f)))))
+
+(defn hash-files
+  "Compute combined hash of multiple files"
   [paths]
-  (let [contents (mapcat #(file-seq (io/file %)) paths)
-        file-hashes (for [f contents
-                          :when (.isFile f)]
-                      (hash (slurp f)))]
-    (hash (vec file-hashes))))
+  (let [file-hashes (for [path paths
+                          :let [h (hash-file path)]
+                          :when h]
+                      h)]
+    (hash (vec (sort file-hashes)))))
 
-(defn coverage-map-stale?
-  "Check if coverage map needs regeneration.
-   Stale if source files, test files, OR config changed."
-  [coverage-map source-paths test-paths config]
-  (let [{:keys [source-hash test-hash config-hash]} (:metadata coverage-map)]
-    (or (not= source-hash (hash-files source-paths))
-        (not= test-hash (hash-files test-paths))
-        (not= config-hash (hash config)))))
+;; ============================================================
+;; Per-Namespace Coverage Files
+;; ============================================================
+
+(defn coverage-file-path
+  "Get path for a test namespace's coverage file"
+  [heretic-dir test-ns]
+  (io/file heretic-dir "coverage"
+           (str (str/replace (str test-ns) "." "-") ".edn")))
+
+(defn save-test-ns-coverage!
+  "Save coverage data for a single test namespace"
+  [heretic-dir coverage-data]
+  (let [path (coverage-file-path heretic-dir (:test-ns coverage-data))]
+    (save-edn! path coverage-data)))
+
+(defn load-test-ns-coverage
+  "Load coverage data for a single test namespace"
+  [heretic-dir test-ns]
+  (load-edn (coverage-file-path heretic-dir test-ns)))
+
+(defn delete-test-ns-coverage!
+  "Delete coverage file for a test namespace (e.g., if namespace deleted)"
+  [heretic-dir test-ns]
+  (let [f (coverage-file-path heretic-dir test-ns)]
+    (when (.exists f)
+      (.delete f))))
+
+(defn list-coverage-files
+  "List all coverage files in the heretic directory"
+  [heretic-dir]
+  (let [coverage-dir (io/file heretic-dir "coverage")]
+    (when (.exists coverage-dir)
+      (for [f (.listFiles coverage-dir)
+            :when (.endsWith (.getName f) ".edn")]
+        f))))
+
+;; ============================================================
+;; Staleness Detection (Per-Namespace)
+;; ============================================================
+
+(defn test-ns-stale?
+  "Check if a single test namespace's coverage needs regeneration.
+   Stale if:
+   - Coverage file doesn't exist
+   - Test file changed
+   - Any source file it depends on changed
+   - Config changed"
+  [heretic-dir test-ns test-paths source-paths config]
+  (let [coverage-data (load-test-ns-coverage heretic-dir test-ns)]
+    (if (nil? coverage-data)
+      true  ;; No coverage file → stale
+      (let [{:keys [test-file source-files config]} (:hashes coverage-data)
+            {:keys [source-deps]} coverage-data
+            ;; Find test file path
+            test-file-path (some #(let [f (io/file % (-> (str test-ns)
+                                                          (str/replace "." "/")
+                                                          (str/replace "-" "_")
+                                                          (str ".clj")))]
+                                    (when (.exists f) (.getPath f)))
+                                 test-paths)]
+        (or (not= test-file (hash-file test-file-path))
+            (not= source-files (hash-files source-deps))
+            (not= (:config (:hashes coverage-data)) (hash config)))))))
+
+(defn find-stale-test-namespaces
+  "Find all test namespaces that need recollection.
+   Returns set of namespace symbols."
+  [heretic-dir test-namespaces test-paths source-paths config]
+  (into #{}
+        (filter #(test-ns-stale? heretic-dir % test-paths source-paths config))
+        test-namespaces))
+
+;; ============================================================
+;; Global Metadata
+;; ============================================================
+
+(defn save-meta!
+  "Save global metadata (form registry, etc.)"
+  [heretic-dir meta-data]
+  (save-edn! (io/file heretic-dir "meta.edn") meta-data))
+
+(defn load-meta
+  "Load global metadata"
+  [heretic-dir]
+  (load-edn (io/file heretic-dir "meta.edn")))
+
+;; ============================================================
+;; Index (Derived, Rebuilt)
+;; ============================================================
+
+(defn save-index!
+  "Save derived inverse index"
+  [heretic-dir index-data]
+  (save-edn! (io/file heretic-dir "index.edn") index-data))
+
+(defn load-index
+  "Load derived inverse index"
+  [heretic-dir]
+  (load-edn (io/file heretic-dir "index.edn")))
 ```
 
 ### Collection Flow
@@ -305,26 +499,46 @@ Save/load coverage maps with atomic writes to prevent corruption.
 ```
 1. User runs: bb heretic:collect (or automatic on first mutation run)
 
-2. Heretic:
-   a. Calls heretic.tracer/init! to set up ClojureStorm callbacks
-   b. Discovers all test vars in test namespaces
+2. Heretic checks for incremental update:
+   a. Find stale test namespaces (test file changed, source deps changed, or missing)
+   b. If --force flag, treat all as stale
+   c. Report: "3 of 15 test namespaces need recollection"
+
+3. For each stale test namespace:
+   a. Initialize ClojureStorm callbacks if not already done
+   b. Discover test vars in this namespace
    c. For each test var:
       i.   Reset current coverage accumulator
       ii.  Run the single test
       iii. Capture coverage: {form-id -> #{coords}}
       iv.  Store under test identifier
-   d. Build inverse index (coord -> tests)
-   e. Persist atomically to .heretic/coverage-map.edn
+   d. Extract source dependencies (which source files were touched)
+   e. Compute hashes for staleness tracking
+   f. Persist atomically to .heretic/coverage/<namespace>.edn
 
-3. Output: coverage map ready for mutation testing
+4. After all stale namespaces collected:
+   a. Update global metadata (form registry snapshot)
+   b. Rebuild inverse index from all coverage files
+   c. Save index.edn
+
+5. Output: coverage ready for mutation testing
 ```
+
+**Benefits of split storage**:
+- **Incremental updates**: Only recollect test namespaces that changed
+- **Targeted staleness**: Track source deps per test namespace, not globally
+- **Parallelism-ready**: Different test namespaces can be collected in parallel
+- **Granular invalidation**: Changing `core.clj` only invalidates tests that touch it
+
+**Trade-off**: Index must be rebuilt after any coverage file changes. This is fast
+(just reading and merging EDN files) compared to re-running tests.
 
 **Key design decision**: Running tests one-by-one is slower than running all tests
 at once, but it:
 - Works with ALL test runners (not just clojure.test)
 - Avoids thread-local binding issues with async tests
 - Produces accurate per-test coverage
-- Is only done once per test suite change
+- Enables per-namespace staleness tracking
 
 ---
 
@@ -670,17 +884,20 @@ Generate mutation testing reports.
 {:source-paths ["src"]
  :test-paths ["test"]
  :test-namespaces [my.app.core-test my.app.util-test]  ;; or :all
- :coverage-map-path ".heretic/coverage-map.edn"
+ :heretic-dir ".heretic"  ;; Directory for coverage data
 
  ;; Namespace filtering (passed to ClojureStorm)
  :instrument-prefixes ["my-app"]
  :instrument-skip-prefixes ["my-app.dev"]
 
+ ;; Collection settings
+ :parallel-collect false  ;; Phase 3: collect test namespaces in parallel
+
  ;; Mutation settings
  :mutation-operators [:arithmetic :comparison :boolean :return-values]
  :skip-forms #{comment}
  :timeout-ms 5000
- :parallel false  ;; Phase 3 feature
+ :parallel-mutate false  ;; Phase 3: run mutations in parallel
 
  ;; Reporting
  :report-format :html
@@ -692,11 +909,17 @@ Generate mutation testing reports.
 ## CLI Interface
 
 ```bash
-# Collect coverage map (explicit)
+# Collect coverage (incremental - only stale test namespaces)
 bb heretic:collect
 
-# Force recollection even if not stale
+# Force full recollection
 bb heretic:collect --force
+
+# Collect specific test namespaces only
+bb heretic:collect --namespaces my.app.core-test,my.app.util-test
+
+# Show collection status (which namespaces are stale)
+bb heretic:status
 
 # Run mutation testing
 bb heretic:mutate
@@ -710,8 +933,8 @@ bb heretic:mutate --operators arithmetic,comparison
 # Show surviving mutations from last run
 bb heretic:survivors
 
-# Check if coverage map is stale
-bb heretic:status
+# Clean heretic data (remove .heretic directory)
+bb heretic:clean
 ```
 
 ---
@@ -879,13 +1102,18 @@ ClojureScript requires:
 **Priority 2: Core Implementation**
 - [ ] Set up ClojureStorm integration (tracer callbacks)
 - [ ] Implement per-test coverage collection
-- [ ] Build coverage map with inverse index
-- [ ] Atomic file persistence with staleness detection
-- [ ] Basic CLI: `heretic:collect`
+- [ ] Split storage model:
+  - [ ] Per-test-namespace coverage files
+  - [ ] Source dependency tracking per namespace
+  - [ ] Per-namespace staleness detection
+  - [ ] Index rebuild from coverage files
+- [ ] Atomic file persistence
+- [ ] Basic CLI: `heretic:collect`, `heretic:status`, `heretic:clean`
 
 **Acceptance criteria**:
-- Running `heretic:collect` on a sample project produces a coverage map
-- Coverage map correctly identifies which tests hit which code
+- Running `heretic:collect` on a sample project produces coverage in `.heretic/`
+- Coverage correctly identifies which tests hit which code
+- Running `heretic:collect` again only recollects changed test namespaces
 - Round-trip: `coord->zloc` and `zloc->coord` are inverses
 
 ### Phase 2: Basic Mutation Testing
@@ -900,9 +1128,13 @@ ClojureScript requires:
 ### Phase 3: Full Mutation Suite
 - [ ] All mutation operators
 - [ ] HTML reports
-- [ ] File-level parallel execution
+- [ ] Parallel coverage collection (by test namespace)
+- [ ] Parallel mutation testing (by source file)
 - [ ] Timeout handling
-- [ ] Incremental coverage updates
+- [ ] Watch mode (re-collect on file changes)
+
+**Note**: The split storage model (Phase 1) already supports incremental updates.
+Phase 3 adds parallelism and watch mode to leverage this.
 
 ### Phase 4: Polish
 - [ ] ClojureScript support (Node.js first)
