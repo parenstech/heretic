@@ -5,10 +5,12 @@
    - Atomic file writes
    - EDN serialization round-trips
    - File hashing for staleness detection
-   - Per-namespace coverage file management"
+   - Per-namespace coverage file management
+   - Malli schema validation"
   (:require [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing use-fixtures]]
-            [heretic.persistence :as persist]))
+            [heretic.persistence :as persist]
+            [malli.core :as m]))
 
 ;; =============================================================================
 ;; Test Fixtures
@@ -106,7 +108,7 @@
                 :source-deps #{"src/my/app/core.clj"}
                 :hashes {:test-file "abc123"
                          :source-files "def456"
-                         :config "ghi789"}}]
+                         :config 12345}}]
       (persist/save-test-ns-coverage! *test-dir* data)
       (is (= data (persist/load-test-ns-coverage *test-dir* 'my.app.core-test))))))
 
@@ -358,3 +360,126 @@
     (persist/save-edn! (io/file *test-dir* "test.edn") {:test true})
     (is (true? (persist/clean-heretic-dir! *test-dir*)))
     (is (not (.exists (io/file *test-dir*))))))
+
+;; =============================================================================
+;; Malli Schema Validation
+;; =============================================================================
+
+(deftest test-ns-coverage-schema-test
+  (testing "Valid coverage data passes validation"
+    (let [valid-data {:test-ns 'my.app.core-test
+                      :coverage {'my.app.core-test/test-addition
+                                 {12345 #{"3" "3,1" "3,2"}
+                                  12346 #{"1" "2,1"}}
+                                 'my.app.core-test/test-subtraction
+                                 {12345 #{"3" "4"}
+                                  12347 #{"1"}}}
+                      :source-deps #{"src/my/app/core.clj" "src/my/app/util.clj"}
+                      :hashes {:test-file "abc123"
+                               :source-files "def456"
+                               :config 12345}}]
+      (is (m/validate persist/TestNsCoverage valid-data))
+      (is (= {:valid true} (persist/validate-test-ns-coverage valid-data)))))
+
+  (testing "Empty coverage is valid"
+    (let [empty-coverage {:test-ns 'my.app.empty-test
+                          :coverage {}
+                          :source-deps #{}
+                          :hashes {:test-file nil
+                                   :source-files nil
+                                   :config nil}}]
+      (is (m/validate persist/TestNsCoverage empty-coverage))
+      (is (= {:valid true} (persist/validate-test-ns-coverage empty-coverage)))))
+
+  (testing "Missing required fields fails validation"
+    (let [missing-test-ns {:coverage {}
+                           :source-deps #{}
+                           :hashes {:test-file nil
+                                    :source-files nil
+                                    :config nil}}]
+      (is (not (m/validate persist/TestNsCoverage missing-test-ns)))
+      (let [result (persist/validate-test-ns-coverage missing-test-ns)]
+        (is (not (:valid result)))
+        (is (contains? result :errors)))))
+
+  (testing "Wrong type for test-ns fails validation"
+    (let [wrong-type {:test-ns "not-a-symbol"
+                      :coverage {}
+                      :source-deps #{}
+                      :hashes {:test-file nil
+                               :source-files nil
+                               :config nil}}]
+      (is (not (m/validate persist/TestNsCoverage wrong-type)))
+      (let [result (persist/validate-test-ns-coverage wrong-type)]
+        (is (not (:valid result))))))
+
+  (testing "Wrong type for coverage keys fails validation"
+    (let [wrong-keys {:test-ns 'my.app.core-test
+                      :coverage {"string-key" {12345 #{"3"}}}
+                      :source-deps #{}
+                      :hashes {:test-file nil
+                               :source-files nil
+                               :config nil}}]
+      (is (not (m/validate persist/TestNsCoverage wrong-keys)))
+      (let [result (persist/validate-test-ns-coverage wrong-keys)]
+        (is (not (:valid result))))))
+
+  (testing "Wrong type for form-id fails validation"
+    (let [wrong-form-id {:test-ns 'my.app.core-test
+                         :coverage {'my.app.core-test/test-fn
+                                    {"not-an-int" #{"3"}}}
+                         :source-deps #{}
+                         :hashes {:test-file nil
+                                  :source-files nil
+                                  :config nil}}]
+      (is (not (m/validate persist/TestNsCoverage wrong-form-id)))
+      (let [result (persist/validate-test-ns-coverage wrong-form-id)]
+        (is (not (:valid result))))))
+
+  (testing "Wrong type for coords fails validation"
+    (let [wrong-coords {:test-ns 'my.app.core-test
+                        :coverage {'my.app.core-test/test-fn
+                                   {12345 #{123 456}}}  ;; should be strings, not ints
+                        :source-deps #{}
+                        :hashes {:test-file nil
+                                 :source-files nil
+                                 :config nil}}]
+      (is (not (m/validate persist/TestNsCoverage wrong-coords)))
+      (let [result (persist/validate-test-ns-coverage wrong-coords)]
+        (is (not (:valid result))))))
+
+  (testing "Extra keys fail validation (closed map)"
+    (let [extra-keys {:test-ns 'my.app.core-test
+                      :coverage {}
+                      :source-deps #{}
+                      :hashes {:test-file nil
+                               :source-files nil
+                               :config nil}
+                      :extra-key "should not be here"}]
+      (is (not (m/validate persist/TestNsCoverage extra-keys)))
+      (let [result (persist/validate-test-ns-coverage extra-keys)]
+        (is (not (:valid result)))))))
+
+(deftest test-load-validation
+  (testing "Loading corrupted file throws ex-info"
+    (persist/ensure-heretic-dir! *test-dir*)
+    (let [test-ns 'my.app.bad-test
+          coverage-file (persist/coverage-file-path *test-dir* test-ns)]
+      ;; Write invalid data directly
+      (spit coverage-file (pr-str {:invalid "data"}))
+
+      ;; Try to load - should throw
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"Corrupted coverage file detected"
+           (persist/load-test-ns-coverage *test-dir* test-ns)))
+
+      ;; Verify exception data
+      (try
+        (persist/load-test-ns-coverage *test-dir* test-ns)
+        (is false "Should have thrown")
+        (catch clojure.lang.ExceptionInfo e
+          (let [data (ex-data e)]
+            (is (= :corrupted-coverage-file (:type data)))
+            (is (= test-ns (:test-ns data)))
+            (is (contains? data :errors))))))))

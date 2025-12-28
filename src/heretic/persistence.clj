@@ -13,10 +13,69 @@
    namespaces need recollection."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
-            [clojure.string :as str])
+            [clojure.string :as str]
+            [malli.core :as m]
+            [malli.error :as me])
   (:import [java.io File]
            [java.nio.file Files StandardCopyOption]
            [java.security MessageDigest]))
+
+;; =============================================================================
+;; Malli Schemas
+;; =============================================================================
+
+(def Coord
+  "A ClojureStorm coordinate string (e.g., \"3,2,1\" or \"\" for root)."
+  :string)
+
+(def FormId
+  "A form identifier from ClojureStorm's FormRegistry (computed hash as long)."
+  :int)
+
+(def FormCoverage
+  "Coverage data for a single form: set of covered coordinate strings."
+  [:set Coord])
+
+(def TestVarCoverage
+  "Coverage data for a single test var: form-id -> set of coords."
+  [:map-of FormId FormCoverage])
+
+(def Hashes
+  "Staleness detection hashes.
+   Note: :test-file and :source-files are SHA-256 hex strings from hash-file/hash-files,
+   while :config is a Clojure hash integer from (hash config)."
+  [:map
+   [:test-file [:maybe :string]]
+   [:source-files [:maybe :string]]
+   [:config [:maybe :int]]])
+
+(def TestNsCoverage
+  "Per-test-namespace coverage data stored in .heretic/coverage/<ns>.edn.
+
+   Structure:
+   - :test-ns - the test namespace symbol
+   - :coverage - map from test var symbol to form coverage
+   - :source-deps - set of source file paths this test namespace touched
+   - :hashes - staleness detection hashes"
+  [:map
+   {:closed true}
+   [:test-ns :symbol]
+   [:coverage [:map-of :symbol TestVarCoverage]]
+   [:source-deps [:set :string]]
+   [:hashes Hashes]])
+
+;; =============================================================================
+;; Schema Validation
+;; =============================================================================
+
+(defn validate-test-ns-coverage
+  "Validate coverage data against TestNsCoverage schema.
+   Returns {:valid true} on success, or {:valid false :errors [...]} on failure."
+  [data]
+  (if (m/validate TestNsCoverage data)
+    {:valid true}
+    {:valid false
+     :errors (me/humanize (m/explain TestNsCoverage data))}))
 
 (def default-dir ".heretic")
 
@@ -102,9 +161,18 @@
 
 (defn load-test-ns-coverage
   "Load coverage data for a single test namespace.
-   Returns nil if no coverage file exists."
+   Returns nil if no coverage file exists.
+   Throws ex-info with :type :corrupted-coverage-file if validation fails."
   [heretic-dir test-ns]
-  (load-edn (coverage-file-path heretic-dir test-ns)))
+  (when-let [data (load-edn (coverage-file-path heretic-dir test-ns))]
+    (let [{:keys [valid errors]} (validate-test-ns-coverage data)]
+      (if valid
+        data
+        (throw (ex-info "Corrupted coverage file detected"
+                        {:type :corrupted-coverage-file
+                         :test-ns test-ns
+                         :file (str (coverage-file-path heretic-dir test-ns))
+                         :errors errors}))))))
 
 (defn delete-test-ns-coverage!
   "Delete coverage file for a test namespace.
