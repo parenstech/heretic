@@ -545,6 +545,27 @@ at once, but it:
 
 ## Phase 2: Mutation Testing
 
+### CRITICAL: Self-Instrumentation Prevention
+
+**Heretic code must NOT be instrumented during mutation testing.** If ClojureStorm
+instruments heretic itself, infinite recursion occurs when tracer callbacks invoke
+instrumented heretic functions, causing hangs.
+
+**Required JVM opts:**
+```
+-Dclojure.storm.instrumentAutoPrefixes=false
+-Dclojure.storm.instrumentOnlyPrefixes=<your-app-prefix>
+```
+
+The `instrumentAutoPrefixes=false` prevents ClojureStorm from automatically
+instrumenting all loaded code. Combined with `instrumentOnlyPrefixes`, this ensures
+only target application code is instrumented, excluding heretic.
+
+Alternatively, explicitly skip heretic:
+```
+-Dclojure.storm.instrumentSkipPrefixes=heretic
+```
+
 ### Purpose
 
 Apply mutations to source code and run targeted tests to see if mutations are caught.
@@ -606,6 +627,74 @@ Clojure-specific mutations to apply:
 | Non-zero number | `0` |
 | Non-empty string | `""` |
 
+### Form-ID Computation
+
+Form-IDs are computed by `hansel.utils/clojure-form-source-hash`. This is the same
+hash used by ClojureStorm to identify forms in the FormRegistry. Heretic must use
+the same algorithm to look up coverage data for mutation sites.
+
+**Algorithm:**
+
+```clojure
+(defn clojure-form-source-hash
+  "Hash a clojure form string into a 32 bit num.
+  Meant to be called with printed representations of a form,
+  or a form source read from a file."
+  [s]
+  (let [M 4294967291
+        clean-s (-> s
+                    (str/replace #"#[/.a-zA-Z0-9_-]+" "") ;; remove tags
+                    (str/replace #"\^:[a-zA-Z0-9_-]+" "") ;; remove meta keys
+                    (str/replace #"\^\{.+?\}" "")         ;; remove meta maps
+                    (str/replace #";.+\n" "")             ;; remove comments
+                    (str/replace #"[ \t\n]+" ""))]        ;; remove non visible
+    (loop [sum 0
+           mul 1
+           i 0
+           [c & srest] clean-s]
+      (if (nil? c)
+        (mod sum M)
+        (let [mul' (if (= 0 (mod i 4)) 1 (* mul 256))
+              sum' (+ sum (* (int c) mul'))]
+          (recur sum' mul' (inc i) srest))))))
+```
+
+**Key characteristics:**
+- Returns a Long (not int)
+- Normalizes whitespace, removes metadata, comments, and tags before hashing
+- Uses a custom rolling hash with M=4294967291
+- Deterministic: same form source always produces same hash
+
+### Mutation Site to Coverage Lookup Bridge
+
+To find which tests cover a mutation site, heretic must bridge from rewrite-clj
+locations to ClojureStorm's coverage index:
+
+```
+Mutation Discovery → Coverage Lookup Flow:
+
+1. Parse source file with rewrite-clj
+2. Find mutation sites (zloc positions for +, -, and, etc.)
+3. For each mutation site:
+   a. Navigate up to find the top-level form
+   b. Get the source string of that form (z/string)
+   c. Hash it using clojure-form-source-hash → this is the form-id
+   d. Compute the coordinate within the form using zloc->coord
+   e. Look up [form-id coord] in coverage index → get relevant tests
+```
+
+**Example:**
+```clojure
+;; Source file contains:
+(defn add [a b] (+ a b))
+
+;; Mutation site: the + symbol at position [3 0]
+;; 1. Get top-level form source: "(defn add [a b] (+ a b))"
+;; 2. Hash: (clojure-form-source-hash "(defn add [a b] (+ a b))") → 12345678
+;; 3. Coord: "3,0" (from zloc->coord)
+;; 4. Lookup: (get-in index [:coord-to-tests [12345678 "3,0"]]) → #{my.app-test/test-add}
+```
+
 ### Components
 
 #### 1. Source Parser
@@ -654,9 +743,13 @@ Bidirectional mapping between ClojureStorm coordinates and rewrite-clj zippers.
   [zloc hash-str]
   (let [[_ prefix hash-val] (re-matches #"([KV])(\d+)" hash-str)
         target-hash (parse-long hash-val)]
-    ;; Walk children, compute hash of each, find match
+    ;; Walk children, compute hash of each using clojure-form-source-hash
     ;; For maps: K matches keys, V matches values
-    ;; For sets: K matches elements
+    ;; For sets: K matches elements (always K prefix)
+    ;;
+    ;; Hash computation: use hansel.utils/obj-coord algorithm:
+    ;;   (str kind (clojure-form-source-hash (pr-str obj)))
+    ;; where kind is "K" for keys/elements, "V" for values
     ))
 
 (defn coord->zloc
@@ -680,10 +773,25 @@ Bidirectional mapping between ClojureStorm coordinates and rewrite-clj zippers.
 
 (defn zloc->coord
   "Get ClojureStorm coordinate for a zipper position.
-   Returns string like \"3,2,1\" or \"\" for root."
+   Returns string like \"3,2,1\" or \"\" for root.
+
+   IMPORTANT: rewrite-clj creates an implicit :forms container node when parsing
+   with z/of-string or z/of-file. This container is NOT part of the ClojureStorm
+   coordinate system. zloc->coord must stop at the root form level (the direct
+   child of the :forms container), not include the container index.
+
+   Example:
+   (z/of-string \"(+ 1 2)\")  ; Creates :forms -> :list
+   The :list is the root form. Coords start from its children:
+   - [0] -> +
+   - [1] -> 1
+   - [2] -> 2
+
+   The root form itself returns nil or empty coord (\"\" for ClojureStorm)."
   [zloc]
   ;; Walk up to root, collecting indices/hashes
-  ;; Join with comma, or return empty string for root
+  ;; STOP when parent is :forms (the implicit container)
+  ;; Join with comma, or return empty string for root form
   )
 ```
 
@@ -876,6 +984,40 @@ Generate mutation testing reports.
    e. Generate report
 
 3. Output: mutation score + list of surviving mutations
+```
+
+### Testing Requirements
+
+**All heretic code requires ClojureStorm on the classpath** - it is a core dependency,
+not optional. However, instrumentation should be disabled for unit tests and enabled
+only for integration tests.
+
+**Unit tests** (testing heretic internals):
+```
+-Dclojure.storm.instrumentEnable=false
+```
+
+This ensures ClojureStorm classes are available but no instrumentation occurs.
+Unit tests for coord-mapper, persistence, etc. run normally.
+
+**Integration tests** (testing coverage collection):
+```
+-Dclojure.storm.instrumentEnable=true
+-Dclojure.storm.instrumentAutoPrefixes=false
+-Dclojure.storm.instrumentOnlyPrefixes=<target-prefix>
+```
+
+Integration tests that actually collect coverage need instrumentation enabled,
+but MUST exclude heretic itself (see Self-Instrumentation Prevention above).
+
+**Example deps.edn aliases:**
+```clojure
+:test {:jvm-opts ["-Dclojure.storm.instrumentEnable=false"]}
+
+:test-integration
+{:jvm-opts ["-Dclojure.storm.instrumentEnable=true"
+            "-Dclojure.storm.instrumentAutoPrefixes=false"
+            "-Dclojure.storm.instrumentOnlyPrefixes=sample"]}
 ```
 
 ---
