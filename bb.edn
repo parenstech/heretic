@@ -39,29 +39,31 @@
           (when (seq remaining)
             (if (= arg (first remaining))
               (second remaining)
-              (recur (rest remaining))))))))
+              (recur (rest remaining)))))))
+
+    (defn run-with-clojurestorm
+      "Run Clojure code with ClojureStorm on the classpath"
+      [config code]
+      (let [opts (clj-storm-opts config)
+            jvm-opts (str/join " " opts)]
+        (p/shell {:extra-env {"JVM_OPTS" jvm-opts}}
+                 "clj" "-M:collect" "-e" code))))
 
   heretic:collect
   {:doc "Collect test-to-code coverage mapping"
    :task
-   (do
-     (println "Collecting coverage...")
-     (let [config (load-config)
-           opts (clj-storm-opts config)
-           force? (has-arg? "--force")
-           ns-filter (get-arg-value "--namespaces")]
-       ;; TODO: Implement coverage collection
-       ;; 1. Start ClojureStorm-enabled JVM
-       ;; 2. Initialize tracer callbacks
-       ;; 3. Discover and run tests one-by-one
-       ;; 4. Collect per-test coverage
-       ;; 5. Persist to .heretic/coverage/
-       ;; 6. Rebuild index
-       (println "TODO: Coverage collection not yet implemented")
-       (println "Config:" config)
-       (println "ClojureStorm opts:" opts)
-       (when force? (println "Force mode: recollecting all"))
-       (when ns-filter (println "Filtering namespaces:" ns-filter))))}
+   (let [config (load-config)
+         force? (has-arg? "--force")
+         ns-filter (get-arg-value "--namespaces")
+         code (str "(require '[heretic.core :as heretic])"
+                   "(heretic/collect! (heretic/load-config)"
+                   (when force? " :force true")
+                   (when ns-filter
+                     (str " :namespaces ["
+                          (str/join " " (map #(str "'" %) (str/split ns-filter #",")))
+                          "]"))
+                   ")")]
+     (run-with-clojurestorm config code))}
 
   heretic:status
   {:doc "Show stale test namespaces that need recollection"
@@ -69,19 +71,18 @@
    (do
      (println "Coverage status:")
      (if (fs/exists? heretic-dir)
-       (do
-         ;; TODO: Implement staleness checking
-         ;; 1. Load config
-         ;; 2. Find all test namespaces
-         ;; 3. Check each for staleness (test file changed, source deps changed)
-         ;; 4. Report stale vs fresh counts
-         (println "TODO: Status checking not yet implemented")
-         (let [coverage-dir (fs/file heretic-dir "coverage")]
-           (if (fs/exists? coverage-dir)
-             (let [files (fs/list-dir coverage-dir)]
-               (println (str "Found " (count files) " coverage files in " coverage-dir)))
-             (println "No coverage files found"))))
-       (println "No .heretic directory found. Run heretic:collect first.")))}
+       (let [coverage-dir (fs/file heretic-dir "coverage")]
+         (if (fs/exists? coverage-dir)
+           (let [files (fs/list-dir coverage-dir)
+                 index-file (fs/file heretic-dir "index.edn")]
+             (println (str "  Coverage files: " (count files)))
+             (println (str "  Index exists: " (fs/exists? index-file)))
+             (when (fs/exists? index-file)
+               (let [index (edn/read-string (slurp (str index-file)))]
+                 (println (str "  Test namespaces indexed: " (count (:included-test-ns index))))
+                 (println (str "  Code locations tracked: " (count (:coord-to-tests index)))))))
+           (println "  No coverage files found")))
+       (println "  No .heretic directory found. Run heretic:collect first.")))}
 
   heretic:clean
   {:doc "Remove .heretic directory and all coverage data"
@@ -98,17 +99,6 @@
    :task
    (do
      (println "Running mutation testing...")
-     ;; TODO: Implement mutation testing
-     ;; 1. Load coverage map (or collect if stale/missing)
-     ;; 2. Generate mutations for source files
-     ;; 3. For each mutation:
-     ;;    a. Look up tests via coverage map
-     ;;    b. Apply mutation to source file
-     ;;    c. Reload affected namespaces
-     ;;    d. Run targeted tests
-     ;;    e. Record result (killed/survived)
-     ;;    f. Revert mutation
-     ;; 4. Generate report
      (println "TODO: Mutation testing not yet implemented (Phase 2)"))}
 
   heretic:survivors
@@ -116,17 +106,17 @@
    :task
    (do
      (println "Surviving mutations:")
-     ;; TODO: Implement survivor display
-     ;; 1. Load last mutation run results
-     ;; 2. Filter for :survived status
-     ;; 3. Show file, location, operator, original, mutation
      (println "TODO: Survivor display not yet implemented (Phase 2)"))}
 
   ;; Development tasks
   dev:repl
-  {:doc "Start a development REPL"
+  {:doc "Start a development REPL with ClojureStorm"
    :task
-   (p/shell "clj" "-M:dev" "-m" "nrepl.cmdline" "--interactive")}
+   (let [config (load-config)
+         opts (clj-storm-opts config)
+         jvm-opts (str/join " " opts)]
+     (p/shell {:extra-env {"JVM_OPTS" jvm-opts}}
+              "clj" "-M:dev:clojurestorm" "-m" "nrepl.cmdline" "--interactive"))}
 
   test
   {:doc "Run tests"

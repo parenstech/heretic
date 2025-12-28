@@ -12,10 +12,12 @@
    - `status` - Check staleness of coverage data
 
    Configuration is loaded from heretic.edn in the project root."
-  (:require [heretic.persistence :as persist]
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
+            [clojure.set :as set]
+            [heretic.collector :as collector]
             [heretic.coverage-map :as coverage]
-            [clojure.edn :as edn]
-            [clojure.java.io :as io]))
+            [heretic.persistence :as persist]))
 
 ;; =============================================================================
 ;; Configuration
@@ -60,18 +62,18 @@
    - :force - Recollect all test namespaces, ignoring staleness
    - :namespaces - Specific test namespaces to collect (default: all)
 
-   Returns map with collection statistics."
+   Returns map with collection statistics:
+   {:total-ns, :stale-ns, :collected-ns, :forms, :duration-ms}"
   [config & {:keys [force namespaces]}]
-  ;; TODO: Implement coverage collection
-  ;; 1. Initialize ClojureStorm tracer callbacks
-  ;; 2. Discover test namespaces (or use provided list)
-  ;; 3. Find stale namespaces (or all if :force)
-  ;; 4. For each stale namespace:
-  ;;    a. Run tests one-by-one with coverage tracking
-  ;;    b. Persist coverage to .heretic/coverage/<namespace>.edn
-  ;; 5. Rebuild inverse index
-  ;; 6. Return statistics
-  (throw (ex-info "Coverage collection not yet implemented" {})))
+  (println "Collecting coverage...")
+  (let [result (coverage/collect-and-persist! config :force force :namespaces namespaces)]
+    (println)
+    (println "Collection complete:")
+    (println (format "  Test namespaces: %d total, %d stale, %d collected"
+                     (:total-ns result) (:stale-ns result) (:collected-ns result)))
+    (println (format "  Forms registered: %d" (:forms result)))
+    (println (format "  Duration: %dms" (:duration-ms result)))
+    result))
 
 ;; =============================================================================
 ;; Status Checking
@@ -86,11 +88,31 @@
    - :total-coverage-files - Count of existing coverage files
    - :index-exists? - Whether inverse index exists"
   [config]
-  ;; TODO: Implement status checking
-  ;; 1. Load existing coverage files
-  ;; 2. Check staleness of each test namespace
-  ;; 3. Return summary
-  (throw (ex-info "Status checking not yet implemented" {})))
+  (let [heretic-dir (:heretic-dir config)
+        source-paths (:source-paths config)
+        test-paths (:test-paths config)
+
+        ;; Discover all test namespaces
+        all-test-ns (if (= :all (:test-namespaces config))
+                      (collector/discover-test-namespaces test-paths)
+                      (:test-namespaces config))
+
+        ;; Check existing coverage files
+        coverage-files (persist/list-coverage-files heretic-dir)
+        coverage-count (count (or coverage-files []))
+
+        ;; Find stale namespaces
+        stale (persist/find-stale-test-namespaces
+               heretic-dir all-test-ns test-paths source-paths config)
+        fresh (set/difference (set all-test-ns) stale)
+
+        ;; Check index
+        index-exists? (boolean (persist/load-index heretic-dir))]
+
+    {:stale-namespaces stale
+     :fresh-namespaces fresh
+     :total-coverage-files coverage-count
+     :index-exists? index-exists?}))
 
 ;; =============================================================================
 ;; Mutation Testing (Phase 2)
@@ -133,8 +155,11 @@
 (defn clean!
   "Remove .heretic directory and all coverage data."
   [config]
-  (let [heretic-dir (io/file (:heretic-dir config))]
-    (when (.exists heretic-dir)
-      ;; TODO: Use proper recursive delete
-      (run! io/delete-file (reverse (file-seq heretic-dir)))
-      {:deleted true :path (.getPath heretic-dir)})))
+  (let [heretic-dir (:heretic-dir config)]
+    (if (persist/clean-heretic-dir! heretic-dir)
+      (do
+        (println "Removed" heretic-dir)
+        {:deleted true :path heretic-dir})
+      (do
+        (println "Nothing to clean -" heretic-dir "does not exist")
+        {:deleted false :path heretic-dir}))))

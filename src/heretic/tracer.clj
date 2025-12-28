@@ -14,8 +14,12 @@
    1. Call (init!) to set up ClojureStorm callbacks
    2. Call (reset-current-coverage!) before each test
    3. Run the test (coverage is recorded automatically)
-   4. Call (get-current-coverage) to retrieve recorded hits"
-  (:require [clojure.string :as str]))
+   4. Call (get-current-coverage) to retrieve recorded hits
+
+   Requires ClojureStorm JVM args:
+   -Dclojure.storm.instrumentEnable=true
+   -Dclojure.storm.instrumentOnlyPrefixes=<your-app-prefix>"
+  (:import [clojure.storm Emitter Tracer]))
 
 ;; =============================================================================
 ;; State
@@ -23,21 +27,33 @@
 
 (def ^:private current-coverage
   "Atom of {form-id #{coords}} for the currently running test.
-   Reset between tests via reset-current-coverage!"
+   Reset between tests via reset-current-coverage!
+
+   Structure: {<form-id Long> #{<coord String> ...}}
+
+   Example:
+   {12345 #{\"3\" \"3,1\" \"3,2\"}
+    12346 #{\"\" \"1\" \"2,1\"}}"
   (atom {}))
 
 (def ^:private initialized?
-  "Track whether ClojureStorm callbacks have been initialized"
+  "Track whether ClojureStorm callbacks have been initialized."
   (atom false))
 
 ;; =============================================================================
 ;; Coverage Recording
 ;; =============================================================================
 
-(defn- record-hit!
+(defn record-hit!
   "Record a coverage hit for the current test.
-   Called by ClojureStorm for each expression evaluation.
-   Coordinates are already strings from ClojureStorm (e.g., \"3,2,1\")."
+
+   Called by ClojureStorm tracer callbacks for each expression evaluation.
+   Coordinates are already strings from ClojureStorm (e.g., \"3,2,1\" or
+   \"\" for function return).
+
+   Parameters:
+   - form-id: Long identifier for the form (from ClojureStorm FormRegistry)
+   - coord: String coordinate within the form (e.g., \"3,2,1\", \"K12345\", \"\")"
   [form-id coord]
   (swap! current-coverage
          update form-id
@@ -51,38 +67,56 @@
 (defn init!
   "Initialize ClojureStorm instrumentation with Heretic's callbacks.
 
-   Sets up the tracer to call record-hit! for each expression evaluation.
-   This enables coverage collection without runtime overhead when not collecting.
+   Configures ClojureStorm Emitter settings:
+   - Enable instrumentation globally
+   - Disable function call tracing (not needed for coverage)
+   - Enable function return tracing (captures fn exit points)
+   - Enable expression tracing (captures all subexpressions)
+   - Disable binding tracing (not needed for coverage)
 
-   Requires ClojureStorm JVM args:
-   -Dclojure.storm.instrumentEnable=true
+   Sets up Tracer callbacks:
+   - :trace-expr-fn - Called for each expression evaluation
+   - :trace-fn-return-fn - Called when a function returns normally
+   - :trace-fn-unwind-fn - Called when a function unwinds due to exception
 
-   Returns true if initialization succeeded, false if already initialized."
+   Callback signature: (fn [result throwable coord form-id] ...)
+   - result: Expression value (nil for unwind)
+   - throwable: Exception if unwinding, nil otherwise
+   - coord: String coordinate (e.g., \"3,2,1\")
+   - form-id: Long form identifier
+
+   Returns true if initialization succeeded, false if already initialized.
+
+   Note: Requires ClojureStorm on classpath. Start JVM with:
+   -Dclojure.storm.instrumentEnable=true"
   []
-  ;; TODO: Implement ClojureStorm initialization
-  ;; This requires the ClojureStorm JAR to be on the classpath
-  ;;
-  ;; (Emitter/setInstrumentationEnable true)
-  ;; (Emitter/setFnCallInstrumentationEnable false)
-  ;; (Emitter/setFnReturnInstrumentationEnable true)
-  ;; (Emitter/setExprInstrumentationEnable true)
-  ;; (Emitter/setBindInstrumentationEnable false)
-  ;;
-  ;; (Tracer/setTraceFnsCallbacks
-  ;;  {:trace-expr-fn      (fn [_ _ coord form-id] (record-hit! form-id coord))
-  ;;   :trace-fn-return-fn (fn [_ _ coord form-id] (record-hit! form-id coord))
-  ;;   :trace-fn-unwind-fn (fn [_ _ coord form-id] (record-hit! form-id coord))})
-  ;;
   (if @initialized?
     false
     (do
+      ;; Configure what gets instrumented
+      (Emitter/setInstrumentationEnable true)
+      (Emitter/setFnCallInstrumentationEnable false)
+      (Emitter/setFnReturnInstrumentationEnable true)
+      (Emitter/setExprInstrumentationEnable true)
+      (Emitter/setBindInstrumentationEnable false)
+
+      ;; Set up tracer callbacks to record coverage hits
+      ;; Callback signature: (fn [result throwable coord form-id] ...)
+      (Tracer/setTraceFnsCallbacks
+       {:trace-expr-fn      (fn [_result _throwable coord form-id]
+                              (record-hit! form-id coord))
+        :trace-fn-return-fn (fn [_result _throwable coord form-id]
+                              (record-hit! form-id coord))
+        :trace-fn-unwind-fn (fn [_result _throwable coord form-id]
+                              (record-hit! form-id coord))})
+
       (reset! initialized? true)
-      ;; TODO: Actual ClojureStorm initialization
-      (throw (ex-info "ClojureStorm initialization not yet implemented"
-                      {:hint "Requires ClojureStorm on classpath with :clojurestorm alias"})))))
+      true)))
 
 (defn initialized?*
-  "Check if tracer has been initialized."
+  "Check if tracer has been initialized.
+
+   Returns true if init! has been called successfully."
   []
   @initialized?)
 
@@ -90,21 +124,33 @@
   "Return coverage accumulated for the current test.
 
    Returns map of {form-id #{coord-strings}} where:
-   - form-id is the ClojureStorm form identifier
-   - coord-strings are stringified coordinates like \"3,2,1\""
+   - form-id: Long ClojureStorm form identifier
+   - coord-strings: Set of string coordinates like \"3,2,1\", \"K12345\", or \"\"
+
+   Example return value:
+   {12345 #{\"3\" \"3,1\" \"3,2\"}
+    12346 #{\"\" \"1\" \"2,1\"}}"
   []
   @current-coverage)
 
 (defn reset-current-coverage!
   "Clear coverage for the next test.
-   Call this before running each test."
+
+   Call this before running each test to start with a fresh coverage map.
+   Returns nil."
   []
-  (reset! current-coverage {}))
+  (reset! current-coverage {})
+  nil)
 
 (defn shutdown!
   "Disable coverage collection.
-   Call when done collecting to reduce overhead."
+
+   Disables ClojureStorm instrumentation and resets initialization state.
+   Call when done collecting to reduce runtime overhead.
+
+   Returns nil."
   []
-  ;; TODO: Disable ClojureStorm callbacks
-  ;; (Emitter/setInstrumentationEnable false)
-  (reset! initialized? false))
+  (when @initialized?
+    (Emitter/setInstrumentationEnable false))
+  (reset! initialized? false)
+  nil)

@@ -10,24 +10,45 @@
 
    Trade-off: Running tests one-by-one is slower than running all tests
    at once, but enables accurate per-test coverage mapping."
-  (:require [heretic.tracer :as tracer]
-            [clojure.test :as t]))
+  (:require [clojure.java.io :as io]
+            [clojure.test :as t]
+            [heretic.tracer :as tracer]))
 
 ;; =============================================================================
 ;; Test Discovery
 ;; =============================================================================
 
-(defn discover-test-namespaces
-  "Find all test namespaces matching the given paths or patterns.
+(defn- file->ns-symbol
+  "Extract namespace symbol from a Clojure file.
+   Returns nil if namespace cannot be determined."
+  [file]
+  (try
+    (with-open [rdr (java.io.PushbackReader. (io/reader file))]
+      (let [form (read rdr)]
+        (when (and (seq? form) (= 'ns (first form)))
+          (second form))))
+    (catch Exception _
+      nil)))
 
+(defn- find-clj-files
+  "Recursively find all .clj files in a directory."
+  [dir]
+  (let [d (io/file dir)]
+    (when (.exists d)
+      (->> (file-seq d)
+           (filter #(.isFile %))
+           (filter #(.endsWith (.getName %) ".clj"))))))
+
+(defn discover-test-namespaces
+  "Find all test namespaces in the given test paths.
+
+   Scans directories for .clj files and extracts ns declarations.
    Returns sequence of namespace symbols."
   [test-paths]
-  ;; TODO: Implement namespace discovery
-  ;; 1. Scan test-paths directories
-  ;; 2. Find .clj files
-  ;; 3. Extract namespace from ns form
-  ;; 4. Return sequence of symbols
-  (throw (ex-info "Test namespace discovery not yet implemented" {})))
+  (->> test-paths
+       (mapcat find-clj-files)
+       (keep file->ns-symbol)
+       (distinct)))
 
 (defn discover-test-vars
   "Find all test vars in the given namespaces.
@@ -84,10 +105,10 @@
   [test-ns]
   (let [test-vars (discover-test-vars-in-ns test-ns)
         coverage (reduce
-                   (fn [acc test-var]
-                     (merge acc (run-test-with-coverage test-var)))
-                   {}
-                   test-vars)]
+                  (fn [acc test-var]
+                    (merge acc (run-test-with-coverage test-var)))
+                  {}
+                  test-vars)]
     {:test-coverage coverage}))
 
 ;; =============================================================================
@@ -102,10 +123,10 @@
   (tracer/init!)
   (let [test-vars (discover-test-vars test-namespaces)
         coverage (reduce
-                   (fn [acc test-var]
-                     (merge acc (run-test-with-coverage test-var)))
-                   {}
-                   test-vars)]
+                  (fn [acc test-var]
+                    (merge acc (run-test-with-coverage test-var)))
+                  {}
+                  test-vars)]
     {:test-coverage coverage}))
 
 ;; =============================================================================

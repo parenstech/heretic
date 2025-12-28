@@ -16,7 +16,9 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [heretic.collector :as collector]
-            [heretic.persistence :as persist]))
+            [heretic.persistence :as persist]
+            [heretic.tracer :as tracer])
+  (:import [clojure.storm FormRegistry]))
 
 ;; =============================================================================
 ;; Form Registry (ClojureStorm)
@@ -25,23 +27,26 @@
 (defn get-form-registry
   "Get all forms from ClojureStorm's FormRegistry.
 
-   Returns {form-id -> {:form/ns, :form/form, :form/emitted-coords}}
+   Returns {form-id -> {:form/ns, :form/form, :form/emitted-coords, ...}}
 
-   Note: ClojureStorm stores emitted-coords in the metadata of :form/form
+   ClojureStorm stores emitted-coords in the metadata of :form/form
    under :clojure.storm/emitted-coords as a java.util.HashSet.
-   This function extracts and converts it to a Clojure set for each form."
+   This function extracts and converts it to a Clojure set for each form.
+
+   Form entry structure from FormRegistry:
+   {:form/id       Long (hash)
+    :form/ns       String
+    :form/form     <the form data>
+    :form/def-kind Keyword (:defn, :def, etc.)
+    :form/file     String (relative path)
+    :form/line     Integer}"
   []
-  ;; TODO: Implement FormRegistry access
-  ;; Requires ClojureStorm on classpath:
-  ;;
-  ;; (into {}
-  ;;       (for [form (FormRegistry/getAllForms)]
-  ;;         [(:form/id form)
-  ;;          (assoc form
-  ;;                 :form/emitted-coords
-  ;;                 (-> form :form/form meta :clojure.storm/emitted-coords set))]))
-  (throw (ex-info "FormRegistry access not yet implemented"
-                  {:hint "Requires ClojureStorm on classpath"})))
+  (into {}
+        (for [form (FormRegistry/getAllForms)]
+          [(:form/id form)
+           (assoc form
+                  :form/emitted-coords
+                  (-> form :form/form meta :clojure.storm/emitted-coords set))])))
 
 ;; =============================================================================
 ;; Source Dependency Tracking
@@ -188,18 +193,75 @@
   "Full collection workflow: collect coverage and persist to disk.
 
    Options:
-   - :force - Recollect all namespaces
-   - :namespaces - Specific namespaces to collect
+   - :force - Recollect all namespaces (ignore staleness)
+   - :namespaces - Specific namespaces to collect (symbols or strings)
 
-   Returns collection statistics."
+   Returns collection statistics map:
+   {:total-ns      N
+    :stale-ns      N
+    :collected-ns  N
+    :forms         N
+    :duration-ms   N}"
   [config & {:keys [force namespaces]}]
-  ;; TODO: Implement full workflow
-  ;; 1. Initialize tracer
-  ;; 2. Get form registry
-  ;; 3. Find stale namespaces (or all if force)
-  ;; 4. Collect each stale namespace
-  ;; 5. Persist coverage files
-  ;; 6. Save form registry to meta.edn
-  ;; 7. Rebuild index
-  ;; 8. Return statistics
-  (throw (ex-info "Full collection workflow not yet implemented" {})))
+  (let [start-time (System/currentTimeMillis)
+        heretic-dir (or (:heretic-dir config) persist/default-dir)
+        source-paths (:source-paths config)
+        test-paths (:test-paths config)
+
+        ;; Ensure directories exist
+        _ (persist/ensure-heretic-dir! heretic-dir)
+
+        ;; Initialize tracer
+        _ (tracer/init!)
+
+        ;; Discover test namespaces
+        all-test-ns (if (= :all (:test-namespaces config))
+                      (collector/discover-test-namespaces test-paths)
+                      (:test-namespaces config))
+
+        ;; Filter to requested namespaces if specified
+        target-ns (if namespaces
+                    (let [ns-set (set (map symbol namespaces))]
+                      (filter ns-set all-test-ns))
+                    all-test-ns)
+
+        ;; Find stale namespaces
+        stale-ns (if force
+                   (set target-ns)
+                   (persist/find-stale-test-namespaces
+                    heretic-dir target-ns test-paths source-paths config))
+
+        ;; Get form registry (after loading test namespaces)
+        _ (doseq [ns-sym stale-ns] (require ns-sym))
+        forms (get-form-registry)
+
+        ;; Collect each stale namespace
+        collected (for [ns-sym stale-ns]
+                    (do
+                      (println "  Collecting" ns-sym "...")
+                      (let [coverage-data (collect-test-namespace! ns-sym forms source-paths config)]
+                        (persist/save-test-ns-coverage! heretic-dir coverage-data)
+                        coverage-data)))
+
+        ;; Force evaluation
+        collected-count (count (doall collected))
+
+        ;; Save global metadata
+        _ (persist/save-meta! heretic-dir
+                              {:forms forms
+                               :collected-at (System/currentTimeMillis)
+                               :heretic-version "0.1.0"})
+
+        ;; Rebuild inverse index
+        _ (rebuild-index! heretic-dir)
+
+        ;; Shutdown tracer
+        _ (tracer/shutdown!)
+
+        end-time (System/currentTimeMillis)]
+
+    {:total-ns (count target-ns)
+     :stale-ns (count stale-ns)
+     :collected-ns collected-count
+     :forms (count forms)
+     :duration-ms (- end-time start-time)}))
