@@ -113,11 +113,13 @@
                        false))"
           file (create-test-file! "nested.clj" content)
           sites (engine/find-mutation-sites file)]
-      ;; Should find: true, and, or, false
-      (is (= 4 (count sites)))
+      ;; Should find: true, and, > (2 variants), or, false = 6 total
+      (is (= 6 (count sites)))
       (let [op-ids (set (map :operator sites))]
         (is (contains? op-ids :swap-true-false))
         (is (contains? op-ids :swap-and-or))
+        (is (contains? op-ids :swap-gt-lt))
+        (is (contains? op-ids :swap-gt-gte))
         (is (contains? op-ids :swap-or-and))
         (is (contains? op-ids :swap-false-true))))))
 

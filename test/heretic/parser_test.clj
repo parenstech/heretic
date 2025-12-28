@@ -330,7 +330,8 @@
                       false))"
           zloc (parser/parse-string source)
           sites (parser/find-mutation-sites zloc)]
-      ;; Should find: and, true, false
-      (is (= 3 (count sites)))
-      (is (= #{:swap-and-or :swap-true-false :swap-false-true}
+      ;; Should find: and, > (2 variants), < (2 variants), true, false = 7 total
+      (is (= 7 (count sites)))
+      (is (= #{:swap-and-or :swap-gt-lt :swap-gt-gte :swap-lt-gt :swap-lt-lte
+               :swap-true-false :swap-false-true}
              (set (map :operator sites)))))))

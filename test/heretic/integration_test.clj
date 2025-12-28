@@ -216,15 +216,21 @@
   (testing "Discovers mutations in complex nested expressions"
     (let [_file (create-source-file! "sample/complex.clj" sample-complex-source)
           mutations (engine/generate-mutations [(source-path)])]
-      ;; Should find: +, -, *, /, and, or
-      (is (= 6 (count mutations)))
+      ;; Should find: +, -, *, /, and, > (2), or, < (2), = = 11 total
+      (is (= 11 (count mutations)))
       (let [op-ids (frequencies (map :operator mutations))]
         (is (= 1 (get op-ids :swap-plus-minus)))
         (is (= 1 (get op-ids :swap-minus-plus)))
         (is (= 1 (get op-ids :swap-mult-div)))
         (is (= 1 (get op-ids :swap-div-mult)))
         (is (= 1 (get op-ids :swap-and-or)))
-        (is (= 1 (get op-ids :swap-or-and)))))))
+        (is (= 1 (get op-ids :swap-or-and)))
+        ;; Comparison operators
+        (is (= 1 (get op-ids :swap-gt-lt)))
+        (is (= 1 (get op-ids :swap-gt-gte)))
+        (is (= 1 (get op-ids :swap-lt-gt)))
+        (is (= 1 (get op-ids :swap-lt-lte)))
+        (is (= 1 (get op-ids :swap-eq-neq)))))))
 
 (deftest test-discover-mutations-multiple-files
   (testing "Discovers mutations across multiple source files"
@@ -570,8 +576,8 @@
     (+ (* a b) (- c d))
     false))")]
       (let [mutations (engine/generate-mutations [(source-path)])]
-        ;; Should find: and, or, true, +, *, -, false
-        (is (= 7 (count mutations)))))))
+        ;; Should find: and, or, > (2), < (2), true, +, *, -, false = 11 total
+        (is (= 11 (count mutations)))))))
 
 (deftest test-mutation-with-special-characters
   (testing "Handles files with special characters in expressions"
@@ -582,8 +588,8 @@
        (or (empty? s)
            (= s \"test-value\"))))")]
       (let [mutations (engine/generate-mutations [(source-path)])]
-        ;; Should find: and, or
-        (is (= 2 (count mutations)))))))
+        ;; Should find: and, or, = = 3 total
+        (is (= 3 (count mutations)))))))
 
 ;; =============================================================================
 ;; Runner Integration Tests
