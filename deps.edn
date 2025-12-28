@@ -8,7 +8,13 @@
   rewrite-clj/rewrite-clj {:mvn/version "1.1.47"}
 
   ;; Namespace reloading with proper protocol/multimethod handling
-  io.github.tonsky/clj-reload {:mvn/version "0.7.1"}}
+  io.github.tonsky/clj-reload {:mvn/version "0.7.1"}
+
+  ;; HTML generation for reports
+  hiccup/hiccup {:mvn/version "2.0.0-RC3"}
+
+  ;; File watching for watch mode
+  hawk/hawk {:mvn/version "0.2.11"}}
 
  :aliases
  {:dev

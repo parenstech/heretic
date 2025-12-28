@@ -102,10 +102,12 @@
 (deftest run-tests-timeout-test
   (testing "Slow tests timeout correctly"
     (let [result (runner/run-tests [slow-test-sym] 100)]
-      (is (= :timeout (:status result))
-          "Status should be :timeout when test exceeds timeout limit")
-      (is (= slow-test-sym (:failed-test result))
-          "Failed test should be the slow test that caused timeout"))))
+      (is (= :partial (:status result))
+          "Status should be :partial when some tests timed out")
+      (is (contains? (:timed-out result) slow-test-sym)
+          "Timed-out set should contain the slow test")
+      (is (:any-timeout result)
+          "any-timeout should be true when test times out"))))
 
 (deftest run-tests-nonexistent-var-test
   (testing "Nonexistent vars are skipped"
@@ -289,52 +291,61 @@
     (testing "times out when timeout is shorter than test duration"
       ;; boundary-test-150ms takes 150ms, give it 50ms timeout
       (let [result (runner/run-tests [boundary-test-150ms-sym] 50)]
-        (is (= :timeout (:status result)))
-        (is (= boundary-test-150ms-sym (:failed-test result)))))))
+        (is (= :partial (:status result))
+            "Status should be :partial when some tests timed out")
+        (is (contains? (:timed-out result) boundary-test-150ms-sym)
+            "Timed-out set should contain the boundary test")))))
 
 (deftest run-tests-mixed-timeout-test
   (testing "Multiple tests where some complete and some timeout"
-    (testing "fast tests complete before slow test times out"
-      ;; Run fast tests first, then a slow one that will timeout
-      ;; Order may vary since tests are in a set, but the slow one should timeout
+    (testing "fast tests complete, slow test times out, but continues"
+      ;; Run fast tests and a slow one - all tests are run
+      ;; The slow one times out but others complete
       (let [result (runner/run-tests [fast-test-sym slow-test-sym] 100)]
-        ;; One of the tests should timeout
-        (is (= :timeout (:status result)))
-        ;; The slow test should be the one that failed
-        (is (= slow-test-sym (:failed-test result)))))
+        ;; Some tests timed out
+        (is (= :partial (:status result)))
+        ;; The slow test should be in the timed-out set
+        (is (contains? (:timed-out result) slow-test-sym))
+        ;; Fast test should have completed
+        (is (contains? (:tests-run result) fast-test-sym))))
 
     (testing "medium slow tests complete, very slow test times out"
       ;; medium-slow-test takes 200ms, slow-test takes 5000ms
       ;; With 300ms timeout, medium-slow should complete, slow should timeout
       (let [result (runner/run-tests [medium-slow-test-sym slow-test-sym] 300)]
-        (is (= :timeout (:status result)))
-        (is (= slow-test-sym (:failed-test result)))
+        (is (= :partial (:status result)))
+        (is (contains? (:timed-out result) slow-test-sym))
         ;; medium-slow-test should have completed
         (is (contains? (:tests-run result) medium-slow-test-sym))))))
 
 (deftest run-tests-timeout-with-passing-tests-test
-  (testing "Partial results accumulated before timeout"
-    ;; Run multiple passing tests followed by a slow one
+  (testing "Partial results accumulated, slow test times out but others complete"
+    ;; Run multiple passing tests and a slow one - all are attempted
     (let [result (runner/run-tests [passing-test-sym fast-test-sym slow-test-sym] 100)]
-      (is (= :timeout (:status result)))
-      ;; Should have accumulated some passing results before timeout
-      ;; The exact count depends on execution order, but results should exist
+      (is (= :partial (:status result)))
+      ;; Should have accumulated passing results from fast tests
       (is (map? (:results result)))
-      (is (contains? (:results result) :pass)))))
+      (is (contains? (:results result) :pass))
+      ;; Slow test should be in timed-out
+      (is (contains? (:timed-out result) slow-test-sym)))))
 
 (deftest run-tests-timeout-with-failing-tests-test
   (testing "Timeout with mix of passing and failing tests before slow test"
-    ;; If a failing test runs before the slow test, results should contain failures
+    ;; Failing test completes, slow test times out
     (let [result (runner/run-tests [failing-test-sym slow-test-sym] 100)]
-      (is (= :timeout (:status result)))
+      (is (= :partial (:status result)))
       ;; Results should have been accumulated
-      (is (map? (:results result))))))
+      (is (map? (:results result)))
+      ;; any-failed should be true since failing-test failed
+      (is (:any-failed result)))))
 
 (deftest run-tests-timeout-with-erroring-tests-test
   (testing "Timeout with erroring tests in the batch"
     (let [result (runner/run-tests [erroring-test-sym slow-test-sym] 100)]
-      (is (= :timeout (:status result)))
-      (is (map? (:results result))))))
+      (is (= :partial (:status result)))
+      (is (map? (:results result)))
+      ;; any-failed should be true since erroring-test errored
+      (is (:any-failed result)))))
 
 (deftest run-tests-future-cancellation-test
   (testing "Timed out futures are properly cancelled"
@@ -342,7 +353,8 @@
     (let [start-time (System/currentTimeMillis)
           result (runner/run-tests [slow-test-sym] 100)
           elapsed (- (System/currentTimeMillis) start-time)]
-      (is (= :timeout (:status result)))
+      (is (= :partial (:status result)))
+      (is (contains? (:timed-out result) slow-test-sym))
       ;; The test should return quickly (not wait 5 seconds for the slow test)
       ;; Allow some buffer for test overhead
       (is (< elapsed 1000) "Future should be cancelled promptly after timeout"))))
@@ -352,16 +364,16 @@
     ;; slow-failing-test takes 500ms then fails
     ;; With 100ms timeout, it should timeout before the failure
     (let [result (runner/run-tests [slow-failing-test-sym] 100)]
-      (is (= :timeout (:status result)))
-      (is (= slow-failing-test-sym (:failed-test result))))))
+      (is (= :partial (:status result)))
+      (is (contains? (:timed-out result) slow-failing-test-sym)))))
 
 (deftest run-tests-slow-erroring-test-timeout-test
   (testing "Slow erroring test that times out before error"
     ;; slow-erroring-test takes 500ms then throws
     ;; With 100ms timeout, it should timeout before the error
     (let [result (runner/run-tests [slow-erroring-test-sym] 100)]
-      (is (= :timeout (:status result)))
-      (is (= slow-erroring-test-sym (:failed-test result))))))
+      (is (= :partial (:status result)))
+      (is (contains? (:timed-out result) slow-erroring-test-sym)))))
 
 (deftest run-tests-all-tests-complete-within-timeout-test
   (testing "All tests complete when timeout is sufficient"
@@ -374,7 +386,7 @@
 (deftest run-tests-timeout-duration-tracking-test
   (testing "Duration is tracked correctly on timeout"
     (let [result (runner/run-tests [slow-test-sym] 100)]
-      (is (= :timeout (:status result)))
+      (is (= :partial (:status result)))
       (is (number? (:duration-ms result)))
       ;; Duration should be approximately the timeout value (with some overhead)
       (is (>= (:duration-ms result) 100))
@@ -425,3 +437,44 @@
       ;; 1 killed / (1 killed + 1 survived) = 0.5
       (is (= 0.5 (:mutation-score summary)))
       (is (= 400 (:total-duration-ms summary))))))
+
+;; =============================================================================
+;; Budget Timeout Tests
+;; =============================================================================
+
+(deftest run-tests-budget-exhausted-test
+  (testing "Budget exhausted stops running more tests"
+    ;; Two medium-slow tests (200ms each) with 250ms budget
+    ;; Should complete first test, then hit budget before second
+    (let [result (runner/run-tests [medium-slow-test-sym fast-test-sym passing-test-sym]
+                                   {:timeout-ms 5000 :budget-ms 250})]
+      ;; With 250ms budget and tests taking 200ms each, some may be skipped
+      (is (or (= :completed (:status result))
+              (= :budget-exhausted (:status result))))
+      (is (set? (:tests-run result))))))
+
+(deftest run-tests-budget-with-options-map-test
+  (testing "Options map works for timeout-ms and budget-ms"
+    (let [result (runner/run-tests [passing-test-sym]
+                                   {:timeout-ms 5000 :budget-ms 10000})]
+      (is (= :completed (:status result)))
+      (is (= #{passing-test-sym} (:tests-run result))))))
+
+;; =============================================================================
+;; Timed-Out Tracking Tests
+;; =============================================================================
+
+(deftest summarize-results-tests-timed-out-test
+  (testing "Summary counts total tests that timed out"
+    (let [results [{:status :killed :duration-ms 50 :timed-out #{}}
+                   {:status :timeout :duration-ms 100 :timed-out #{'a 'b}}
+                   {:status :partial :duration-ms 100 :timed-out #{'c}}]
+          summary (runner/summarize-results results)]
+      ;; 3 tests timed out across all mutations
+      (is (= 3 (:tests-timed-out summary))))))
+
+(deftest run-tests-empty-returns-timed-out-set-test
+  (testing "Empty tests returns empty timed-out set"
+    (let [result (runner/run-tests [] 5000)]
+      (is (= #{} (:timed-out result)))
+      (is (= false (:any-timeout result))))))

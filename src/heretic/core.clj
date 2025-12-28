@@ -17,11 +17,14 @@
             [clojure.set :as set]
             [heretic.collector :as collector]
             [heretic.coverage-map :as coverage]
+            [heretic.equivalent :as equiv]
             [heretic.mutation-engine :as engine]
+            [heretic.parser :as parser]
             [heretic.persistence :as persist]
             [heretic.reloader :as reloader]
             [heretic.reporter :as reporter]
-            [heretic.runner :as runner]))
+            [heretic.runner :as runner])
+  (:import [java.util.concurrent Executors ExecutorService]))
 
 ;; =============================================================================
 ;; Configuration
@@ -38,8 +41,15 @@
    :parallel-collect false
    :mutation-operators [:arithmetic :comparison :boolean :return-values]
    :skip-forms #{'comment}
-   :timeout-ms 5000
-   :parallel-mutate false
+   ;; Timeout configuration
+   :timeout-ms 5000           ; Per-test timeout in milliseconds
+   :budget-ms nil             ; Optional total time budget per mutation (nil = unlimited)
+   ;; Parallel mutation testing
+   :parallel-mutate false     ; Enable file-level parallelism
+   :parallel-workers nil      ; Number of worker threads (nil = CPU count)
+   ;; Equivalent mutant detection
+   :filter-equivalent true    ; Filter likely equivalent mutants
+   ;; Report output
    :report-format :terminal
    :output-path "target/heretic-report"})
 
@@ -179,6 +189,89 @@
     (print (format "\r[%3d%%] %d/%d mutations tested %s" pct current total status-indicator))
     (flush)))
 
+;; =============================================================================
+;; Parallel Mutation Testing
+;; =============================================================================
+
+(defn- run-mutations-sequential
+  "Run mutations sequentially. Standard mode for single-threaded execution."
+  [index mutations config progress-atom total]
+  (let [results (atom [])]
+    (doseq [mutation mutations]
+      (try
+        (let [result (evaluate-mutation-with-reload! index mutation config)]
+          (swap! results conj result)
+          (let [current (swap! progress-atom inc)]
+            (print-progress current total (:status result))))
+        (catch Exception e
+          (swap! results conj {:mutation mutation
+                               :status :error
+                               :tests-run #{}
+                               :timed-out #{}
+                               :duration-ms 0
+                               :error-message (str e)})
+          (let [current (swap! progress-atom inc)]
+            (print-progress current total :error)))))
+    @results))
+
+(defn- run-file-mutations!
+  "Run all mutations for a single file sequentially.
+   Returns vector of results."
+  [index mutations config progress-atom total]
+  (let [results (atom [])]
+    (doseq [mutation mutations]
+      (try
+        (let [result (evaluate-mutation-with-reload! index mutation config)]
+          (swap! results conj result)
+          (let [current (swap! progress-atom inc)]
+            (locking *out*
+              (print-progress current total (:status result)))))
+        (catch Exception e
+          (swap! results conj {:mutation mutation
+                               :status :error
+                               :tests-run #{}
+                               :timed-out #{}
+                               :duration-ms 0
+                               :error-message (str e)})
+          (let [current (swap! progress-atom inc)]
+            (locking *out*
+              (print-progress current total :error))))))
+    @results))
+
+(defn- run-mutations-parallel
+  "Run mutations with file-level parallelism.
+
+   Mutations are grouped by file, and each file's mutations are processed
+   sequentially on a dedicated thread. Different files are processed in parallel.
+
+   This ensures:
+   - No concurrent file modifications (mutations within same file are sequential)
+   - Maximum parallelism across files
+   - Safe namespace reloading (each file completes before next starts)"
+  [index mutations config worker-count]
+  (let [total (count mutations)
+        progress-atom (atom 0)
+        results-atom (atom [])
+        by-file (group-by :file mutations)
+        ^ExecutorService executor (Executors/newFixedThreadPool worker-count)]
+    (try
+      (let [futures (doall
+                     (for [[_file file-mutations] by-file]
+                       (.submit executor
+                                ^Callable
+                                (fn []
+                                  (let [file-results (run-file-mutations!
+                                                      index file-mutations config
+                                                      progress-atom total)]
+                                    (swap! results-atom into file-results)
+                                    nil)))))]
+        ;; Wait for all tasks to complete
+        (doseq [f futures]
+          (.get f)))
+      @results-atom
+      (finally
+        (.shutdown executor)))))
+
 (defn mutate!
   "Run mutation testing on the codebase.
 
@@ -211,13 +304,32 @@
     (println)
     (println "Scanning for mutation sites...")
     (let [source-paths (:source-paths config)
-          mutations (if files
-                      (mapcat engine/mutations-for-file files)
-                      (engine/generate-mutations source-paths))
-          mutations-vec (vec mutations)
+          all-mutations (if files
+                          (mapcat engine/mutations-for-file files)
+                          (engine/generate-mutations source-paths))
+          all-mutations-vec (vec all-mutations)
+          total-found (count all-mutations-vec)
+
+          ;; Step 3b: Filter equivalent mutations if enabled
+          filter-equiv? (:filter-equivalent config true)
+          {:keys [mutations-vec filtered-count]}
+          (if filter-equiv?
+            (let [zloc-fn (fn [m]
+                            (try
+                              (when-let [zloc (parser/parse-file (:file m))]
+                                (parser/mutation-site->zloc m zloc))
+                              (catch Exception _ nil)))
+                  result (equiv/filter-equivalent-mutations all-mutations-vec zloc-fn)]
+              {:mutations-vec (vec (:mutations result))
+               :filtered-count (:filtered-count result)})
+            {:mutations-vec all-mutations-vec
+             :filtered-count 0})
+
           total (count mutations-vec)]
 
-      (println (format "Found %d mutation sites." total))
+      (println (format "Found %d mutation sites." total-found))
+      (when (and filter-equiv? (pos? filtered-count))
+        (println (format "Filtered %d likely equivalent mutations." filtered-count)))
 
       (if (zero? total)
         (do
@@ -228,48 +340,62 @@
            :no-coverage 0
            :timeout 0
            :error 0
+           :equivalent-filtered filtered-count
            :mutation-score 1.0
            :survivors []})
 
         ;; Step 4: Evaluate each mutation
         (do
           (println)
-          (println "Running mutation tests...")
-          (let [timeout-ms (or (:timeout-ms config) 5000)
-                test-config {:timeout-ms timeout-ms}
-                results (atom [])
-                start-time (System/currentTimeMillis)]
+          (let [parallel? (:parallel-mutate config)
+                worker-count (or (:parallel-workers config)
+                                 (.availableProcessors (Runtime/getRuntime)))]
+            (if parallel?
+              (println (format "Running mutation tests in parallel (%d workers)..." worker-count))
+              (println "Running mutation tests...")))
 
-            (doseq [[idx mutation] (map-indexed vector mutations-vec)]
-              (try
-                (let [result (evaluate-mutation-with-reload! index mutation test-config)]
-                  (swap! results conj result)
-                  (print-progress (inc idx) total (:status result)))
-                (catch Exception e
-                  (swap! results conj {:mutation mutation
-                                       :status :error
-                                       :tests-run #{}
-                                       :duration-ms 0
-                                       :error-message (str e)})
-                  (print-progress (inc idx) total :error))))
+          (let [timeout-ms (or (:timeout-ms config) 5000)
+                budget-ms (:budget-ms config)
+                test-config (cond-> {:timeout-ms timeout-ms}
+                              budget-ms (assoc :budget-ms budget-ms))
+                parallel? (:parallel-mutate config)
+                worker-count (or (:parallel-workers config)
+                                 (.availableProcessors (Runtime/getRuntime)))
+                start-time (System/currentTimeMillis)
+                progress-atom (atom 0)
+
+                ;; Run mutations either in parallel or sequentially
+                all-results (if parallel?
+                              (run-mutations-parallel index mutations-vec test-config worker-count)
+                              (run-mutations-sequential index mutations-vec test-config progress-atom total))]
 
             (println)  ; Newline after progress
 
             ;; Step 5: Generate summary
-            (let [all-results @results
+            (let [all-results all-results
                   summary (runner/summarize-results all-results)
-                  survivors (filter #(= :survived (:status %)) all-results)
+                  survivor-list (filter #(= :survived (:status %)) all-results)
                   final-result (assoc summary
-                                      :survivors (mapv :mutation survivors)
+                                      :survivors (mapv :mutation survivor-list)
+                                      :equivalent-filtered filtered-count
                                       :total-duration-ms (- (System/currentTimeMillis) start-time))]
 
-              ;; Step 6: Print report
+              ;; Step 6: Print terminal report
               (println)
               (reporter/print-summary all-results)
 
-              (when (seq survivors)
+              (when (seq survivor-list)
                 (println)
                 (reporter/print-survivors all-results))
+
+              ;; Step 7: Generate HTML report if configured
+              (when (= :html (:report-format config))
+                (let [output-path (:output-path config "target/heretic-report")
+                      html-path (reporter/generate-html-report
+                                 all-results
+                                 (str output-path "/index.html"))]
+                  (println)
+                  (println (format "HTML report written to: %s" html-path))))
 
               ;; Return results
               final-result)))))))

@@ -275,3 +275,30 @@
         (is (true? (:deleted result)))
         (is (not (.exists (io/file heretic-dir)))
             "Heretic directory and all contents should be removed")))))
+
+;; =============================================================================
+;; Parallel Configuration Tests
+;; =============================================================================
+
+(deftest load-config-parallel-defaults-test
+  (testing "default config includes parallel mutation testing settings"
+    (let [config-path (str *test-dir* "/heretic.edn")]
+      (spit config-path "{}")
+      (let [config (core/load-config config-path)]
+        (is (= false (:parallel-mutate config))
+            "parallel-mutate should default to false")
+        (is (nil? (:parallel-workers config))
+            "parallel-workers should default to nil (CPU count)")
+        (is (nil? (:budget-ms config))
+            "budget-ms should default to nil (unlimited)")))))
+
+(deftest load-config-parallel-override-test
+  (testing "user can override parallel mutation testing settings"
+    (let [config-path (str *test-dir* "/heretic.edn")]
+      (spit config-path (pr-str {:parallel-mutate true
+                                 :parallel-workers 4
+                                 :budget-ms 30000}))
+      (let [config (core/load-config config-path)]
+        (is (= true (:parallel-mutate config)))
+        (is (= 4 (:parallel-workers config)))
+        (is (= 30000 (:budget-ms config)))))))

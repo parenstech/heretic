@@ -208,10 +208,13 @@
           ops (ops/applicable-operators zloc)]
       (is (empty? ops))))
 
-  (testing "Returns empty for numbers"
+  (testing "Returns constant operators for numbers"
     (let [zloc (zloc-at "(+ 1 2)" [1])
-          ops (ops/applicable-operators zloc)]
-      (is (empty? ops))))
+          ops (ops/applicable-operators zloc)
+          ids (set (map :id ops))]
+      ;; 1 matches constant replacement operators
+      (is (contains? ids :replace-1-to-0))
+      (is (contains? ids :replace-1-to-neg1))))
 
   (testing "Returns empty for strings"
     (let [zloc (zloc-at "\"hello\"" [])
@@ -224,11 +227,11 @@
 
 (deftest test-all-operators-count
   (testing "all-operators contains expected count"
-    (is (= 18 (count ops/all-operators)))))
+    (is (= 64 (count ops/all-operators)))))
 
 (deftest test-operators-by-id
   (testing "operators-by-id contains all operators"
-    (is (= 18 (count ops/operators-by-id))))
+    (is (= 64 (count ops/operators-by-id))))
 
   (testing "Can look up operators by id"
     (is (= ops/swap-plus-minus (get ops/operators-by-id :swap-plus-minus)))
@@ -263,3 +266,645 @@
       (is (= :swap-and-or (:id (first (ops/applicable-operators and-zloc)))))
       (is (= :swap-plus-minus (:id (first (ops/applicable-operators plus-zloc)))))
       (is (= :swap-mult-div (:id (first (ops/applicable-operators mult-zloc))))))))
+
+;; =============================================================================
+;; Threading Operator Tests
+;; =============================================================================
+
+(deftest test-swap-thread-first-last-matcher
+  (testing "Matches -> symbol"
+    (let [zloc (zloc-at "(-> x inc dec)" [0])]
+      (is ((:matcher ops/swap-thread-first-last) zloc))))
+
+  (testing "Does not match ->> symbol"
+    (let [zloc (zloc-at "(->> x inc dec)" [0])]
+      (is (not ((:matcher ops/swap-thread-first-last) zloc))))))
+
+(deftest test-swap-thread-last-first-matcher
+  (testing "Matches ->> symbol"
+    (let [zloc (zloc-at "(->> x (map inc) (filter odd?))" [0])]
+      (is ((:matcher ops/swap-thread-last-first) zloc))))
+
+  (testing "Does not match -> symbol"
+    (let [zloc (zloc-at "(-> x inc dec)" [0])]
+      (is (not ((:matcher ops/swap-thread-last-first) zloc))))))
+
+(deftest test-swap-some-first-thread-matcher
+  (testing "Matches some-> symbol"
+    (let [zloc (zloc-at "(some-> x :foo :bar)" [0])]
+      (is ((:matcher ops/swap-some-first-thread) zloc))))
+
+  (testing "Does not match -> symbol"
+    (let [zloc (zloc-at "(-> x :foo :bar)" [0])]
+      (is (not ((:matcher ops/swap-some-first-thread) zloc))))))
+
+(deftest test-swap-some-last-thread-matcher
+  (testing "Matches some->> symbol"
+    (let [zloc (zloc-at "(some->> x (map inc))" [0])]
+      (is ((:matcher ops/swap-some-last-thread) zloc))))
+
+  (testing "Does not match ->> symbol"
+    (let [zloc (zloc-at "(->> x (map inc))" [0])]
+      (is (not ((:matcher ops/swap-some-last-thread) zloc))))))
+
+(deftest test-apply-operator-threading
+  (testing "Returns correct replacement for threading operators"
+    (let [zloc (zloc-at "(-> x inc)" [0])]
+      (is (= "->>" (ops/apply-operator ops/swap-thread-first-last zloc)))
+      (is (= "some->" (ops/apply-operator ops/swap-thread-some-first zloc))))
+    (let [zloc (zloc-at "(->> x inc)" [0])]
+      (is (= "->" (ops/apply-operator ops/swap-thread-last-first zloc)))
+      (is (= "some->>" (ops/apply-operator ops/swap-thread-some-last zloc))))
+    (let [zloc (zloc-at "(some-> x inc)" [0])]
+      (is (= "->" (ops/apply-operator ops/swap-some-first-thread zloc))))
+    (let [zloc (zloc-at "(some->> x inc)" [0])]
+      (is (= "->>" (ops/apply-operator ops/swap-some-last-thread zloc))))))
+
+(deftest test-applicable-operators-thread-first
+  (testing "Returns threading operators for -> symbol"
+    (let [zloc (zloc-at "(-> x inc)" [0])
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      (is (contains? ids :swap-thread-first-last))
+      (is (contains? ids :swap-thread-some-first)))))
+
+(deftest test-applicable-operators-thread-last
+  (testing "Returns threading operators for ->> symbol"
+    (let [zloc (zloc-at "(->> x (map inc))" [0])
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      (is (contains? ids :swap-thread-last-first))
+      (is (contains? ids :swap-thread-some-last)))))
+
+;; =============================================================================
+;; Lazy/Eager Operator Tests
+;; =============================================================================
+
+(deftest test-swap-map-mapv-matcher
+  (testing "Matches map symbol"
+    (let [zloc (zloc-at "(map inc [1 2 3])" [0])]
+      (is ((:matcher ops/swap-map-mapv) zloc))))
+
+  (testing "Does not match mapv symbol"
+    (let [zloc (zloc-at "(mapv inc [1 2 3])" [0])]
+      (is (not ((:matcher ops/swap-map-mapv) zloc))))))
+
+(deftest test-swap-mapv-map-matcher
+  (testing "Matches mapv symbol"
+    (let [zloc (zloc-at "(mapv inc [1 2 3])" [0])]
+      (is ((:matcher ops/swap-mapv-map) zloc))))
+
+  (testing "Does not match map symbol"
+    (let [zloc (zloc-at "(map inc [1 2 3])" [0])]
+      (is (not ((:matcher ops/swap-mapv-map) zloc))))))
+
+(deftest test-swap-filter-filterv-matcher
+  (testing "Matches filter symbol"
+    (let [zloc (zloc-at "(filter odd? [1 2 3])" [0])]
+      (is ((:matcher ops/swap-filter-filterv) zloc))))
+
+  (testing "Does not match filterv symbol"
+    (let [zloc (zloc-at "(filterv odd? [1 2 3])" [0])]
+      (is (not ((:matcher ops/swap-filter-filterv) zloc))))))
+
+(deftest test-swap-filterv-filter-matcher
+  (testing "Matches filterv symbol"
+    (let [zloc (zloc-at "(filterv odd? [1 2 3])" [0])]
+      (is ((:matcher ops/swap-filterv-filter) zloc))))
+
+  (testing "Does not match filter symbol"
+    (let [zloc (zloc-at "(filter odd? [1 2 3])" [0])]
+      (is (not ((:matcher ops/swap-filterv-filter) zloc))))))
+
+(deftest test-swap-for-doseq-matcher
+  (testing "Matches for symbol"
+    (let [zloc (zloc-at "(for [x xs] (inc x))" [0])]
+      (is ((:matcher ops/swap-for-doseq) zloc))))
+
+  (testing "Does not match doseq symbol"
+    (let [zloc (zloc-at "(doseq [x xs] (println x))" [0])]
+      (is (not ((:matcher ops/swap-for-doseq) zloc))))))
+
+(deftest test-swap-doseq-for-matcher
+  (testing "Matches doseq symbol"
+    (let [zloc (zloc-at "(doseq [x xs] (println x))" [0])]
+      (is ((:matcher ops/swap-doseq-for) zloc))))
+
+  (testing "Does not match for symbol"
+    (let [zloc (zloc-at "(for [x xs] (inc x))" [0])]
+      (is (not ((:matcher ops/swap-doseq-for) zloc))))))
+
+(deftest test-apply-operator-lazy-eager
+  (testing "Returns correct replacement for lazy/eager operators"
+    (let [zloc (zloc-at "(map inc xs)" [0])]
+      (is (= "mapv" (ops/apply-operator ops/swap-map-mapv zloc))))
+    (let [zloc (zloc-at "(mapv inc xs)" [0])]
+      (is (= "map" (ops/apply-operator ops/swap-mapv-map zloc))))
+    (let [zloc (zloc-at "(filter odd? xs)" [0])]
+      (is (= "filterv" (ops/apply-operator ops/swap-filter-filterv zloc))))
+    (let [zloc (zloc-at "(filterv odd? xs)" [0])]
+      (is (= "filter" (ops/apply-operator ops/swap-filterv-filter zloc))))
+    (let [zloc (zloc-at "(for [x xs] x)" [0])]
+      (is (= "doseq" (ops/apply-operator ops/swap-for-doseq zloc))))
+    (let [zloc (zloc-at "(doseq [x xs] x)" [0])]
+      (is (= "for" (ops/apply-operator ops/swap-doseq-for zloc))))))
+
+(deftest test-applicable-operators-map
+  (testing "Returns swap-map-mapv for map symbol"
+    (let [zloc (zloc-at "(map inc xs)" [0])
+          applicable (ops/applicable-operators zloc)]
+      (is (= 1 (count applicable)))
+      (is (= :swap-map-mapv (:id (first applicable)))))))
+
+(deftest test-applicable-operators-mapv
+  (testing "Returns swap-mapv-map for mapv symbol"
+    (let [zloc (zloc-at "(mapv inc xs)" [0])
+          applicable (ops/applicable-operators zloc)]
+      (is (= 1 (count applicable)))
+      (is (= :swap-mapv-map (:id (first applicable)))))))
+
+(deftest test-applicable-operators-filter
+  (testing "Returns filter operators for filter symbol"
+    (let [zloc (zloc-at "(filter odd? xs)" [0])
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      ;; filter matches: swap-filter-filterv, swap-filter-remove, swap-filter-keep
+      (is (contains? ids :swap-filter-filterv))
+      (is (contains? ids :swap-filter-remove))
+      (is (contains? ids :swap-filter-keep)))))
+
+(deftest test-applicable-operators-filterv
+  (testing "Returns swap-filterv-filter for filterv symbol"
+    (let [zloc (zloc-at "(filterv odd? xs)" [0])
+          applicable (ops/applicable-operators zloc)]
+      (is (= 1 (count applicable)))
+      (is (= :swap-filterv-filter (:id (first applicable)))))))
+
+(deftest test-applicable-operators-for
+  (testing "Returns swap-for-doseq for for symbol"
+    (let [zloc (zloc-at "(for [x xs] x)" [0])
+          applicable (ops/applicable-operators zloc)]
+      (is (= 1 (count applicable)))
+      (is (= :swap-for-doseq (:id (first applicable)))))))
+
+(deftest test-applicable-operators-doseq
+  (testing "Returns swap-doseq-for for doseq symbol"
+    (let [zloc (zloc-at "(doseq [x xs] x)" [0])
+          applicable (ops/applicable-operators zloc)]
+      (is (= 1 (count applicable)))
+      (is (= :swap-doseq-for (:id (first applicable)))))))
+
+;; =============================================================================
+;; Collection Operator Tests
+;; =============================================================================
+
+(deftest test-swap-first-last-matcher
+  (testing "Matches first symbol"
+    (let [zloc (zloc-at "(first [1 2 3])" [0])]
+      (is ((:matcher ops/swap-first-last) zloc))))
+
+  (testing "Does not match last symbol"
+    (let [zloc (zloc-at "(last [1 2 3])" [0])]
+      (is (not ((:matcher ops/swap-first-last) zloc))))))
+
+(deftest test-swap-last-first-matcher
+  (testing "Matches last symbol"
+    (let [zloc (zloc-at "(last [1 2 3])" [0])]
+      (is ((:matcher ops/swap-last-first) zloc))))
+
+  (testing "Does not match first symbol"
+    (let [zloc (zloc-at "(first [1 2 3])" [0])]
+      (is (not ((:matcher ops/swap-last-first) zloc))))))
+
+(deftest test-swap-rest-next-matcher
+  (testing "Matches rest symbol"
+    (let [zloc (zloc-at "(rest [1 2 3])" [0])]
+      (is ((:matcher ops/swap-rest-next) zloc))))
+
+  (testing "Does not match next symbol"
+    (let [zloc (zloc-at "(next [1 2 3])" [0])]
+      (is (not ((:matcher ops/swap-rest-next) zloc))))))
+
+(deftest test-swap-next-rest-matcher
+  (testing "Matches next symbol"
+    (let [zloc (zloc-at "(next [1 2 3])" [0])]
+      (is ((:matcher ops/swap-next-rest) zloc))))
+
+  (testing "Does not match rest symbol"
+    (let [zloc (zloc-at "(rest [1 2 3])" [0])]
+      (is (not ((:matcher ops/swap-next-rest) zloc))))))
+
+(deftest test-swap-take-drop-matcher
+  (testing "Matches take symbol"
+    (let [zloc (zloc-at "(take 2 [1 2 3])" [0])]
+      (is ((:matcher ops/swap-take-drop) zloc))))
+
+  (testing "Does not match drop symbol"
+    (let [zloc (zloc-at "(drop 2 [1 2 3])" [0])]
+      (is (not ((:matcher ops/swap-take-drop) zloc))))))
+
+(deftest test-swap-drop-take-matcher
+  (testing "Matches drop symbol"
+    (let [zloc (zloc-at "(drop 2 [1 2 3])" [0])]
+      (is ((:matcher ops/swap-drop-take) zloc))))
+
+  (testing "Does not match take symbol"
+    (let [zloc (zloc-at "(take 2 [1 2 3])" [0])]
+      (is (not ((:matcher ops/swap-drop-take) zloc))))))
+
+(deftest test-swap-conj-disj-matcher
+  (testing "Matches conj symbol"
+    (let [zloc (zloc-at "(conj #{1 2} 3)" [0])]
+      (is ((:matcher ops/swap-conj-disj) zloc))))
+
+  (testing "Does not match disj symbol"
+    (let [zloc (zloc-at "(disj #{1 2 3} 3)" [0])]
+      (is (not ((:matcher ops/swap-conj-disj) zloc))))))
+
+(deftest test-swap-disj-conj-matcher
+  (testing "Matches disj symbol"
+    (let [zloc (zloc-at "(disj #{1 2 3} 3)" [0])]
+      (is ((:matcher ops/swap-disj-conj) zloc))))
+
+  (testing "Does not match conj symbol"
+    (let [zloc (zloc-at "(conj #{1 2} 3)" [0])]
+      (is (not ((:matcher ops/swap-disj-conj) zloc))))))
+
+(deftest test-swap-inc-dec-matcher
+  (testing "Matches inc symbol"
+    (let [zloc (zloc-at "(inc 1)" [0])]
+      (is ((:matcher ops/swap-inc-dec) zloc))))
+
+  (testing "Does not match dec symbol"
+    (let [zloc (zloc-at "(dec 1)" [0])]
+      (is (not ((:matcher ops/swap-inc-dec) zloc))))))
+
+(deftest test-swap-dec-inc-matcher
+  (testing "Matches dec symbol"
+    (let [zloc (zloc-at "(dec 1)" [0])]
+      (is ((:matcher ops/swap-dec-inc) zloc))))
+
+  (testing "Does not match inc symbol"
+    (let [zloc (zloc-at "(inc 1)" [0])]
+      (is (not ((:matcher ops/swap-dec-inc) zloc))))))
+
+(deftest test-apply-operator-collection
+  (testing "Returns correct replacement for collection operators"
+    (let [zloc (zloc-at "(first xs)" [0])]
+      (is (= "last" (ops/apply-operator ops/swap-first-last zloc)))
+      (is (= "rest" (ops/apply-operator ops/swap-first-rest zloc))))
+    (let [zloc (zloc-at "(last xs)" [0])]
+      (is (= "first" (ops/apply-operator ops/swap-last-first zloc))))
+    (let [zloc (zloc-at "(rest xs)" [0])]
+      (is (= "next" (ops/apply-operator ops/swap-rest-next zloc))))
+    (let [zloc (zloc-at "(next xs)" [0])]
+      (is (= "rest" (ops/apply-operator ops/swap-next-rest zloc))))
+    (let [zloc (zloc-at "(take 2 xs)" [0])]
+      (is (= "drop" (ops/apply-operator ops/swap-take-drop zloc))))
+    (let [zloc (zloc-at "(drop 2 xs)" [0])]
+      (is (= "take" (ops/apply-operator ops/swap-drop-take zloc))))
+    (let [zloc (zloc-at "(conj s x)" [0])]
+      (is (= "disj" (ops/apply-operator ops/swap-conj-disj zloc))))
+    (let [zloc (zloc-at "(disj s x)" [0])]
+      (is (= "conj" (ops/apply-operator ops/swap-disj-conj zloc))))
+    (let [zloc (zloc-at "(inc x)" [0])]
+      (is (= "dec" (ops/apply-operator ops/swap-inc-dec zloc))))
+    (let [zloc (zloc-at "(dec x)" [0])]
+      (is (= "inc" (ops/apply-operator ops/swap-dec-inc zloc))))))
+
+(deftest test-applicable-operators-first
+  (testing "Returns collection operators for first symbol"
+    (let [zloc (zloc-at "(first xs)" [0])
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      ;; first matches: swap-first-last, swap-first-rest
+      (is (contains? ids :swap-first-last))
+      (is (contains? ids :swap-first-rest)))))
+
+(deftest test-applicable-operators-inc
+  (testing "Returns swap-inc-dec for inc symbol"
+    (let [zloc (zloc-at "(inc x)" [0])
+          applicable (ops/applicable-operators zloc)]
+      (is (= 1 (count applicable)))
+      (is (= :swap-inc-dec (:id (first applicable)))))))
+
+(deftest test-applicable-operators-dec
+  (testing "Returns swap-dec-inc for dec symbol"
+    (let [zloc (zloc-at "(dec x)" [0])
+          applicable (ops/applicable-operators zloc)]
+      (is (= 1 (count applicable)))
+      (is (= :swap-dec-inc (:id (first applicable)))))))
+
+;; =============================================================================
+;; Nil-Handling Operator Tests
+;; =============================================================================
+
+(deftest test-swap-nil-some-matcher
+  (testing "Matches nil? symbol"
+    (let [zloc (zloc-at "(nil? x)" [0])]
+      (is ((:matcher ops/swap-nil-some) zloc))))
+
+  (testing "Does not match some? symbol"
+    (let [zloc (zloc-at "(some? x)" [0])]
+      (is (not ((:matcher ops/swap-nil-some) zloc))))))
+
+(deftest test-swap-some-nil-matcher
+  (testing "Matches some? symbol"
+    (let [zloc (zloc-at "(some? x)" [0])]
+      (is ((:matcher ops/swap-some-nil) zloc))))
+
+  (testing "Does not match nil? symbol"
+    (let [zloc (zloc-at "(nil? x)" [0])]
+      (is (not ((:matcher ops/swap-some-nil) zloc))))))
+
+(deftest test-swap-seq-empty-matcher
+  (testing "Matches seq symbol"
+    (let [zloc (zloc-at "(seq xs)" [0])]
+      (is ((:matcher ops/swap-seq-empty) zloc))))
+
+  (testing "Does not match empty? symbol"
+    (let [zloc (zloc-at "(empty? xs)" [0])]
+      (is (not ((:matcher ops/swap-seq-empty) zloc))))))
+
+(deftest test-swap-empty-seq-matcher
+  (testing "Matches empty? symbol"
+    (let [zloc (zloc-at "(empty? xs)" [0])]
+      (is ((:matcher ops/swap-empty-seq) zloc))))
+
+  (testing "Does not match seq symbol"
+    (let [zloc (zloc-at "(seq xs)" [0])]
+      (is (not ((:matcher ops/swap-empty-seq) zloc))))))
+
+(deftest test-apply-operator-nil-handling
+  (testing "Returns correct replacement for nil-handling operators"
+    (let [zloc (zloc-at "(nil? x)" [0])]
+      (is (= "some?" (ops/apply-operator ops/swap-nil-some zloc))))
+    (let [zloc (zloc-at "(some? x)" [0])]
+      (is (= "nil?" (ops/apply-operator ops/swap-some-nil zloc))))
+    (let [zloc (zloc-at "(seq xs)" [0])]
+      (is (= "empty?" (ops/apply-operator ops/swap-seq-empty zloc))))
+    (let [zloc (zloc-at "(empty? xs)" [0])]
+      (is (= "seq" (ops/apply-operator ops/swap-empty-seq zloc))))))
+
+(deftest test-applicable-operators-nil?
+  (testing "Returns swap-nil-some for nil? symbol"
+    (let [zloc (zloc-at "(nil? x)" [0])
+          applicable (ops/applicable-operators zloc)]
+      (is (= 1 (count applicable)))
+      (is (= :swap-nil-some (:id (first applicable)))))))
+
+(deftest test-applicable-operators-some?
+  (testing "Returns swap-some-nil for some? symbol"
+    (let [zloc (zloc-at "(some? x)" [0])
+          applicable (ops/applicable-operators zloc)]
+      (is (= 1 (count applicable)))
+      (is (= :swap-some-nil (:id (first applicable)))))))
+
+(deftest test-applicable-operators-seq
+  (testing "Returns swap-seq-empty for seq symbol"
+    (let [zloc (zloc-at "(seq xs)" [0])
+          applicable (ops/applicable-operators zloc)]
+      (is (= 1 (count applicable)))
+      (is (= :swap-seq-empty (:id (first applicable)))))))
+
+(deftest test-applicable-operators-empty?
+  (testing "Returns swap-empty-seq for empty? symbol"
+    (let [zloc (zloc-at "(empty? xs)" [0])
+          applicable (ops/applicable-operators zloc)]
+      (is (= 1 (count applicable)))
+      (is (= :swap-empty-seq (:id (first applicable)))))))
+
+;; =============================================================================
+;; Phase 3.5: HOF Operator Tests
+;; =============================================================================
+
+(deftest test-swap-filter-remove-matcher
+  (testing "Matches filter symbol"
+    (let [zloc (zloc-at "(filter odd? [1 2 3])" [0])]
+      (is ((:matcher ops/swap-filter-remove) zloc))))
+
+  (testing "Does not match remove symbol"
+    (let [zloc (zloc-at "(remove odd? [1 2 3])" [0])]
+      (is (not ((:matcher ops/swap-filter-remove) zloc))))))
+
+(deftest test-swap-remove-filter-matcher
+  (testing "Matches remove symbol"
+    (let [zloc (zloc-at "(remove odd? [1 2 3])" [0])]
+      (is ((:matcher ops/swap-remove-filter) zloc))))
+
+  (testing "Does not match filter symbol"
+    (let [zloc (zloc-at "(filter odd? [1 2 3])" [0])]
+      (is (not ((:matcher ops/swap-remove-filter) zloc))))))
+
+(deftest test-swap-keep-filter-matcher
+  (testing "Matches keep symbol"
+    (let [zloc (zloc-at "(keep identity [1 nil 2])" [0])]
+      (is ((:matcher ops/swap-keep-filter) zloc))))
+
+  (testing "Does not match filter symbol"
+    (let [zloc (zloc-at "(filter identity [1 nil 2])" [0])]
+      (is (not ((:matcher ops/swap-keep-filter) zloc))))))
+
+(deftest test-swap-filter-keep-matcher
+  (testing "Matches filter symbol"
+    (let [zloc (zloc-at "(filter some? [1 nil 2])" [0])]
+      (is ((:matcher ops/swap-filter-keep) zloc))))
+
+  (testing "Does not match keep symbol"
+    (let [zloc (zloc-at "(keep some? [1 nil 2])" [0])]
+      (is (not ((:matcher ops/swap-filter-keep) zloc))))))
+
+(deftest test-apply-operator-hof
+  (testing "Returns correct replacement for HOF operators"
+    (let [zloc (zloc-at "(filter odd? xs)" [0])]
+      (is (= "remove" (ops/apply-operator ops/swap-filter-remove zloc)))
+      (is (= "keep" (ops/apply-operator ops/swap-filter-keep zloc))))
+    (let [zloc (zloc-at "(remove odd? xs)" [0])]
+      (is (= "filter" (ops/apply-operator ops/swap-remove-filter zloc))))
+    (let [zloc (zloc-at "(keep identity xs)" [0])]
+      (is (= "filter" (ops/apply-operator ops/swap-keep-filter zloc))))))
+
+(deftest test-applicable-operators-remove
+  (testing "Returns swap-remove-filter for remove symbol"
+    (let [zloc (zloc-at "(remove odd? xs)" [0])
+          applicable (ops/applicable-operators zloc)]
+      (is (= 1 (count applicable)))
+      (is (= :swap-remove-filter (:id (first applicable)))))))
+
+(deftest test-applicable-operators-keep
+  (testing "Returns swap-keep-filter for keep symbol"
+    (let [zloc (zloc-at "(keep identity xs)" [0])
+          applicable (ops/applicable-operators zloc)]
+      (is (= 1 (count applicable)))
+      (is (= :swap-keep-filter (:id (first applicable)))))))
+
+;; =============================================================================
+;; Phase 3.6: Return Value Operator Tests
+;; =============================================================================
+
+(deftest test-replace-nil-matchers
+  (testing "All nil replacement operators match nil literal"
+    (let [zloc (zloc-at "(if x nil y)" [2])]
+      (is ((:matcher ops/replace-nil-false) zloc))
+      (is ((:matcher ops/replace-nil-zero) zloc))
+      (is ((:matcher ops/replace-nil-empty-vec) zloc))
+      (is ((:matcher ops/replace-nil-empty-map) zloc))
+      (is ((:matcher ops/replace-nil-empty-str) zloc))))
+
+  (testing "Does not match non-nil values"
+    (let [zloc (zloc-at "(if x 0 y)" [2])]
+      (is (not ((:matcher ops/replace-nil-false) zloc))))
+    (let [zloc (zloc-at "(if x false y)" [2])]
+      (is (not ((:matcher ops/replace-nil-zero) zloc))))))
+
+(deftest test-apply-operator-nil-replacements
+  (testing "Returns correct replacement for nil operators"
+    (let [zloc (zloc-at "nil" [])]
+      (is (= "false" (ops/apply-operator ops/replace-nil-false zloc)))
+      (is (= "0" (ops/apply-operator ops/replace-nil-zero zloc)))
+      (is (= "[]" (ops/apply-operator ops/replace-nil-empty-vec zloc)))
+      (is (= "{}" (ops/apply-operator ops/replace-nil-empty-map zloc)))
+      (is (= "" (ops/apply-operator ops/replace-nil-empty-str zloc))))))
+
+(deftest test-applicable-operators-nil
+  (testing "Returns all nil replacement operators for nil literal"
+    (let [zloc (zloc-at "nil" [])
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      (is (= 5 (count applicable)))
+      (is (contains? ids :replace-nil-false))
+      (is (contains? ids :replace-nil-zero))
+      (is (contains? ids :replace-nil-empty-vec))
+      (is (contains? ids :replace-nil-empty-map))
+      (is (contains? ids :replace-nil-empty-str)))))
+
+;; =============================================================================
+;; Phase 3.7: Constant Replacement Operator Tests
+;; =============================================================================
+
+(deftest test-replace-0-matchers
+  (testing "0 replacement operators match 0 literal"
+    (let [zloc (zloc-at "(+ 0 x)" [1])]
+      (is ((:matcher ops/replace-0-to-1) zloc))
+      (is ((:matcher ops/replace-0-to-neg1) zloc))))
+
+  (testing "Does not match other numbers"
+    (let [zloc (zloc-at "(+ 1 x)" [1])]
+      (is (not ((:matcher ops/replace-0-to-1) zloc))))))
+
+(deftest test-replace-1-matchers
+  (testing "1 replacement operators match 1 literal"
+    (let [zloc (zloc-at "(+ 1 x)" [1])]
+      (is ((:matcher ops/replace-1-to-0) zloc))
+      (is ((:matcher ops/replace-1-to-neg1) zloc))))
+
+  (testing "Does not match other numbers"
+    (let [zloc (zloc-at "(+ 0 x)" [1])]
+      (is (not ((:matcher ops/replace-1-to-0) zloc))))))
+
+(deftest test-replace-neg1-matchers
+  (testing "-1 replacement operators match -1 literal"
+    (let [zloc (zloc-at "(+ -1 x)" [1])]
+      (is ((:matcher ops/replace-neg1-to-0) zloc))
+      (is ((:matcher ops/replace-neg1-to-1) zloc))))
+
+  (testing "Does not match other numbers"
+    (let [zloc (zloc-at "(+ 1 x)" [1])]
+      (is (not ((:matcher ops/replace-neg1-to-0) zloc))))))
+
+(deftest test-replace-2-matchers
+  (testing "2 replacement operators match 2 literal"
+    (let [zloc (zloc-at "(+ 2 x)" [1])]
+      (is ((:matcher ops/replace-2-to-1) zloc))
+      (is ((:matcher ops/replace-2-to-0) zloc))))
+
+  (testing "Does not match other numbers"
+    (let [zloc (zloc-at "(+ 1 x)" [1])]
+      (is (not ((:matcher ops/replace-2-to-1) zloc))))))
+
+(deftest test-replace-10-matcher
+  (testing "10 replacement operator matches 10 literal"
+    (let [zloc (zloc-at "(+ 10 x)" [1])]
+      (is ((:matcher ops/replace-10-to-0) zloc))))
+
+  (testing "Does not match other numbers"
+    (let [zloc (zloc-at "(+ 1 x)" [1])]
+      (is (not ((:matcher ops/replace-10-to-0) zloc))))))
+
+(deftest test-replace-100-matcher
+  (testing "100 replacement operator matches 100 literal"
+    (let [zloc (zloc-at "(+ 100 x)" [1])]
+      (is ((:matcher ops/replace-100-to-0) zloc))))
+
+  (testing "Does not match other numbers"
+    (let [zloc (zloc-at "(+ 10 x)" [1])]
+      (is (not ((:matcher ops/replace-100-to-0) zloc))))))
+
+(deftest test-apply-operator-constant-replacements
+  (testing "Returns correct replacement for constant operators"
+    (let [zloc (zloc-at "0" [])]
+      (is (= "1" (ops/apply-operator ops/replace-0-to-1 zloc)))
+      (is (= "-1" (ops/apply-operator ops/replace-0-to-neg1 zloc))))
+    (let [zloc (zloc-at "1" [])]
+      (is (= "0" (ops/apply-operator ops/replace-1-to-0 zloc)))
+      (is (= "-1" (ops/apply-operator ops/replace-1-to-neg1 zloc))))
+    (let [zloc (zloc-at "-1" [])]
+      (is (= "0" (ops/apply-operator ops/replace-neg1-to-0 zloc)))
+      (is (= "1" (ops/apply-operator ops/replace-neg1-to-1 zloc))))
+    (let [zloc (zloc-at "2" [])]
+      (is (= "1" (ops/apply-operator ops/replace-2-to-1 zloc)))
+      (is (= "0" (ops/apply-operator ops/replace-2-to-0 zloc))))
+    (let [zloc (zloc-at "10" [])]
+      (is (= "0" (ops/apply-operator ops/replace-10-to-0 zloc))))
+    (let [zloc (zloc-at "100" [])]
+      (is (= "0" (ops/apply-operator ops/replace-100-to-0 zloc))))))
+
+(deftest test-applicable-operators-0
+  (testing "Returns 0 replacement operators for 0 literal"
+    (let [zloc (zloc-at "0" [])
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      (is (= 2 (count applicable)))
+      (is (contains? ids :replace-0-to-1))
+      (is (contains? ids :replace-0-to-neg1)))))
+
+(deftest test-applicable-operators-1
+  (testing "Returns 1 replacement operators for 1 literal"
+    (let [zloc (zloc-at "1" [])
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      (is (= 2 (count applicable)))
+      (is (contains? ids :replace-1-to-0))
+      (is (contains? ids :replace-1-to-neg1)))))
+
+(deftest test-applicable-operators-neg1
+  (testing "Returns -1 replacement operators for -1 literal"
+    (let [zloc (zloc-at "-1" [])
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      (is (= 2 (count applicable)))
+      (is (contains? ids :replace-neg1-to-0))
+      (is (contains? ids :replace-neg1-to-1)))))
+
+(deftest test-applicable-operators-2
+  (testing "Returns 2 replacement operators for 2 literal"
+    (let [zloc (zloc-at "2" [])
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      (is (= 2 (count applicable)))
+      (is (contains? ids :replace-2-to-1))
+      (is (contains? ids :replace-2-to-0)))))
+
+(deftest test-applicable-operators-10
+  (testing "Returns 10 replacement operator for 10 literal"
+    (let [zloc (zloc-at "10" [])
+          applicable (ops/applicable-operators zloc)]
+      (is (= 1 (count applicable)))
+      (is (= :replace-10-to-0 (:id (first applicable)))))))
+
+(deftest test-applicable-operators-100
+  (testing "Returns 100 replacement operator for 100 literal"
+    (let [zloc (zloc-at "100" [])
+          applicable (ops/applicable-operators zloc)]
+      (is (= 1 (count applicable)))
+      (is (= :replace-100-to-0 (:id (first applicable)))))))

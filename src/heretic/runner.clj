@@ -117,63 +117,100 @@
       {:status :completed :results result})))
 
 (defn run-tests
-  "Execute a set of tests with timeout handling.
+  "Execute a set of tests with independent timeout handling.
+
+   Per-test timeout: Each test has its own timeout. A timeout in one test
+   does NOT stop execution of remaining tests.
+
+   Budget timeout: Optional total time budget. If exceeded, remaining tests
+   are skipped but results from completed tests are returned.
 
    Arguments:
    - test-syms: Collection of test symbols to run
-   - timeout-ms: Per-test timeout in milliseconds
+   - opts: Either a number (timeout-ms for backwards compat) or options map:
+     - :timeout-ms - Per-test timeout in milliseconds (default 5000)
+     - :budget-ms - Total time budget for all tests (optional, nil = unlimited)
 
    Returns:
-   {:status :completed/:timeout/:error
-    :results {:pass n :fail n :error n}  ; aggregate when :completed
+   {:status :completed/:partial/:budget-exhausted/:no-tests
+    :results {:pass n :fail n :error n}  ; aggregate counts
     :tests-run #{test-syms...}
+    :timed-out #{test-syms...}  ; tests that timed out individually
+    :any-failed boolean  ; true if any test failed or errored
+    :any-timeout boolean  ; true if any test timed out
     :duration-ms n}"
-  [test-syms timeout-ms]
-  (let [start-time (System/currentTimeMillis)
-        test-syms-set (set test-syms)]
-    (if (empty? test-syms-set)
-      {:status :no-tests
-       :results {:pass 0 :fail 0 :error 0}
-       :tests-run #{}
-       :duration-ms 0}
-      (loop [remaining (seq test-syms-set)
-             aggregate {:pass 0 :fail 0 :error 0}
-             ran #{}]
-        (if-not remaining
-          ;; All tests completed
-          {:status :completed
-           :results aggregate
-           :tests-run ran
-           :duration-ms (- (System/currentTimeMillis) start-time)}
-          ;; Run next test
-          (let [test-sym (first remaining)
-                test-var (resolve-test-var test-sym)]
-            (if-not test-var
-              ;; Var not found, skip and continue
-              (recur (next remaining)
-                     aggregate
-                     ran)
-              ;; Run the test
-              (let [result (run-test-with-timeout test-var timeout-ms)]
-                (case (:status result)
-                  :timeout
-                  {:status :timeout
-                   :results aggregate
-                   :tests-run (conj ran test-sym)
-                   :failed-test test-sym
-                   :duration-ms (- (System/currentTimeMillis) start-time)}
+  ([test-syms timeout-ms]
+   (if (map? timeout-ms)
+     (run-tests test-syms timeout-ms :internal)
+     (run-tests test-syms {:timeout-ms timeout-ms} :internal)))
+  ([test-syms opts _]
+   (let [{:keys [timeout-ms budget-ms] :or {timeout-ms 5000}} opts
+         start-time (System/currentTimeMillis)
+         test-syms-set (set test-syms)]
+     (if (empty? test-syms-set)
+       {:status :no-tests
+        :results {:pass 0 :fail 0 :error 0}
+        :tests-run #{}
+        :timed-out #{}
+        :any-failed false
+        :any-timeout false
+        :duration-ms 0}
+       (loop [remaining (seq test-syms-set)
+              aggregate {:pass 0 :fail 0 :error 0}
+              ran #{}
+              timed-out #{}]
+         (let [elapsed (- (System/currentTimeMillis) start-time)]
+           (cond
+             ;; Budget exhausted - stop running more tests
+             (and budget-ms (>= elapsed budget-ms))
+             {:status :budget-exhausted
+              :results aggregate
+              :tests-run ran
+              :timed-out timed-out
+              :skipped (set remaining)
+              :any-failed (or (pos? (:fail aggregate 0)) (pos? (:error aggregate 0)))
+              :any-timeout (boolean (seq timed-out))
+              :duration-ms elapsed}
 
-                  :completed
-                  (recur (next remaining)
-                         (merge-with + aggregate (:results result))
-                         (conj ran test-sym))
+             ;; No more tests to run
+             (not remaining)
+             {:status (if (seq timed-out) :partial :completed)
+              :results aggregate
+              :tests-run ran
+              :timed-out timed-out
+              :any-failed (or (pos? (:fail aggregate 0)) (pos? (:error aggregate 0)))
+              :any-timeout (boolean (seq timed-out))
+              :duration-ms elapsed}
 
-                  ;; Default: error
-                  {:status :error
-                   :results aggregate
-                   :tests-run (conj ran test-sym)
-                   :exception (:exception result)
-                   :duration-ms (- (System/currentTimeMillis) start-time)})))))))))
+             :else
+             ;; Run next test
+             (let [test-sym (first remaining)
+                   test-var (resolve-test-var test-sym)]
+               (if-not test-var
+                 ;; Var not found, skip and continue
+                 (recur (next remaining) aggregate ran timed-out)
+                 ;; Run the test
+                 (let [result (run-test-with-timeout test-var timeout-ms)]
+                   (case (:status result)
+                     ;; Timeout: record it but continue with other tests
+                     :timeout
+                     (recur (next remaining)
+                            aggregate
+                            (conj ran test-sym)
+                            (conj timed-out test-sym))
+
+                     ;; Completed: aggregate results and continue
+                     :completed
+                     (recur (next remaining)
+                            (merge-with + aggregate (:results result))
+                            (conj ran test-sym)
+                            timed-out)
+
+                     ;; Error: record error and continue with other tests
+                     (recur (next remaining)
+                            (update aggregate :error inc)
+                            (conj ran test-sym)
+                            timed-out))))))))))))
 
 ;; =============================================================================
 ;; Mutation Evaluation
@@ -183,13 +220,13 @@
   "Determine mutation status from test run results.
 
    - :killed if any test failed or errored (mutation was detected)
-   - :survived if all tests passed (mutation escaped detection)"
+   - :survived if all tests passed (mutation escaped detection)
+
+   Uses the :any-failed field from run-tests for efficiency."
   [test-result]
-  (let [{:keys [fail error]} (:results test-result)]
-    (if (or (pos? (or fail 0))
-            (pos? (or error 0)))
-      :killed
-      :survived)))
+  (if (:any-failed test-result)
+    :killed
+    :survived))
 
 (defn evaluate-mutation
   "Full mutation evaluation lifecycle.
@@ -201,31 +238,46 @@
    Arguments:
    - index: Coverage index
    - mutation: Mutation record with :form-id, :coord, :operator, etc.
-   - config: Configuration map with :timeout-ms
+   - config: Configuration map with:
+     - :timeout-ms - Per-test timeout (default 5000)
+     - :budget-ms - Total time budget per mutation (optional)
 
    Returns MutationResult:
    {:mutation <mutation-record>
     :status :killed/:survived/:no-coverage/:timeout/:error
     :tests-run #{test-sym1 test-sym2}
+    :timed-out #{test-sym...}  ; tests that individually timed out
     :duration-ms 150}"
   [index mutation config]
   (let [timeout-ms (or (:timeout-ms config) 5000)
+        budget-ms (:budget-ms config)
         tests (tests-for-mutation index mutation)]
     (if (empty? tests)
       ;; No tests cover this mutation
       {:mutation mutation
        :status :no-coverage
        :tests-run #{}
+       :timed-out #{}
        :duration-ms 0}
-      ;; Run the tests
-      (let [test-result (run-tests tests timeout-ms)]
+      ;; Run the tests with timeout options
+      (let [test-result (run-tests tests {:timeout-ms timeout-ms
+                                          :budget-ms budget-ms})]
         {:mutation mutation
          :status (case (:status test-result)
-                   :timeout :timeout
-                   :error :error
-                   :no-tests :no-coverage
-                   :completed (determine-mutation-status test-result))
+                   ;; All tests completed - check if mutation was killed
+                   :completed (determine-mutation-status test-result)
+                   ;; Some tests timed out but we got results - check kills
+                   :partial (if (:any-failed test-result)
+                              :killed
+                              :timeout)
+                   ;; Budget exhausted - check if we have enough data
+                   :budget-exhausted (if (:any-failed test-result)
+                                       :killed
+                                       :timeout)
+                   ;; No tests to run
+                   :no-tests :no-coverage)
          :tests-run (:tests-run test-result)
+         :timed-out (:timed-out test-result #{})
          :duration-ms (:duration-ms test-result)}))))
 
 ;; =============================================================================
@@ -254,19 +306,22 @@
     :no-coverage n
     :timeout n
     :error n
+    :tests-timed-out n  ; total individual tests that timed out
     :mutation-score 0.75  ; killed / (killed + survived)
     :total-duration-ms n}"
   [results]
   (let [by-status (group-by :status results)
         killed (count (get by-status :killed []))
         survived (count (get by-status :survived []))
-        testable (+ killed survived)]
+        testable (+ killed survived)
+        tests-timed-out (reduce + 0 (map #(count (:timed-out % #{})) results))]
     {:total (count results)
      :killed killed
      :survived survived
      :no-coverage (count (get by-status :no-coverage []))
      :timeout (count (get by-status :timeout []))
      :error (count (get by-status :error []))
+     :tests-timed-out tests-timed-out
      :mutation-score (if (pos? testable)
                        (double (/ killed testable))
                        1.0)  ; No testable mutations = perfect score

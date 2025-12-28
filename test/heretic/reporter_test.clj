@@ -231,3 +231,84 @@
           survivors (reporter/survivors results)]
       (is (= 1 (count survivors)))
       (is (= 20 (get-in (first survivors) [:mutation :line]))))))
+
+;; =============================================================================
+;; HTML Report Generation Tests
+;; =============================================================================
+
+(deftest generate-html-report-creates-file-test
+  (testing "generate-html-report creates an HTML file"
+    (let [tmp-file (java.io.File/createTempFile "heretic-test" ".html")
+          path (.getPath tmp-file)]
+      (try
+        (reporter/generate-html-report mixed-results path)
+        (is (.exists tmp-file)
+            "HTML file should be created")
+        (is (pos? (.length tmp-file))
+            "HTML file should not be empty")
+        (finally
+          (.delete tmp-file))))))
+
+(deftest generate-html-report-contains-doctype-test
+  (testing "generated HTML contains proper DOCTYPE"
+    (let [tmp-file (java.io.File/createTempFile "heretic-test" ".html")
+          path (.getPath tmp-file)]
+      (try
+        (reporter/generate-html-report mixed-results path)
+        (let [content (slurp path)]
+          (is (.startsWith content "<!DOCTYPE html>")
+              "HTML should start with DOCTYPE"))
+        (finally
+          (.delete tmp-file))))))
+
+(deftest generate-html-report-contains-score-test
+  (testing "generated HTML contains mutation score"
+    (let [tmp-file (java.io.File/createTempFile "heretic-test" ".html")
+          path (.getPath tmp-file)]
+      (try
+        (reporter/generate-html-report mixed-results path)
+        (let [content (slurp path)]
+          (is (.contains content "60.0%")
+              "HTML should contain the mutation score (60.0%)"))
+        (finally
+          (.delete tmp-file))))))
+
+(deftest generate-html-report-contains-survivors-test
+  (testing "generated HTML contains surviving mutations section"
+    (let [tmp-file (java.io.File/createTempFile "heretic-test" ".html")
+          path (.getPath tmp-file)]
+      (try
+        (reporter/generate-html-report mixed-results path)
+        (let [content (slurp path)]
+          (is (.contains content "Surviving Mutations")
+              "HTML should contain survivors section"))
+        (finally
+          (.delete tmp-file))))))
+
+(deftest write-report-terminal-test
+  (testing "write-report! with :terminal format prints to stdout"
+    (let [output (with-out-str (reporter/write-report! mixed-results :terminal nil))]
+      (is (.contains output "Mutation Testing Results")
+          "Terminal output should contain results header"))))
+
+(deftest write-report-html-test
+  (testing "write-report! with :html format creates file"
+    (let [tmp-dir (java.io.File/createTempFile "heretic-report" "")
+          dir-path (.getPath tmp-dir)]
+      (.delete tmp-dir)  ; Remove file so we can create dir
+      (try
+        (let [result (reporter/write-report! mixed-results :html dir-path)]
+          (is (.endsWith result "index.html")
+              "Result should be path to index.html")
+          (is (.exists (java.io.File. result))
+              "HTML file should exist"))
+        (finally
+          ;; Clean up
+          (doseq [f (reverse (file-seq (java.io.File. dir-path)))]
+            (.delete f)))))))
+
+(deftest write-report-unknown-format-test
+  (testing "write-report! with unknown format throws"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Unknown report format"
+                          (reporter/write-report! mixed-results :unknown nil)))))
