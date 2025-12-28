@@ -78,23 +78,34 @@
 ;; Per-Test Execution
 ;; =============================================================================
 
+(defn- apply-each-fixtures
+  "Apply :each fixtures for a namespace around a function.
+   clojure.test/test-var doesn't apply fixtures - we need to do it manually."
+  [ns-obj f]
+  (let [each-fixtures (::t/each-fixtures (meta ns-obj))
+        fixture-fn (t/join-fixtures (or each-fixtures []))]
+    (fixture-fn f)))
+
 (defn run-test-with-coverage
   "Run a single test and capture its coverage.
+
+   Manually applies :each fixtures since clojure.test/test-var doesn't.
+   We call the var directly rather than using t/test-var to avoid
+   generating test reports (we only care about coverage, not results).
+   Exceptions are caught inside the fixture wrapper to continue collection.
 
    Returns map of {test-symbol -> {form-id -> #{coords}}}"
   [test-var]
   (tracer/reset-current-coverage!)
-  (try
-    ;; Run the test function directly (works regardless of test runner)
-    (test-var)
-    (catch Exception e
-      ;; Log but continue - we still want the coverage data
-      ;; Test failures are expected during mutation testing
-      (println "Test threw exception:" (.getMessage e)))
-    (catch AssertionError e
-      ;; Test assertion failures (clojure.test uses AssertionError)
-      ;; Log but continue - we still want the coverage data
-      (println "Test assertion failed:" (.getMessage e))))
+  (let [ns-obj (:ns (meta test-var))]
+    ;; Apply :each fixtures manually, with exception handling inside
+    (apply-each-fixtures ns-obj
+                         (fn []
+                           (try
+                             ;; Call the :test function directly, not the var wrapper
+                             ;; (deftest creates a var that internally calls t/test-var)
+                             ((:test (meta test-var)))
+                             (catch Throwable _e nil)))))
   ;; Return coverage for this test
   {(symbol test-var) (tracer/get-current-coverage)})
 

@@ -33,36 +33,24 @@
     (defn has-arg? [arg]
       (some (fn [a] (= a arg)) *command-line-args*))
 
-    (defn get-arg-value [arg]
-      (let [args *command-line-args*]
-        (loop [remaining args]
-          (when (seq remaining)
-            (if (= arg (first remaining))
-              (second remaining)
-              (recur (rest remaining)))))))
-
     (defn run-with-clojurestorm
-      "Run Clojure code with ClojureStorm on the classpath"
       [config code]
       (let [opts (clj-storm-opts config)
-            jvm-opts (str/join " " opts)]
-        (p/shell {:extra-env {"JVM_OPTS" jvm-opts}}
-                 "clj" "-M:collect" "-e" code))))
+            ;; Convert JVM opts to -J flags for clj
+            j-flags (mapv (fn [opt] (str "-J" opt)) opts)
+            cmd (concat ["clj"] j-flags ["-M:collect" "-e" code])]
+        (apply p/shell cmd))))
 
   heretic:collect
   {:doc "Collect test-to-code coverage mapping"
    :task
    (let [config (load-config)
          force? (has-arg? "--force")
-         ns-filter (get-arg-value "--namespaces")
          code (str "(require '[heretic.core :as heretic])"
                    "(heretic/collect! (heretic/load-config)"
                    (when force? " :force true")
-                   (when ns-filter
-                     (str " :namespaces ["
-                          (str/join " " (map #(str "'" %) (str/split ns-filter #",")))
-                          "]"))
-                   ")")]
+                   ")"
+                   "(System/exit 0)")]
      (run-with-clojurestorm config code))}
 
   heretic:status
@@ -111,10 +99,10 @@
                    "(let [survivors (heretic/survivors (heretic/load-config))]"
                    "  (if (seq survivors)"
                    "    (doseq [s survivors]"
-                   "      (println (format \"  %s:%d %s → %s\""
+                   "      (println (format \"  %s:%d %s -> %s\""
                    "                        (:file s) (:line s)"
                    "                        (:original s) (:replacement s))))"
-                   "    (println \"No surviving mutations.\")))"))]
+                   "    (println \"No surviving mutations.\")))")]
      (run-with-clojurestorm config code))}
 
   ;; Development tasks

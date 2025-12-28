@@ -432,3 +432,333 @@
         (let [vec-node (z/right meta-down)]
           (is (= :vector (z/tag vec-node)))
           (is (= [1 2 3] (z/sexpr vec-node))))))))
+
+;; =============================================================================
+;; Comprehensive Round-Trip Tests
+;; =============================================================================
+
+(deftest test-round-trip-all-coordinate-types
+  (testing "Round-trip validation for integer indices"
+    (let [zloc (z/of-string "(+ 1 2 3 4 5)")]
+      (doseq [i (range 6)]
+        (let [coord [i]
+              result (mapper/validate-round-trip zloc coord)]
+          (is (:valid result)
+              (str "Round-trip failed for integer index " i ": " result))))))
+
+  (testing "Round-trip validation for K-hash (map keys)"
+    (let [zloc (z/of-string "{:a 1 :b 2 :c 3}")
+          key-a (z/down zloc)
+          key-b (-> zloc z/down z/right z/right)
+          key-c (-> zloc z/down z/right z/right z/right z/right)
+          coord-a (mapper/zloc->coord key-a)
+          coord-b (mapper/zloc->coord key-b)
+          coord-c (mapper/zloc->coord key-c)]
+      (is (:valid (mapper/validate-round-trip zloc coord-a))
+          "Round-trip failed for K-hash key :a")
+      (is (:valid (mapper/validate-round-trip zloc coord-b))
+          "Round-trip failed for K-hash key :b")
+      (is (:valid (mapper/validate-round-trip zloc coord-c))
+          "Round-trip failed for K-hash key :c")))
+
+  (testing "Round-trip validation for V-hash (map values)"
+    (let [zloc (z/of-string "{:a 100 :b 200 :c 300}")
+          val-a (-> zloc z/down z/right)
+          val-b (-> zloc z/down z/right z/right z/right)
+          val-c (-> zloc z/down z/right z/right z/right z/right z/right)
+          coord-a (mapper/zloc->coord val-a)
+          coord-b (mapper/zloc->coord val-b)
+          coord-c (mapper/zloc->coord val-c)]
+      (is (:valid (mapper/validate-round-trip zloc coord-a))
+          "Round-trip failed for V-hash value 100")
+      (is (:valid (mapper/validate-round-trip zloc coord-b))
+          "Round-trip failed for V-hash value 200")
+      (is (:valid (mapper/validate-round-trip zloc coord-c))
+          "Round-trip failed for V-hash value 300"))))
+
+(deftest test-round-trip-edge-cases
+  (testing "Empty list round-trip"
+    (let [zloc (z/of-string "(do ())")]
+      ;; (do ()) - [1] is the empty list
+      (is (= () (z/sexpr (mapper/coord->zloc zloc [1]))))
+      (is (:valid (mapper/validate-round-trip zloc [0]))
+          "Round-trip failed for 'do'")
+      (is (:valid (mapper/validate-round-trip zloc [1]))
+          "Round-trip failed for empty list")))
+
+  (testing "Single-element list round-trip"
+    (let [zloc (z/of-string "(x)")]
+      (is (:valid (mapper/validate-round-trip zloc [0]))
+          "Round-trip failed for single element")))
+
+  (testing "Empty vector round-trip"
+    (let [zloc (z/of-string "(fn [] nil)")]
+      ;; [] is at [1]
+      (is (= [] (z/sexpr (mapper/coord->zloc zloc [1]))))
+      (is (:valid (mapper/validate-round-trip zloc [1]))
+          "Round-trip failed for empty vector")))
+
+  (testing "Empty map round-trip"
+    (let [zloc (z/of-string "(do {})")]
+      (is (= {} (z/sexpr (mapper/coord->zloc zloc [1]))))
+      (is (:valid (mapper/validate-round-trip zloc [1]))
+          "Round-trip failed for empty map")))
+
+  (testing "Empty set round-trip"
+    (let [zloc (z/of-string "(do #{})")]
+      (is (= #{} (z/sexpr (mapper/coord->zloc zloc [1]))))
+      (is (:valid (mapper/validate-round-trip zloc [1]))
+          "Round-trip failed for empty set")))
+
+  (testing "Deeply nested coordinates"
+    (let [zloc (z/of-string "(a (b (c (d (e (f (g x)))))))")]
+      ;; Navigate to x: [1 1 1 1 1 1 1]
+      (is (= 'x (z/sexpr (mapper/coord->zloc zloc [1 1 1 1 1 1 1]))))
+      (doseq [depth (range 1 8)]
+        (let [coord (vec (repeat depth 1))
+              result (mapper/validate-round-trip zloc coord)]
+          (is (:valid result)
+              (str "Round-trip failed at depth " depth ": " result)))))))
+
+(deftest test-round-trip-unordered-collections
+  (testing "Map with multiple keys - all elements"
+    (let [zloc (z/of-string "{:alpha 1 :beta 2 :gamma 3 :delta 4}")
+          all-elements (loop [el (z/down zloc)
+                              acc []]
+                         (if el
+                           (recur (z/right el) (conj acc el))
+                           acc))]
+      (doseq [el all-elements]
+        (let [coord (mapper/zloc->coord el)
+              result (mapper/validate-round-trip zloc coord)]
+          (is (:valid result)
+              (str "Round-trip failed for map element: " (z/sexpr el) " coord: " coord))))))
+
+  (testing "Set with multiple elements"
+    (let [zloc (z/of-string "#{:one :two :three :four :five}")
+          all-elements (loop [el (z/down zloc)
+                              acc []]
+                         (if el
+                           (recur (z/right el) (conj acc el))
+                           acc))]
+      (doseq [el all-elements]
+        (let [coord (mapper/zloc->coord el)
+              result (mapper/validate-round-trip zloc coord)]
+          (is (:valid result)
+              (str "Round-trip failed for set element: " (z/sexpr el)))))))
+
+  (testing "Nested maps - all levels"
+    (let [zloc (z/of-string "{:outer {:middle {:inner 42}}}")
+          ;; Navigate to each level
+          outer-key (z/down zloc)
+          outer-val (z/right outer-key)
+          middle-key (z/down outer-val)
+          middle-val (z/right middle-key)
+          inner-key (z/down middle-val)
+          inner-val (z/right inner-key)]
+      (doseq [[name el] [["outer-key" outer-key]
+                         ["outer-val" outer-val]
+                         ["middle-key" middle-key]
+                         ["middle-val" middle-val]
+                         ["inner-key" inner-key]
+                         ["inner-val" inner-val]]]
+        (let [coord (mapper/zloc->coord el)
+              result (mapper/validate-round-trip zloc coord)]
+          (is (:valid result)
+              (str "Round-trip failed for " name))))))
+
+  (testing "Map with complex keys and values"
+    (let [zloc (z/of-string "{[1 2] {:a 1} {:x 1} [3 4]}")
+          key-1 (z/down zloc)           ; [1 2]
+          val-1 (z/right key-1)         ; {:a 1}
+          key-2 (z/right val-1)         ; {:x 1}
+          val-2 (z/right key-2)]        ; [3 4]
+      (doseq [[name el] [["vector key" key-1]
+                         ["map value" val-1]
+                         ["map key" key-2]
+                         ["vector value" val-2]]]
+        (let [coord (mapper/zloc->coord el)
+              result (mapper/validate-round-trip zloc coord)]
+          (is (:valid result)
+              (str "Round-trip failed for " name)))))))
+
+(deftest test-malformed-coordinate-handling
+  (testing "Empty coordinate string navigates to root"
+    (let [zloc (z/of-string "(+ 1 2)")]
+      ;; Empty coord should return the root zloc itself
+      (is (= '(+ 1 2) (z/sexpr (mapper/coord->zloc zloc ""))))))
+
+  (testing "Coordinate with invalid hash format returns nil"
+    (let [zloc (z/of-string "{:a 1}")]
+      ;; Invalid hash that doesn't exist in the map
+      (is (nil? (mapper/coord->zloc zloc ["K99999999"])))))
+
+  (testing "Coordinate with wrong hash type returns nil"
+    (let [zloc (z/of-string "{:a 1}")
+          key-zloc (z/down zloc)
+          key-hash (mapper/zloc->coord key-zloc)
+          ;; Try to find the key hash as a value hash
+          wrong-hash (str/replace (first key-hash) #"^K" "V")]
+      ;; The value hash for the key won't match
+      (is (nil? (mapper/coord->zloc zloc [wrong-hash])))))
+
+  (testing "Parse coord handles edge cases"
+    (is (= [] (mapper/parse-coord "")))
+    (is (= [0] (mapper/parse-coord "0")))
+    (is (= [0 0 0] (mapper/parse-coord "0,0,0")))))
+
+(deftest test-coordinate-out-of-bounds
+  (testing "Index beyond list length returns nil"
+    (let [zloc (z/of-string "(a b c)")]
+      (is (nil? (mapper/coord->zloc zloc [3])))
+      (is (nil? (mapper/coord->zloc zloc [10])))
+      (is (nil? (mapper/coord->zloc zloc [100])))))
+
+  (testing "Negative index behavior"
+    (let [zloc (z/of-string "(a b c)")]
+      ;; Negative indices should fail gracefully
+      (is (nil? (mapper/coord->zloc zloc [-1])))))
+
+  (testing "Nested out-of-bounds"
+    (let [zloc (z/of-string "(a (b c))")]
+      ;; [1] exists, [1 0] exists, [1 2] does not
+      (is (= 'b (z/sexpr (mapper/coord->zloc zloc [1 0]))))
+      (is (= 'c (z/sexpr (mapper/coord->zloc zloc [1 1]))))
+      (is (nil? (mapper/coord->zloc zloc [1 2])))
+      (is (nil? (mapper/coord->zloc zloc [1 0 0])))))
+
+  (testing "Navigation into non-collection returns nil"
+    (let [zloc (z/of-string "(+ 1 2)")]
+      ;; 1 is an atom, can't navigate into it
+      (is (nil? (mapper/coord->zloc zloc [1 0])))))
+
+  (testing "Hash coordinate on sequential collection returns nil"
+    (let [zloc (z/of-string "[1 2 3]")]
+      ;; K-hash on vector should fail
+      (is (nil? (mapper/coord->zloc zloc ["K12345"]))))))
+
+(deftest test-round-trip-complex-expressions
+  (testing "let binding with destructuring"
+    (let [zloc (z/of-string "(let [{:keys [a b]} m] (+ a b))")]
+      ;; (let [{:keys [a b]} m] (+ a b))
+      ;;   0         1              2
+      ;; bindings vector at [1]
+      ;; destructuring map at [1 0]
+      ;; m at [1 1]
+      ;; body at [2]
+      (doseq [coord [[0] [1] [1 0] [1 1] [2] [2 0] [2 1] [2 2]]]
+        (let [result (mapper/validate-round-trip zloc coord)]
+          (is (:valid result)
+              (str "Round-trip failed for let binding coord " coord ": " result))))))
+
+  (testing "defn with docstring and multiple arities"
+    (let [zloc (z/of-string "(defn foo \"doc\" ([x] x) ([x y] (+ x y)))")]
+      ;; (defn foo "doc" ([x] x) ([x y] (+ x y)))
+      ;;   0    1    2      3          4
+      (doseq [coord [[0] [1] [2] [3] [3 0] [3 0 0] [3 1] [4] [4 0] [4 1]]]
+        (let [result (mapper/validate-round-trip zloc coord)]
+          (is (:valid result)
+              (str "Round-trip failed for defn coord " coord ": " result))))))
+
+  (testing "Threading macro with mixed collections"
+    (let [zloc (z/of-string "(-> {:a 1} (assoc :b 2) (update :a inc))")]
+      ;; (-> {:a 1} (assoc :b 2) (update :a inc))
+      ;;  0    1         2             3
+      (is (:valid (mapper/validate-round-trip zloc [0])))
+      (is (:valid (mapper/validate-round-trip zloc [1])))
+      (is (:valid (mapper/validate-round-trip zloc [2])))
+      (is (:valid (mapper/validate-round-trip zloc [3])))
+      ;; Navigate into the map {:a 1}
+      (let [map-zloc (mapper/coord->zloc zloc [1])
+            key-a (z/down map-zloc)
+            val-1 (z/right key-a)
+            coord-key (mapper/zloc->coord key-a)
+            coord-val (mapper/zloc->coord val-1)]
+        (is (:valid (mapper/validate-round-trip zloc coord-key))
+            "Round-trip failed for map key in threading")
+        (is (:valid (mapper/validate-round-trip zloc coord-val))
+            "Round-trip failed for map value in threading"))))
+
+  (testing "cond with map predicates"
+    (let [zloc (z/of-string "(cond (contains? m :a) (:a m) :else nil)")]
+      ;; (cond (contains? m :a) (:a m) :else nil)
+      ;;   0         1            2      3    4
+      (doseq [coord [[0] [1] [1 0] [1 1] [1 2] [2] [2 0] [2 1] [3] [4]]]
+        (let [result (mapper/validate-round-trip zloc coord)]
+          (is (:valid result)
+              (str "Round-trip failed for cond coord " coord ": " result))))))
+
+  (testing "for comprehension with :let and :when"
+    (let [zloc (z/of-string "(for [x xs :let [y (inc x)] :when (pos? y)] y)")]
+      ;; Complex binding form
+      (doseq [coord [[0] [1] [2]]]
+        (let [result (mapper/validate-round-trip zloc coord)]
+          (is (:valid result)
+              (str "Round-trip failed for 'for' coord " coord ": " result))))))
+
+  (testing "Protocol implementation with methods"
+    (let [zloc (z/of-string "(reify IFoo (foo [this x] (+ x 1)) (bar [this] nil))")]
+      (doseq [coord [[0] [1] [2] [2 0] [2 1] [2 2] [3] [3 0] [3 1] [3 2]]]
+        (let [result (mapper/validate-round-trip zloc coord)]
+          (is (:valid result)
+              (str "Round-trip failed for reify coord " coord ": " result))))))
+
+  (testing "Namespace-qualified keywords in maps"
+    (let [zloc (z/of-string "{::a 1 :foo/bar 2 :baz/qux 3}")
+          all-elements (loop [el (z/down zloc)
+                              acc []]
+                         (if el
+                           (recur (z/right el) (conj acc el))
+                           acc))]
+      (doseq [el all-elements]
+        (let [coord (mapper/zloc->coord el)
+              result (mapper/validate-round-trip zloc coord)]
+          (is (:valid result)
+              (str "Round-trip failed for ns-qualified element: " (z/string el)))))))
+
+  (testing "Mixed ordered and unordered at multiple levels"
+    (let [zloc (z/of-string "(defn process [{:keys [id name]} opts]
+                               (when-let [{:keys [validate?]} opts]
+                                 {:id id :name name :valid validate?}))")]
+      ;; Test key coordinates
+      (doseq [coord [[0] [1] [2] [3]]]
+        (let [result (mapper/validate-round-trip zloc coord)]
+          (is (:valid result)
+              (str "Round-trip failed for mixed coord " coord ": " result)))))))
+
+(deftest test-round-trip-stringify-parse-symmetry
+  (testing "stringify and parse are inverses for integer coords"
+    (let [coords [[0] [1 2 3] [0 0 0] [10 20 30]]]
+      (doseq [coord coords]
+        (is (= coord (mapper/parse-coord (mapper/stringify-coord coord)))
+            (str "stringify/parse symmetry failed for " coord)))))
+
+  (testing "stringify and parse are inverses for hash coords"
+    (let [coords [["K12345"] ["V67890"] [0 "K111" 2] ["K1" "V2" "K3"]]]
+      (doseq [coord coords]
+        (is (= coord (mapper/parse-coord (mapper/stringify-coord coord)))
+            (str "stringify/parse symmetry failed for " coord)))))
+
+  (testing "Actual hash coordinates round-trip through stringify/parse"
+    (let [zloc (z/of-string "{:a {:b {:c 1}}}")
+          ;; Collect actual coordinates from the structure
+          key-a (z/down zloc)
+          val-a (z/right key-a)
+          key-b (z/down val-a)
+          val-b (z/right key-b)
+          key-c (z/down val-b)
+          val-c (z/right key-c)]
+      (doseq [[name el] [["key-a" key-a]
+                         ["val-a" val-a]
+                         ["key-b" key-b]
+                         ["val-b" val-b]
+                         ["key-c" key-c]
+                         ["val-c" val-c]]]
+        (let [coord (mapper/zloc->coord el)
+              stringified (mapper/stringify-coord coord)
+              parsed (mapper/parse-coord stringified)]
+          (is (= coord parsed)
+              (str "stringify/parse failed for " name ": " coord " -> " stringified " -> " parsed))
+          ;; Also verify full round-trip works with stringified coord
+          (is (= (z/sexpr el) (z/sexpr (mapper/coord->zloc zloc stringified)))
+              (str "Navigation with stringified coord failed for " name)))))))

@@ -259,3 +259,164 @@
           summary (runner/summarize-results results)]
       ;; 3 killed / (3 killed + 1 survived) = 0.75
       (is (= 0.75 (:mutation-score summary))))))
+
+;; =============================================================================
+;; Timeout Edge Cases Tests
+;; =============================================================================
+
+;; Additional mock test symbols
+(def fast-test-sym 'heretic.fixtures.mock-tests/fast-test)
+(def medium-slow-test-sym 'heretic.fixtures.mock-tests/medium-slow-test)
+(def slow-failing-test-sym 'heretic.fixtures.mock-tests/slow-failing-test)
+(def slow-erroring-test-sym 'heretic.fixtures.mock-tests/slow-erroring-test)
+(def boundary-test-150ms-sym 'heretic.fixtures.mock-tests/boundary-test-150ms)
+(def cancellation-tracking-test-sym 'heretic.fixtures.mock-tests/cancellation-tracking-test)
+
+(deftest run-tests-timeout-boundary-test
+  (testing "Test that takes exactly timeout duration"
+    (testing "completes when timeout is slightly longer than test duration"
+      ;; boundary-test-150ms takes 150ms, give it 250ms timeout
+      (let [result (runner/run-tests [boundary-test-150ms-sym] 250)]
+        (is (= :completed (:status result)))
+        (is (= #{boundary-test-150ms-sym} (:tests-run result)))
+        (is (pos? (get-in result [:results :pass])))))
+
+    (testing "times out when timeout is shorter than test duration"
+      ;; boundary-test-150ms takes 150ms, give it 50ms timeout
+      (let [result (runner/run-tests [boundary-test-150ms-sym] 50)]
+        (is (= :timeout (:status result)))
+        (is (= boundary-test-150ms-sym (:failed-test result)))))))
+
+(deftest run-tests-mixed-timeout-test
+  (testing "Multiple tests where some complete and some timeout"
+    (testing "fast tests complete before slow test times out"
+      ;; Run fast tests first, then a slow one that will timeout
+      ;; Order may vary since tests are in a set, but the slow one should timeout
+      (let [result (runner/run-tests [fast-test-sym slow-test-sym] 100)]
+        ;; One of the tests should timeout
+        (is (= :timeout (:status result)))
+        ;; The slow test should be the one that failed
+        (is (= slow-test-sym (:failed-test result)))))
+
+    (testing "medium slow tests complete, very slow test times out"
+      ;; medium-slow-test takes 200ms, slow-test takes 5000ms
+      ;; With 300ms timeout, medium-slow should complete, slow should timeout
+      (let [result (runner/run-tests [medium-slow-test-sym slow-test-sym] 300)]
+        (is (= :timeout (:status result)))
+        (is (= slow-test-sym (:failed-test result)))
+        ;; medium-slow-test should have completed
+        (is (contains? (:tests-run result) medium-slow-test-sym))))))
+
+(deftest run-tests-timeout-with-passing-tests-test
+  (testing "Partial results accumulated before timeout"
+    ;; Run multiple passing tests followed by a slow one
+    (let [result (runner/run-tests [passing-test-sym fast-test-sym slow-test-sym] 100)]
+      (is (= :timeout (:status result)))
+      ;; Should have accumulated some passing results before timeout
+      ;; The exact count depends on execution order, but results should exist
+      (is (map? (:results result)))
+      (is (contains? (:results result) :pass)))))
+
+(deftest run-tests-timeout-with-failing-tests-test
+  (testing "Timeout with mix of passing and failing tests before slow test"
+    ;; If a failing test runs before the slow test, results should contain failures
+    (let [result (runner/run-tests [failing-test-sym slow-test-sym] 100)]
+      (is (= :timeout (:status result)))
+      ;; Results should have been accumulated
+      (is (map? (:results result))))))
+
+(deftest run-tests-timeout-with-erroring-tests-test
+  (testing "Timeout with erroring tests in the batch"
+    (let [result (runner/run-tests [erroring-test-sym slow-test-sym] 100)]
+      (is (= :timeout (:status result)))
+      (is (map? (:results result))))))
+
+(deftest run-tests-future-cancellation-test
+  (testing "Timed out futures are properly cancelled"
+    ;; Run a slow test with short timeout
+    (let [start-time (System/currentTimeMillis)
+          result (runner/run-tests [slow-test-sym] 100)
+          elapsed (- (System/currentTimeMillis) start-time)]
+      (is (= :timeout (:status result)))
+      ;; The test should return quickly (not wait 5 seconds for the slow test)
+      ;; Allow some buffer for test overhead
+      (is (< elapsed 1000) "Future should be cancelled promptly after timeout"))))
+
+(deftest run-tests-slow-failing-test-timeout-test
+  (testing "Slow failing test that times out before failure"
+    ;; slow-failing-test takes 500ms then fails
+    ;; With 100ms timeout, it should timeout before the failure
+    (let [result (runner/run-tests [slow-failing-test-sym] 100)]
+      (is (= :timeout (:status result)))
+      (is (= slow-failing-test-sym (:failed-test result))))))
+
+(deftest run-tests-slow-erroring-test-timeout-test
+  (testing "Slow erroring test that times out before error"
+    ;; slow-erroring-test takes 500ms then throws
+    ;; With 100ms timeout, it should timeout before the error
+    (let [result (runner/run-tests [slow-erroring-test-sym] 100)]
+      (is (= :timeout (:status result)))
+      (is (= slow-erroring-test-sym (:failed-test result))))))
+
+(deftest run-tests-all-tests-complete-within-timeout-test
+  (testing "All tests complete when timeout is sufficient"
+    (let [result (runner/run-tests [fast-test-sym medium-slow-test-sym passing-test-sym] 500)]
+      (is (= :completed (:status result)))
+      (is (= 3 (count (:tests-run result))))
+      ;; All should pass
+      (is (= 3 (get-in result [:results :pass]))))))
+
+(deftest run-tests-timeout-duration-tracking-test
+  (testing "Duration is tracked correctly on timeout"
+    (let [result (runner/run-tests [slow-test-sym] 100)]
+      (is (= :timeout (:status result)))
+      (is (number? (:duration-ms result)))
+      ;; Duration should be approximately the timeout value (with some overhead)
+      (is (>= (:duration-ms result) 100))
+      (is (< (:duration-ms result) 500)))))
+
+(deftest evaluate-mutations-partial-timeout-test
+  (testing "Batch evaluation with some mutations timing out"
+    (let [index {:coord-to-tests {[100 [0]] #{passing-test-sym}
+                                   [101 [0]] #{slow-test-sym}
+                                   [102 [0]] #{failing-test-sym}}
+                 :form-to-tests {100 #{passing-test-sym}
+                                 101 #{slow-test-sym}
+                                 102 #{failing-test-sym}}}
+          mutations [{:form-id 100 :coord [0]}   ; will pass (survived)
+                     {:form-id 101 :coord [0]}   ; will timeout
+                     {:form-id 102 :coord [0]}]  ; will fail (killed)
+          results (runner/evaluate-mutations index mutations {:timeout-ms 100})]
+      (is (= 3 (count results)))
+      (is (= :survived (:status (nth results 0))))
+      (is (= :timeout (:status (nth results 1))))
+      (is (= :killed (:status (nth results 2)))))))
+
+(deftest evaluate-mutations-all-timeout-test
+  (testing "Batch evaluation where all mutations timeout"
+    (let [index {:coord-to-tests {[100 [0]] #{slow-test-sym}
+                                   [101 [0]] #{slow-test-sym}}
+                 :form-to-tests {100 #{slow-test-sym}
+                                 101 #{slow-test-sym}}}
+          mutations [{:form-id 100 :coord [0]}
+                     {:form-id 101 :coord [0]}]
+          results (runner/evaluate-mutations index mutations {:timeout-ms 50})]
+      (is (= 2 (count results)))
+      (is (every? #(= :timeout (:status %)) results)))))
+
+(deftest summarize-results-many-timeouts-test
+  (testing "Summary correctly counts multiple timeouts"
+    (let [results [{:status :killed :duration-ms 50}
+                   {:status :timeout :duration-ms 100}
+                   {:status :timeout :duration-ms 100}
+                   {:status :timeout :duration-ms 100}
+                   {:status :survived :duration-ms 50}]
+          summary (runner/summarize-results results)]
+      (is (= 5 (:total summary)))
+      (is (= 1 (:killed summary)))
+      (is (= 1 (:survived summary)))
+      (is (= 3 (:timeout summary)))
+      ;; Mutation score only considers killed/survived
+      ;; 1 killed / (1 killed + 1 survived) = 0.5
+      (is (= 0.5 (:mutation-score summary)))
+      (is (= 400 (:total-duration-ms summary))))))

@@ -85,10 +85,11 @@
 
 (defn- atomic-spit!
   "Write content atomically using temp file + rename.
-   Prevents corruption if process crashes mid-write."
+   Prevents corruption if process crashes mid-write.
+   Creates temp file in the same directory as target to avoid cross-device issues."
   [path content]
   (let [file (io/file path)
-        parent (.getParentFile file)]
+        parent (or (.getParentFile file) (io/file "."))]
     (io/make-parents path)
     (let [temp-file (File/createTempFile "heretic" ".tmp" parent)]
       (try

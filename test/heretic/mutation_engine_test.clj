@@ -66,7 +66,8 @@
       (is (= 1 (count sites)))
       (let [site (first sites)]
         (is (= file (:file site)))
-        (is (= :swap-plus-minus (get-in site [:operator :id])))
+        ;; parser returns :operator as keyword directly
+        (is (= :swap-plus-minus (:operator site)))
         (is (= "+" (:original site)))
         (is (number? (:line site)))
         (is (number? (:column site)))))))
@@ -78,7 +79,7 @@
           sites (engine/find-mutation-sites file)]
       ;; Should find: +, *, -
       (is (= 3 (count sites)))
-      (let [op-ids (set (map #(get-in % [:operator :id]) sites))]
+      (let [op-ids (set (map :operator sites))]
         (is (contains? op-ids :swap-plus-minus))
         (is (contains? op-ids :swap-mult-div))
         (is (contains? op-ids :swap-minus-plus))))))
@@ -89,7 +90,7 @@
           file (create-test-file! "flag.clj" content)
           sites (engine/find-mutation-sites file)]
       (is (= 1 (count sites)))
-      (is (= :swap-true-false (get-in (first sites) [:operator :id]))))))
+      (is (= :swap-true-false (:operator (first sites)))))))
 
 (deftest test-find-mutation-sites-logical
   (testing "Finds logical operator mutation sites"
@@ -97,7 +98,7 @@
           file (create-test-file! "logic.clj" content)
           sites (engine/find-mutation-sites file)]
       (is (= 1 (count sites)))
-      (is (= :swap-and-or (get-in (first sites) [:operator :id]))))))
+      (is (= :swap-and-or (:operator (first sites)))))))
 
 (deftest test-find-mutation-sites-nested
   (testing "Finds mutation sites in nested forms"
@@ -109,7 +110,7 @@
           sites (engine/find-mutation-sites file)]
       ;; Should find: true, and, or, false
       (is (= 4 (count sites)))
-      (let [op-ids (set (map #(get-in % [:operator :id]) sites))]
+      (let [op-ids (set (map :operator sites))]
         (is (contains? op-ids :swap-true-false))
         (is (contains? op-ids :swap-and-or))
         (is (contains? op-ids :swap-or-and))
@@ -131,9 +132,8 @@
     (let [original "(defn add [a b] (+ a b))"
           file (create-test-file! "apply.clj" original)
           sites (engine/find-mutation-sites file)
-          mutation (-> (first sites)
-                       (assoc :id (java.util.UUID/randomUUID))
-                       (update :operator :id))
+          ;; parser already returns :operator as keyword, just add :id
+          mutation (assoc (first sites) :id (java.util.UUID/randomUUID))
           result (engine/apply-mutation! mutation)]
       ;; Check backup is stored
       (is (= original (:backup result)))
@@ -148,9 +148,7 @@
     (let [original "(ns my.ns)\n\n(defn add [a b]\n  (+ a b))"
           file (create-test-file! "structure.clj" original)
           sites (engine/find-mutation-sites file)
-          mutation (-> (first sites)
-                       (assoc :id (java.util.UUID/randomUUID))
-                       (update :operator :id))
+          mutation (assoc (first sites) :id (java.util.UUID/randomUUID))
           _ (engine/apply-mutation! mutation)
           modified (slurp file)]
       ;; Should still have ns declaration and newlines
@@ -177,9 +175,7 @@
     (let [original "(defn add [a b] (+ a b))"
           file (create-test-file! "revert.clj" original)
           sites (engine/find-mutation-sites file)
-          mutation (-> (first sites)
-                       (assoc :id (java.util.UUID/randomUUID))
-                       (update :operator :id))
+          mutation (assoc (first sites) :id (java.util.UUID/randomUUID))
           applied (engine/apply-mutation! mutation)]
       ;; Verify mutation was applied
       (is (not= original (slurp file)))
@@ -193,9 +189,7 @@
     (let [original "(+ 1 2)"
           file (create-test-file! "backup.clj" original)
           sites (engine/find-mutation-sites file)
-          mutation (-> (first sites)
-                       (assoc :id (java.util.UUID/randomUUID))
-                       (update :operator :id))
+          mutation (assoc (first sites) :id (java.util.UUID/randomUUID))
           applied (engine/apply-mutation! mutation)
           reverted (engine/revert-mutation! applied)]
       (is (contains? applied :backup))
@@ -219,9 +213,7 @@
     (let [original "(+ 1 2)"
           file (create-test-file! "with.clj" original)
           sites (engine/find-mutation-sites file)
-          mutation (-> (first sites)
-                       (assoc :id (java.util.UUID/randomUUID))
-                       (update :operator :id))
+          mutation (assoc (first sites) :id (java.util.UUID/randomUUID))
           result (engine/with-mutation [m mutation]
                    ;; File should be mutated here
                    (let [content (slurp file)]
@@ -236,9 +228,7 @@
     (let [original "(+ 1 2)"
           file (create-test-file! "error.clj" original)
           sites (engine/find-mutation-sites file)
-          mutation (-> (first sites)
-                       (assoc :id (java.util.UUID/randomUUID))
-                       (update :operator :id))]
+          mutation (assoc (first sites) :id (java.util.UUID/randomUUID))]
       (is (thrown? RuntimeException
                    (engine/with-mutation [m mutation]
                      ;; File should be mutated

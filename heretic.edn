@@ -26,7 +26,9 @@
  :instrument-prefixes ["heretic"]
 
  ;; Namespace prefixes to skip (e.g., test code, dev utilities)
- :instrument-skip-prefixes ["heretic.dev"]
+ ;; When self-testing heretic, we must skip the tracer and collector namespaces
+ ;; to avoid infinite recursion (tracer callbacks can't be instrumented)
+ :instrument-skip-prefixes ["heretic.dev" "heretic.tracer" "heretic.collector" "heretic.coverage-map" "heretic.core"]
 
  ;; =============================================================================
  ;; Storage

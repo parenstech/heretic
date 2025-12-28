@@ -22,103 +22,49 @@
   (:require [clojure.java.io :as io]
             [heretic.coord-mapper :as coord]
             [heretic.operators :as ops]
+            [heretic.parser :as parser]
             [rewrite-clj.node :as n]
             [rewrite-clj.zip :as z])
   (:import [java.util UUID]))
 
 ;; =============================================================================
-;; Zipper Traversal
-;; =============================================================================
-
-(defn- zloc-seq
-  "Return a lazy sequence of all zlocs in depth-first order.
-   Traverses the entire tree structure, stopping at the end marker."
-  [zloc]
-  (take-while (complement z/end?) (iterate z/next zloc)))
-
-;; =============================================================================
 ;; Mutation Site Discovery
 ;; =============================================================================
 
-(defn- zloc->position
-  "Extract line and column from a zipper location.
-   Returns {:line N :column N} or nil if position unavailable."
-  [zloc]
-  (let [pos (z/position zloc)]
-    (when pos
-      {:line (first pos)
-       :column (second pos)})))
+;; Delegates to heretic.parser for the core site-finding logic.
+;; This ensures quoted forms are properly skipped and we have one source of truth.
 
-(defn- find-form-bounds
-  "Find the start and end positions of top-level forms in a file.
-   Returns a sorted map of {start-line -> {:form-zloc, :form-id, :end-line}}.
+(defn find-sites-in-source
+  "Find all mutation sites in a source string. Pure function.
 
-   form-id is computed from the node's string representation hash,
-   similar to ClojureStorm's FormRegistry."
-  [zloc]
-  (loop [z zloc
-         forms (sorted-map)]
-    (if (z/end? z)
-      forms
-      (let [pos (zloc->position z)]
-        (if (and pos (z/up z) (= :forms (z/tag (z/up z))))
-          ;; This is a top-level form
-          (let [start-line (:line pos)
-                ;; Compute a form-id by hashing the form string
-                form-id (hash (z/string z))
-                end-line (+ start-line (count (filter #(= % \newline) (z/string z))))]
-            (recur (z/next z)
-                   (assoc forms start-line {:form-zloc z
-                                            :form-id form-id
-                                            :end-line end-line})))
-          (recur (z/next z) forms))))))
+   Delegates to heretic.parser/find-mutation-sites which properly:
+   - Handles quoted forms (skips '(...) and `(...))
+   - Computes form-id from top-level forms
+   - Generates coordinates for navigation
 
-(defn- form-id-for-zloc
-  "Compute a form-id for a zloc based on its top-level form.
-   Navigates up to find the root form and computes its hash."
-  [zloc]
-  (loop [z zloc]
-    (let [parent (z/up z)]
-      (cond
-        ;; At root form (parent is :forms container)
-        (and parent (= :forms (z/tag parent)))
-        (hash (z/string z))
+   Arguments:
+   - source: Clojure source code as a string
+   - file-path: Optional file path for the :file field in results
 
-        ;; Has parent, keep going up
-        parent
-        (recur parent)
-
-        ;; No parent, use current
-        :else
-        (hash (z/string z))))))
+   Returns sequence of mutation site maps, or nil if source cannot be parsed."
+  ([source]
+   (find-sites-in-source source nil))
+  ([source file-path]
+   (when-let [zloc (parser/parse-string source)]
+     (parser/find-mutation-sites zloc {:file file-path}))))
 
 (defn find-mutation-sites
   "Find all mutation sites in a source file.
 
-   Returns sequence of maps:
-   {:file     \"path/to/file.clj\"
-    :form-id  12345678
-    :coord    \"3,0\"
-    :operator {:id :swap-plus-minus ...}
-    :original \"+\"
-    :line     42
-    :column   10}"
+   Thin I/O wrapper around find-sites-in-source.
+   Returns empty sequence if file cannot be parsed."
   [file-path]
-  (let [content (slurp file-path)
-        zloc (z/of-string content {:track-position? true})]
-    (for [z (zloc-seq zloc)
-          :when (not (z/end? z))
-          op (ops/applicable-operators z)
-          :let [pos (zloc->position z)
-                c (coord/zloc->coord z)]
-          :when (and pos c)]
-      {:file file-path
-       :form-id (form-id-for-zloc z)
-       :coord (coord/stringify-coord c)
-       :operator op
-       :original (z/string z)
-       :line (:line pos)
-       :column (:column pos)})))
+  (try
+    (let [content (slurp file-path)]
+      (or (find-sites-in-source content file-path) []))
+    (catch Exception e
+      (println "Warning: Could not parse" file-path "-" (.getMessage e))
+      [])))
 
 ;; =============================================================================
 ;; Mutation Generation
@@ -131,7 +77,7 @@
    - source-paths: Sequence of source directories to scan
    - operators: (optional) Sequence of operators to use (defaults to all)
 
-   Returns sequence of mutation records (without :backup, :id)."
+   Returns sequence of mutation records with :id added."
   ([source-paths]
    (generate-mutations source-paths ops/all-operators))
   ([source-paths operators]
@@ -144,10 +90,9 @@
                       (.endsWith (.getName file) ".clj"))
            :let [file-path (.getPath file)]
            site (find-mutation-sites file-path)
-           :when (contains? operator-ids (get-in site [:operator :id]))]
-       (-> site
-           (assoc :id (UUID/randomUUID))
-           (update :operator :id))))))
+           ;; parser already returns :operator as keyword
+           :when (contains? operator-ids (:operator site))]
+       (assoc site :id (UUID/randomUUID))))))
 
 ;; =============================================================================
 ;; Mutation Application
@@ -285,10 +230,9 @@
   ([file-path operators]
    (let [operator-ids (set (map :id operators))]
      (for [site (find-mutation-sites file-path)
-           :when (contains? operator-ids (get-in site [:operator :id]))]
-       (-> site
-           (assoc :id (UUID/randomUUID))
-           (update :operator :id))))))
+           ;; parser already returns :operator as keyword
+           :when (contains? operator-ids (:operator site))]
+       (assoc site :id (UUID/randomUUID))))))
 
 (defn count-mutations
   "Count total mutations that would be generated for source paths.

@@ -4,33 +4,24 @@
    This namespace contains both test and non-test vars
    to verify discovery logic.
 
-   Note: These are NOT run by Kaocha - they are test fixtures
-   for the collector tests. The tests are defined with ^:test
-   metadata but without using deftest to avoid Kaocha picking them up.")
+   Note: These use deftest properly so clojure.test/test-var can call them."
+  (:require [clojure.test :refer [deftest is]]))
 
 ;; =============================================================================
-;; Test vars (have :test metadata) - NOT discovered by Kaocha
-;; These simulate what deftest creates, but without Kaocha integration
+;; Test vars (have :test metadata)
 ;; =============================================================================
 
-(defn ^{:test true} sample-passing-test
-  "A simple passing test."
-  []
-  (assert (= 1 1)))
+(deftest sample-passing-test
+  (is (= 1 1)))
 
-(defn ^{:test true} sample-another-test
-  "Another passing test."
-  []
-  (assert (= 2 2)))
+(deftest sample-another-test
+  (is (= 2 2)))
 
-(defn ^{:test true} sample-failing-test
-  "A test that always fails."
-  []
+(deftest sample-failing-test
+  ;; Use assert instead of is to avoid Kaocha reporting during coverage collection
   (assert (= 1 2) "Expected failure"))
 
-(defn ^{:test true} sample-throwing-test
-  "A test that throws an exception."
-  []
+(deftest sample-throwing-test
   (throw (ex-info "Intentional exception" {:reason :testing})))
 
 ;; =============================================================================

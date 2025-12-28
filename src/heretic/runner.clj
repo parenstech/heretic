@@ -19,30 +19,47 @@
    - :timeout - Test execution timed out
    - :error - Exception during test execution"
   (:require [clojure.test :as t]
-            [heretic.coverage-map :as coverage]))
+            [heretic.coverage-map :as coverage]
+            [heretic.form-bridge :as bridge]))
 
 ;; =============================================================================
 ;; Test Lookup
 ;; =============================================================================
 
+;; Form-ID resolution is delegated to heretic.form-bridge
+
 (defn tests-for-mutation
   "Look up which tests cover the given mutation.
 
    Uses the coverage index to find tests that exercise the mutation site.
-   Queries by form-id and optionally by specific coordinate.
+   First tries to resolve file+line to ClojureStorm's form-id via form-location-index,
+   then falls back to the mutation's form-id for backwards compatibility.
+
+   Note: When using form-location-index (ClojureStorm coverage), we use form-level
+   matching only because coord formats differ between rewrite-clj (used for mutations)
+   and ClojureStorm (used for coverage). For mock indexes in tests, coord matching works.
 
    Arguments:
    - index: Coverage index from heretic.coverage-map/load-index
-   - mutation: Mutation record with :form-id and optionally :coord
+   - mutation: Mutation record with :form-id and optionally :file, :line, :coord
 
    Returns set of test symbols that cover this mutation."
   [index mutation]
-  (let [{:keys [form-id coord]} mutation]
-    (if coord
-      ;; Query by specific coordinate
-      (coverage/tests-for-location index form-id coord)
-      ;; Query by form-id only (all tests hitting any coord in form)
-      (coverage/tests-for-location index form-id))))
+  (let [{:keys [coord]} mutation
+        form-location-index (:form-location-index index)
+        form-id (bridge/resolve-form-id form-location-index mutation)]
+    (if-not form-id
+      ;; No form-id found, return empty set (no coverage)
+      #{}
+      ;; If using form-location-index (real ClojureStorm coverage), use form-level lookup
+      ;; because coord formats differ. For mock indexes (tests), use coord matching.
+      (if (bridge/use-form-level-matching? index)
+        ;; Form-level lookup - get all tests that hit any coord in the form
+        (coverage/tests-for-location index form-id)
+        ;; Coord-specific lookup for backwards compatibility with mock indexes
+        (if coord
+          (coverage/tests-for-location index form-id coord)
+          (coverage/tests-for-location index form-id))))))
 
 ;; =============================================================================
 ;; Test Execution

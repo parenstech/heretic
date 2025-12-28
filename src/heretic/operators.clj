@@ -101,20 +101,116 @@
    :description "Replace false with true"
    :matcher (value-matcher false)})
 
+;; Comparison operators
+(def swap-lt-gt
+  "Replace < with >"
+  {:id :swap-lt-gt
+   :original '<
+   :replacement '>
+   :description "Replace < with >"
+   :matcher (symbol-matcher '<)})
+
+(def swap-gt-lt
+  "Replace > with <"
+  {:id :swap-gt-lt
+   :original '>
+   :replacement '<
+   :description "Replace > with <"
+   :matcher (symbol-matcher '>)})
+
+(def swap-lte-gte
+  "Replace <= with >="
+  {:id :swap-lte-gte
+   :original '<=
+   :replacement '>=
+   :description "Replace <= with >="
+   :matcher (symbol-matcher '<=)})
+
+(def swap-gte-lte
+  "Replace >= with <="
+  {:id :swap-gte-lte
+   :original '>=
+   :replacement '<=
+   :description "Replace >= with <="
+   :matcher (symbol-matcher '>=)})
+
+(def swap-eq-neq
+  "Replace = with not="
+  {:id :swap-eq-neq
+   :original '=
+   :replacement 'not=
+   :description "Replace = with not="
+   :matcher (symbol-matcher '=)})
+
+(def swap-neq-eq
+  "Replace not= with ="
+  {:id :swap-neq-eq
+   :original 'not=
+   :replacement '=
+   :description "Replace not= with ="
+   :matcher (symbol-matcher 'not=)})
+
+;; Boundary mutations (off-by-one errors)
+(def swap-lt-lte
+  "Replace < with <= (boundary mutation)"
+  {:id :swap-lt-lte
+   :original '<
+   :replacement '<=
+   :description "Replace < with <="
+   :matcher (symbol-matcher '<)})
+
+(def swap-gt-gte
+  "Replace > with >= (boundary mutation)"
+  {:id :swap-gt-gte
+   :original '>
+   :replacement '>=
+   :description "Replace > with >="
+   :matcher (symbol-matcher '>)})
+
+(def swap-lte-lt
+  "Replace <= with < (boundary mutation)"
+  {:id :swap-lte-lt
+   :original '<=
+   :replacement '<
+   :description "Replace <= with <"
+   :matcher (symbol-matcher '<=)})
+
+(def swap-gte-gt
+  "Replace >= with > (boundary mutation)"
+  {:id :swap-gte-gt
+   :original '>=
+   :replacement '>
+   :description "Replace >= with >"
+   :matcher (symbol-matcher '>=)})
+
 ;; =============================================================================
 ;; Operator Registry
 ;; =============================================================================
 
 (def all-operators
   "All available mutation operators."
-  [swap-plus-minus
+  [;; Arithmetic
+   swap-plus-minus
    swap-minus-plus
    swap-mult-div
    swap-div-mult
+   ;; Boolean
    swap-and-or
    swap-or-and
    swap-true-false
-   swap-false-true])
+   swap-false-true
+   ;; Comparison
+   swap-lt-gt
+   swap-gt-lt
+   swap-lte-gte
+   swap-gte-lte
+   swap-eq-neq
+   swap-neq-eq
+   ;; Boundary
+   swap-lt-lte
+   swap-gt-gte
+   swap-lte-lt
+   swap-gte-gt])
 
 (def operators-by-id
   "Map from operator id to operator definition."
