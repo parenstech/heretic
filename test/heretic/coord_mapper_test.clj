@@ -214,16 +214,221 @@
         (is (:valid (mapper/validate-round-trip zloc coord-3)))))))
 
 ;; =============================================================================
-;; Edge Cases
+;; Edge Cases: Reader Macros
 ;; =============================================================================
 
-(deftest ^:pending test-reader-macros
-  (testing "Handles reader macros"
-    ;; TODO: Test @, ', #(), etc.
-    ;; These expand before instrumentation
-    (is (= :pending :pending) "Pending: Phase 2 feature")))
+(deftest test-deref-reader-macro
+  (testing "Navigates deref @ reader macro"
+    (let [zloc (z/of-string "(do @foo)")]
+      ;; (do @foo)
+      ;;  0   1
+      (is (= 'do (z/sexpr (mapper/coord->zloc zloc [0]))))
+      (is (= '(deref foo) (z/sexpr (mapper/coord->zloc zloc [1]))))
 
-(deftest ^:pending test-metadata
-  (testing "Handles metadata on forms"
-    ;; TODO: Verify coordinate navigation with metadata
-    (is (= :pending :pending) "Pending: Phase 2 feature")))
+      (testing "round-trip for deref"
+        (is (:valid (mapper/validate-round-trip zloc [0])))
+        (is (:valid (mapper/validate-round-trip zloc [1]))))))
+
+  (testing "Navigates into deref expression"
+    (let [zloc (z/of-string "(do @(atom nil))")]
+      ;; @(atom nil) -> [1]
+      ;; (atom nil) -> [1 0]
+      ;; atom -> [1 0 0]
+      ;; nil -> [1 0 1]
+      (is (= 'atom (z/sexpr (mapper/coord->zloc zloc [1 0 0]))))
+      (is (= nil (z/sexpr (mapper/coord->zloc zloc [1 0 1]))))
+
+      (testing "round-trip into deref"
+        (is (:valid (mapper/validate-round-trip zloc [1])))
+        (is (:valid (mapper/validate-round-trip zloc [1 0])))
+        (is (:valid (mapper/validate-round-trip zloc [1 0 0])))
+        (is (:valid (mapper/validate-round-trip zloc [1 0 1])))))))
+
+(deftest test-quote-reader-macro
+  (testing "Navigates quote ' reader macro"
+    (let [zloc (z/of-string "'(a b c)")]
+      ;; Root is :quote, child is the list
+      (is (= :quote (z/tag zloc)))
+      (is (= '(a b c) (z/sexpr (mapper/coord->zloc zloc [0]))))
+
+      (testing "navigate into quoted list"
+        (is (= 'a (z/sexpr (mapper/coord->zloc zloc [0 0]))))
+        (is (= 'b (z/sexpr (mapper/coord->zloc zloc [0 1]))))
+        (is (= 'c (z/sexpr (mapper/coord->zloc zloc [0 2])))))
+
+      (testing "round-trip for quoted forms"
+        (is (:valid (mapper/validate-round-trip zloc [0])))
+        (is (:valid (mapper/validate-round-trip zloc [0 0])))
+        (is (:valid (mapper/validate-round-trip zloc [0 1])))
+        (is (:valid (mapper/validate-round-trip zloc [0 2])))))))
+
+(deftest test-anonymous-fn-reader-macro
+  (testing "Navigates anonymous fn #() reader macro"
+    (let [zloc (z/of-string "(map #(+ % 1) xs)")]
+      ;; (map #(+ % 1) xs)
+      ;;   0      1     2
+      (is (= 'map (z/sexpr (mapper/coord->zloc zloc [0]))))
+      (is (= 'xs (z/sexpr (mapper/coord->zloc zloc [2]))))
+
+      (testing "navigate into anonymous fn body"
+        ;; #(+ % 1) -> [1]
+        ;; + -> [1 0]
+        ;; % -> [1 1]
+        ;; 1 -> [1 2]
+        (is (= "#(+ % 1)" (z/string (mapper/coord->zloc zloc [1]))))
+        (is (= '+ (z/sexpr (mapper/coord->zloc zloc [1 0]))))
+        (is (= 1 (z/sexpr (mapper/coord->zloc zloc [1 2])))))
+
+      (testing "round-trip for anonymous fn"
+        (is (:valid (mapper/validate-round-trip zloc [0])))
+        (is (:valid (mapper/validate-round-trip zloc [1])))
+        (is (:valid (mapper/validate-round-trip zloc [1 0])))
+        (is (:valid (mapper/validate-round-trip zloc [1 1])))
+        (is (:valid (mapper/validate-round-trip zloc [1 2])))
+        (is (:valid (mapper/validate-round-trip zloc [2])))))))
+
+(deftest test-syntax-quote-reader-macro
+  (testing "Navigates syntax quote ` reader macro"
+    (let [zloc (z/of-string "`(foo ~bar)")]
+      (is (= :syntax-quote (z/tag zloc)))
+
+      (testing "navigate into syntax-quoted list"
+        ;; The inner list is at [0]
+        (is (= "(foo ~bar)" (z/string (mapper/coord->zloc zloc [0]))))
+        ;; foo is at [0 0]
+        (is (= 'foo (z/sexpr (mapper/coord->zloc zloc [0 0]))))
+        ;; ~bar is at [0 1] (unquote node)
+        (is (= :unquote (z/tag (mapper/coord->zloc zloc [0 1])))))
+
+      (testing "round-trip for syntax-quoted forms"
+        (is (:valid (mapper/validate-round-trip zloc [0])))
+        (is (:valid (mapper/validate-round-trip zloc [0 0])))
+        (is (:valid (mapper/validate-round-trip zloc [0 1])))))))
+
+(deftest test-unquote-reader-macro
+  (testing "Navigates unquote ~ reader macro"
+    (let [zloc (z/of-string "~foo")]
+      (is (= :unquote (z/tag zloc)))
+      (is (= 'foo (z/sexpr (mapper/coord->zloc zloc [0]))))
+
+      (testing "round-trip for unquote"
+        (is (:valid (mapper/validate-round-trip zloc [0]))))))
+
+  (testing "Navigates unquote-splicing ~@ reader macro"
+    (let [zloc (z/of-string "~@foo")]
+      (is (= :unquote-splicing (z/tag zloc)))
+      (is (= 'foo (z/sexpr (mapper/coord->zloc zloc [0]))))
+
+      (testing "round-trip for unquote-splicing"
+        (is (:valid (mapper/validate-round-trip zloc [0])))))))
+
+(deftest test-var-quote-reader-macro
+  (testing "Navigates var quote #' reader macro"
+    (let [zloc (z/of-string "(var foo)")]
+      ;; (var foo) is the expanded form
+      (is (= 'var (z/sexpr (mapper/coord->zloc zloc [0]))))
+      (is (= 'foo (z/sexpr (mapper/coord->zloc zloc [1]))))
+
+      (testing "round-trip for var quote"
+        (is (:valid (mapper/validate-round-trip zloc [0])))
+        (is (:valid (mapper/validate-round-trip zloc [1])))))))
+
+(deftest test-regex-reader-macro
+  (testing "Navigates regex #\"\" reader macro"
+    (let [zloc (z/of-string "(re-find #\"foo\" s)")]
+      ;; (re-find #"foo" s)
+      ;;    0       1    2
+      (is (= 're-find (z/sexpr (mapper/coord->zloc zloc [0]))))
+      (is (= :regex (z/tag (mapper/coord->zloc zloc [1]))))
+      (is (= 's (z/sexpr (mapper/coord->zloc zloc [2]))))
+
+      (testing "round-trip for regex"
+        (is (:valid (mapper/validate-round-trip zloc [0])))
+        (is (:valid (mapper/validate-round-trip zloc [1])))
+        (is (:valid (mapper/validate-round-trip zloc [2])))))))
+
+;; =============================================================================
+;; Edge Cases: Metadata
+;; =============================================================================
+
+(deftest test-keyword-metadata
+  (testing "Navigates forms with keyword metadata"
+    (let [zloc (z/of-string "(defn ^:private foo [] nil)")]
+      ;; (defn ^:private foo [] nil)
+      ;;   0       1        2   3
+      ;; Note: ^:private foo is a single :meta node at position 1
+      (is (= 'defn (z/sexpr (mapper/coord->zloc zloc [0]))))
+      ;; The meta node contains the symbol foo
+      (is (= :meta (z/tag (mapper/coord->zloc zloc [1]))))
+      (is (= 'foo (z/sexpr (mapper/coord->zloc zloc [1]))))
+      (is (= [] (z/sexpr (mapper/coord->zloc zloc [2]))))
+      (is (= nil (z/sexpr (mapper/coord->zloc zloc [3]))))
+
+      (testing "round-trip for metadata forms"
+        (is (:valid (mapper/validate-round-trip zloc [0])))
+        (is (:valid (mapper/validate-round-trip zloc [1])))
+        (is (:valid (mapper/validate-round-trip zloc [2])))
+        (is (:valid (mapper/validate-round-trip zloc [3])))))))
+
+(deftest test-map-metadata
+  (testing "Navigates forms with map metadata"
+    (let [zloc (z/of-string "(defn ^{:doc \"test\"} foo [] nil)")]
+      ;; (defn ^{:doc "test"} foo [] nil)
+      ;;   0          1         2   3
+      (is (= 'defn (z/sexpr (mapper/coord->zloc zloc [0]))))
+      (is (= :meta (z/tag (mapper/coord->zloc zloc [1]))))
+      (is (= 'foo (z/sexpr (mapper/coord->zloc zloc [1]))))
+      (is (= [] (z/sexpr (mapper/coord->zloc zloc [2]))))
+
+      (testing "round-trip for map metadata"
+        (is (:valid (mapper/validate-round-trip zloc [0])))
+        (is (:valid (mapper/validate-round-trip zloc [1])))
+        (is (:valid (mapper/validate-round-trip zloc [2])))))))
+
+(deftest test-type-hint-metadata
+  (testing "Navigates forms with type hint metadata"
+    (let [zloc (z/of-string "(defn foo [^String x] (.length x))")]
+      ;; (defn foo [^String x] (.length x))
+      ;;   0    1       2           3
+      (is (= 'defn (z/sexpr (mapper/coord->zloc zloc [0]))))
+      (is (= 'foo (z/sexpr (mapper/coord->zloc zloc [1]))))
+      ;; The vector is at [2]
+      (is (= :vector (z/tag (mapper/coord->zloc zloc [2]))))
+      ;; Inside the vector, ^String x is a meta node at [2 0]
+      (is (= :meta (z/tag (mapper/coord->zloc zloc [2 0]))))
+      (is (= 'x (z/sexpr (mapper/coord->zloc zloc [2 0]))))
+
+      (testing "round-trip for type hints"
+        (is (:valid (mapper/validate-round-trip zloc [0])))
+        (is (:valid (mapper/validate-round-trip zloc [1])))
+        (is (:valid (mapper/validate-round-trip zloc [2])))
+        (is (:valid (mapper/validate-round-trip zloc [2 0])))
+        (is (:valid (mapper/validate-round-trip zloc [3])))))))
+
+(deftest test-multiple-metadata
+  (testing "Navigates forms with multiple metadata"
+    (let [zloc (z/of-string "[^:foo ^:bar x]")]
+      ;; [^:foo ^:bar x]
+      ;;       0
+      ;; The whole ^:foo ^:bar x is a nested meta node
+      (is (= :meta (z/tag (mapper/coord->zloc zloc [0]))))
+      (is (= 'x (z/sexpr (mapper/coord->zloc zloc [0]))))
+
+      (testing "round-trip for multiple metadata"
+        (is (:valid (mapper/validate-round-trip zloc [0])))))))
+
+(deftest test-metadata-on-collections
+  (testing "Navigates metadata on collections"
+    (let [zloc (z/of-string "^:const [1 2 3]")]
+      (is (= :meta (z/tag zloc)))
+      ;; The value [1 2 3] is accessible via sexpr
+      (is (= [1 2 3] (z/sexpr zloc)))
+
+      ;; Navigate into the meta node's children
+      ;; [0] is the metadata keyword :const
+      ;; [1] is the vector [1 2 3]
+      (let [meta-down (z/down zloc)]
+        (is (= :token (z/tag meta-down)))  ; :const
+        (let [vec-node (z/right meta-down)]
+          (is (= :vector (z/tag vec-node)))
+          (is (= [1 2 3] (z/sexpr vec-node))))))))
