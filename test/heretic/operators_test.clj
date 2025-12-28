@@ -224,11 +224,11 @@
 
 (deftest test-all-operators-count
   (testing "all-operators contains expected count"
-    (is (= 8 (count ops/all-operators)))))
+    (is (= 18 (count ops/all-operators)))))
 
 (deftest test-operators-by-id
   (testing "operators-by-id contains all operators"
-    (is (= 8 (count ops/operators-by-id))))
+    (is (= 18 (count ops/operators-by-id))))
 
   (testing "Can look up operators by id"
     (is (= ops/swap-plus-minus (get ops/operators-by-id :swap-plus-minus)))
