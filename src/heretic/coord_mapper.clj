@@ -190,19 +190,36 @@
           (str "K" h)
           (str "V" h))))))
 
+(defn- root-form?
+  "Check if this zloc is the root form (direct child of :forms node).
+   The :forms node is the implicit container created by z/of-string."
+  [zloc]
+  (when-let [parent (z/up zloc)]
+    (= :forms (z/tag parent))))
+
 (defn zloc->coord
   "Get ClojureStorm coordinate for a zipper position.
 
    Returns a vector like [3 2 1] or [3 \"K-12345\" 1].
-   Returns nil if at the root."
+   Returns nil if at the root form (the top-level form from z/of-string)."
   [zloc]
   (loop [z zloc
          coord []]
-    (if-let [parent (z/up z)]
+    (cond
+      ;; At root form (direct child of :forms) - stop here
+      (root-form? z)
+      (when (seq coord)
+        (vec coord))
+
+      ;; Has parent - add index and continue up
+      (z/up z)
       (let [part (if (is-unordered-collection? z)
                    (compute-hash-coord z)
                    (child-index z))]
-        (recur parent (cons part coord)))
+        (recur (z/up z) (cons part coord)))
+
+      ;; No parent at all (shouldn't happen with z/of-string)
+      :else
       (when (seq coord)
         (vec coord)))))
 

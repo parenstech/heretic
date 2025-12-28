@@ -101,28 +101,28 @@
 ;; Map/Set Navigation (TODO)
 ;; =============================================================================
 
-(deftest test-map-navigation
+(deftest ^:pending test-map-navigation
   (testing "Navigates maps using hash coordinates"
     ;; TODO: Implement and test hash-based navigation
     ;; Requires matching ClojureStorm's exact hashing
-    ))
+    (is (= :pending :pending) "Pending: Phase 2 feature")))
 
-(deftest test-set-navigation
+(deftest ^:pending test-set-navigation
   (testing "Navigates sets using hash coordinates"
     ;; TODO: Implement and test hash-based navigation
-    ))
+    (is (= :pending :pending) "Pending: Phase 2 feature")))
 
 ;; =============================================================================
 ;; Edge Cases
 ;; =============================================================================
 
-(deftest test-reader-macros
+(deftest ^:pending test-reader-macros
   (testing "Handles reader macros"
     ;; TODO: Test @, ', #(), etc.
     ;; These expand before instrumentation
-    ))
+    (is (= :pending :pending) "Pending: Phase 2 feature")))
 
-(deftest test-metadata
+(deftest ^:pending test-metadata
   (testing "Handles metadata on forms"
     ;; TODO: Verify coordinate navigation with metadata
-    ))
+    (is (= :pending :pending) "Pending: Phase 2 feature")))

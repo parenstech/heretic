@@ -12,9 +12,14 @@
   {:extra-paths ["dev" "test"]
    :extra-deps {nrepl/nrepl {:mvn/version "1.3.0"}}}
 
+  ;; Tests require ClojureStorm since heretic depends on it
   :test
   {:extra-paths ["test"]
-   :extra-deps {lambdaisland/kaocha {:mvn/version "1.91.1392"}}
+   :classpath-overrides {org.clojure/clojure nil}
+   :extra-deps {lambdaisland/kaocha {:mvn/version "1.91.1392"}
+                com.github.flow-storm/clojure {:mvn/version "1.12.0-1"}
+                com.github.flow-storm/flow-storm-dbg {:mvn/version "4.1.1"}}
+   :jvm-opts ["-Dclojure.storm.instrumentEnable=false"]  ;; Disable during tests
    :main-opts ["-m" "kaocha.runner"]}
 
   ;; ClojureStorm for instrumentation-based coverage collection
