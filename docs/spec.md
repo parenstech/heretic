@@ -75,13 +75,15 @@ Coverage data is split across multiple files for incremental updates:
 
 ```clojure
 {;; Form registry (from ClojureStorm FormRegistry/getAllForms)
+ ;; Note: emitted-coords are extracted from form metadata (:clojure.storm/emitted-coords)
+ ;; and converted from java.util.HashSet to Clojure set
  :forms
  {12345 {:form/ns "my.app.core"
          :form/form (defn foo [x] (+ x 1))
-         :form/emitted-coords #{"3" "3,1" "3,2"}}
+         :form/emitted-coords #{"" "3" "3,1" "3,2"}}  ;; "" is root/fn-return coord
   12346 {:form/ns "my.app.core"
          :form/form (defn bar [a b] (* a b))
-         :form/emitted-coords #{"3" "3,1" "3,2"}}
+         :form/emitted-coords #{"" "3" "3,1" "3,2"}}
   ...}
 
  ;; Global metadata
@@ -112,12 +114,10 @@ Coverage data is split across multiple files for incremental updates:
 #### 1. Coverage Tracer
 
 Receives callbacks from ClojureStorm and records coverage. ClojureStorm callbacks
-receive coordinates as **vectors** (e.g., `[3 2 1]`), which are then stringified
-for storage (e.g., `"3,2,1"`).
+receive coordinates as **strings** (e.g., `"3,2,1"`), so no conversion is needed.
 
 ```clojure
 (ns heretic.tracer
-  (:require [clojure.string :as str])
   (:import [clojure.storm Emitter Tracer FormRegistry]))
 
 ;; Current coverage accumulator (reset between tests)
@@ -125,23 +125,15 @@ for storage (e.g., `"3,2,1"`).
   "Atom of {form-id #{coords}} for the currently running test"
   (atom {}))
 
-(defn- stringify-coord
-  "Convert coordinate vector to string.
-   ClojureStorm passes coords as vectors: [3 2 1] -> \"3,2,1\"
-   Hash-based coords for maps/sets arrive as strings: \"K-12345\""
-  [coord]
-  (if (string? coord)
-    coord
-    (str/join "," coord)))
-
 (defn- record-hit!
   "Record a coverage hit for the current test.
-   Called by ClojureStorm for each expression evaluation."
+   Called by ClojureStorm for each expression evaluation.
+   Coordinates are already strings (e.g., \"3,2,1\" or \"\" for root)."
   [form-id coord]
   (swap! current-coverage
          update form-id
          (fnil conj #{})
-         (stringify-coord coord)))
+         coord))
 
 (defn init!
   "Initialize ClojureStorm instrumentation with Heretic's callbacks"
@@ -230,9 +222,18 @@ Process raw coverage into per-namespace files and rebuild indexes.
 
 (defn get-form-registry
   "Get all forms from ClojureStorm's FormRegistry.
-   Returns {form-id -> {:form/ns, :form/form, :form/emitted-coords}}"
+   Returns {form-id -> {:form/ns, :form/form, :form/emitted-coords}}
+
+   Note: FormRegistry/getAllForms returns a vector of maps.
+   emitted-coords must be extracted from form metadata and converted
+   from java.util.HashSet to Clojure set."
   []
-  (into {} (FormRegistry/getAllForms)))
+  (into {}
+        (for [entry (FormRegistry/getAllForms)]
+          [(:form/id entry)
+           (assoc entry
+                  :form/emitted-coords
+                  (-> entry :form/form meta :clojure.storm/emitted-coords set))])))
 
 (defn- extract-source-deps
   "Given coverage data, determine which source files were touched.
@@ -649,38 +650,40 @@ Bidirectional mapping between ClojureStorm coordinates and rewrite-clj zippers.
 
 (defn- find-by-hash
   "Find element in unordered collection by its hash.
-   Hash format: K-<hash> for keys/set-elements, V-<hash> for values"
+   Hash format: K<hash> for keys/set-elements, V<hash> for values (no dash)"
   [zloc hash-str]
-  (let [[prefix hash-val] (str/split hash-str #"-" 2)
+  (let [[_ prefix hash-val] (re-matches #"([KV])(\d+)" hash-str)
         target-hash (parse-long hash-val)]
     ;; Walk children, compute hash of each, find match
-    ;; For maps: K- matches keys, V- matches values
-    ;; For sets: K- matches elements
+    ;; For maps: K matches keys, V matches values
+    ;; For sets: K matches elements
     ))
 
 (defn coord->zloc
   "Navigate a zipper using ClojureStorm coordinates.
-   coord can be a string \"3,2,1\" or vector [3 2 1]"
+   Coordinates are strings: \"3,2,1\" or \"\" for root.
+   Hash-based parts use format K<hash> or V<hash> (no dash)."
   [zloc coord]
-  (let [parts (if (string? coord)
-                (map #(if (re-matches #"\d+" %)
+  (if (= "" coord)
+    zloc  ;; Empty string = root/fn-return coordinate
+    (let [parts (map #(if (re-matches #"\d+" %)
                         (parse-long %)
                         %)
-                     (str/split coord #","))
-                coord)]
-    (reduce
-      (fn [z part]
-        (if (string? part)
-          (find-by-hash z part)
-          (nth-child z part)))
-      zloc
-      parts)))
+                     (str/split coord #","))]
+      (reduce
+        (fn [z part]
+          (if (string? part)
+            (find-by-hash z part)
+            (nth-child z part)))
+        zloc
+        parts))))
 
 (defn zloc->coord
   "Get ClojureStorm coordinate for a zipper position.
-   Returns vector like [3 2 1]"
+   Returns string like \"3,2,1\" or \"\" for root."
   [zloc]
   ;; Walk up to root, collecting indices/hashes
+  ;; Join with comma, or return empty string for root
   )
 ```
 
@@ -969,9 +972,9 @@ JVM args for ClojureStorm:
 
 ### ClojureStorm Coordinate System
 
-ClojureStorm uses positional paths into the AST. Coordinates arrive at tracer
-callbacks as **vectors** (e.g., `[3 2 1]`) and are stringified for storage
-(e.g., `"3,2,1"`).
+ClojureStorm uses positional paths into the AST. Coordinates are passed to tracer
+callbacks as **strings** (e.g., `"3,2,1"`), not vectors. The root/fn-return
+coordinate is an empty string `""`.
 
 ```clojure
 ;; For the form:
@@ -979,14 +982,16 @@ callbacks as **vectors** (e.g., `[3 2 1]`) and are stringified for storage
 ;;  0    1   2     3
 
 ;; Coordinate examples:
-;; [3]     → (+ a b)     → stringified as "3"
-;; [3 0]   → +           → stringified as "3,0"
-;; [3 1]   → a           → stringified as "3,1"
-;; [3 2]   → b           → stringified as "3,2"
+;; ""      → function return (root)
+;; "3"     → (+ a b)
+;; "3,0"   → +
+;; "3,1"   → a
+;; "3,2"   → b
 ```
 
-For **maps and sets** (unordered), coordinates use hash-based identifiers:
-- Map keys: `"K<hash>"` where hash is computed from `pr-str` of the key
+For **maps and sets** (unordered), coordinates use hash-based identifiers with
+format `K<hash>` or `V<hash>` (no dash between letter and hash):
+- Map keys: `"K<hash>"` where hash is computed from the form
 - Map values: `"V<hash>"`
 - Set elements: `"K<hash>"`
 
@@ -995,10 +1000,14 @@ For **maps and sets** (unordered), coordinates use hash-based identifiers:
 {:a 1 :b 2}
 
 ;; Coordinates might be:
-;; ["K12345"]  → :a (key)
-;; ["V12345"]  → 1 (value for :a)
-;; ["K67890"]  → :b (key)
-;; ["V67890"]  → 2 (value for :b)
+;; "K12345"  → :a (key)
+;; "V12345"  → 1 (value for :a)
+;; "K67890"  → :b (key)
+;; "V67890"  → 2 (value for :b)
+
+;; Nested example:
+;; "4,1,1,V3919306159"      → navigate to index 4, 1, 1, then value with hash
+;; "4,1,1,V1836413754,2"    → same pattern, then continue to child index 2
 ```
 
 The hash is computed by `hansel.utils/clojure-form-source-hash` which normalizes
@@ -1019,10 +1028,11 @@ bidirectional conversion:
 
 ```clojure
 ;; ClojureStorm coord → rewrite-clj zipper position
-(coord->zloc root-zloc "3,2,1")  ;; Navigate to [3 2 1]
+(coord->zloc root-zloc "3,2,1")  ;; Navigate to position
+(coord->zloc root-zloc "")       ;; Empty string = root
 
 ;; rewrite-clj zipper position → ClojureStorm coord
-(zloc->coord some-zloc)  ;; Returns [3 2 1]
+(zloc->coord some-zloc)  ;; Returns "3,2,1" or "" for root
 ```
 
 **Validation requirement**: The coordinate mapper MUST be tested with round-trip
