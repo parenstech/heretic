@@ -13,10 +13,10 @@
    │   ├── ns1-test.edn   # Per-namespace coverage
    │   └── ns2-test.edn
    └── index.edn          # Derived inverse index"
-  (:require [heretic.collector :as collector]
-            [heretic.persistence :as persist]
-            [clojure.java.io :as io]
-            [clojure.string :as str]))
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]
+            [heretic.collector :as collector]
+            [heretic.persistence :as persist]))
 
 ;; =============================================================================
 ;; Form Registry (ClojureStorm)
@@ -25,11 +25,21 @@
 (defn get-form-registry
   "Get all forms from ClojureStorm's FormRegistry.
 
-   Returns {form-id -> {:form/ns, :form/form, :form/emitted-coords}}"
+   Returns {form-id -> {:form/ns, :form/form, :form/emitted-coords}}
+
+   Note: ClojureStorm stores emitted-coords in the metadata of :form/form
+   under :clojure.storm/emitted-coords as a java.util.HashSet.
+   This function extracts and converts it to a Clojure set for each form."
   []
   ;; TODO: Implement FormRegistry access
   ;; Requires ClojureStorm on classpath:
-  ;; (into {} (FormRegistry/getAllForms))
+  ;;
+  ;; (into {}
+  ;;       (for [form (FormRegistry/getAllForms)]
+  ;;         [(:form/id form)
+  ;;          (assoc form
+  ;;                 :form/emitted-coords
+  ;;                 (-> form :form/form meta :clojure.storm/emitted-coords set))]))
   (throw (ex-info "FormRegistry access not yet implemented"
                   {:hint "Requires ClojureStorm on classpath"})))
 
@@ -104,22 +114,22 @@
    Returns {[form-id coord] -> #{test-symbols}}"
   [coverage-files]
   (reduce
-    (fn [idx {:keys [coverage]}]
-      (reduce-kv
-        (fn [idx test-id form-coords]
-          (reduce-kv
-            (fn [idx form-id coords]
-              (reduce
-                (fn [idx coord]
-                  (update idx [form-id coord] (fnil conj #{}) test-id))
-                idx
-                coords))
+   (fn [idx {:keys [coverage]}]
+     (reduce-kv
+      (fn [idx test-id form-coords]
+        (reduce-kv
+         (fn [idx form-id coords]
+           (reduce
+            (fn [idx coord]
+              (update idx [form-id coord] (fnil conj #{}) test-id))
             idx
-            form-coords))
-        idx
-        coverage))
-    {}
-    coverage-files))
+            coords))
+         idx
+         form-coords))
+      idx
+      coverage))
+   {}
+   coverage-files))
 
 (defn rebuild-index!
   "Rebuild inverse index from all coverage files.

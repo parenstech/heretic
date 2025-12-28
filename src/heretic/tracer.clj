@@ -6,10 +6,9 @@
    data is accumulated per-test and can be retrieved after each test runs.
 
    ClojureStorm coordinate format:
-   - Sequential forms: vectors like [3 2 1] representing path into AST
-   - Unordered forms (maps/sets): hash-based strings like \"K-12345\"
-
-   Coordinates are stringified for storage: [3 2 1] -> \"3,2,1\"
+   - Coordinates are passed as strings: \"3,2,1\" representing path into AST
+   - Unordered forms (maps/sets): hash-based strings like \"K12345\" or \"V12345\"
+   - Empty string \"\" for function return coordinates
 
    Usage:
    1. Call (init!) to set up ClojureStorm callbacks
@@ -32,31 +31,18 @@
   (atom false))
 
 ;; =============================================================================
-;; Coordinate Handling
-;; =============================================================================
-
-(defn- stringify-coord
-  "Convert coordinate to string for storage.
-
-   ClojureStorm passes coords as vectors: [3 2 1] -> \"3,2,1\"
-   Hash-based coords for maps/sets may arrive as strings: \"K-12345\""
-  [coord]
-  (if (string? coord)
-    coord
-    (str/join "," coord)))
-
-;; =============================================================================
 ;; Coverage Recording
 ;; =============================================================================
 
 (defn- record-hit!
   "Record a coverage hit for the current test.
-   Called by ClojureStorm for each expression evaluation."
+   Called by ClojureStorm for each expression evaluation.
+   Coordinates are already strings from ClojureStorm (e.g., \"3,2,1\")."
   [form-id coord]
   (swap! current-coverage
          update form-id
          (fnil conj #{})
-         (stringify-coord coord)))
+         coord))
 
 ;; =============================================================================
 ;; Public API

@@ -2,8 +2,8 @@
   "Bidirectional mapping between ClojureStorm coordinates and rewrite-clj zippers.
 
    ClojureStorm uses positional paths into the AST:
-   - Sequential forms: [3 2 1] means 'child 3, then child 2, then child 1'
-   - Unordered forms (maps/sets): hash-based strings like \"K-12345\" for keys
+   - Sequential forms: comma-separated indices like \"3,2,1\"
+   - Unordered forms (maps/sets): hash-based strings like \"K12345\" for keys, \"V12345\" for values
 
    rewrite-clj uses zippers for navigation. This namespace bridges the two:
    - coord->zloc: Navigate a zipper using ClojureStorm coordinates
@@ -15,13 +15,13 @@
    Example coordinates:
    (defn foo [a b] (+ a b))
    ;;  0    1   2     3
-   ;; [3]     -> (+ a b)
-   ;; [3 0]   -> +
-   ;; [3 1]   -> a
-   ;; [3 2]   -> b"
-  (:require [rewrite-clj.zip :as z]
+   ;; \"3\"     -> (+ a b)
+   ;; \"3,0\"   -> +
+   ;; \"3,1\"   -> a
+   ;; \"3,2\"   -> b"
+  (:require [clojure.string :as str]
             [rewrite-clj.node :as n]
-            [clojure.string :as str]))
+            [rewrite-clj.zip :as z]))
 
 ;; =============================================================================
 ;; Coordinate Parsing
@@ -31,28 +31,32 @@
   "Parse a stringified coordinate into components.
 
    \"3,2,1\" -> [3 2 1]
-   \"3,K-12345,1\" -> [3 \"K-12345\" 1]
+   \"3,K12345,1\" -> [3 \"K12345\" 1]
+   \"\" -> []
 
    Components are either integers (for sequential access) or strings
-   (for hash-based access to map/set elements)."
+   (for hash-based access to map/set elements: K<hash> for keys, V<hash> for values)."
   [coord-str]
-  (if (vector? coord-str)
-    coord-str  ;; Already parsed
-    (mapv (fn [part]
-            (if (re-matches #"\d+" part)
-              (parse-long part)
-              part))
-          (str/split coord-str #","))))
+  (cond
+    (vector? coord-str) coord-str  ;; Already parsed
+    (= "" coord-str) []            ;; Empty coord (function return)
+    :else (mapv (fn [part]
+                  (if (re-matches #"\d+" part)
+                    (parse-long part)
+                    part))
+                (str/split coord-str #","))))
 
 (defn stringify-coord
   "Convert coordinate vector to string.
 
    [3 2 1] -> \"3,2,1\"
-   [3 \"K-12345\" 1] -> \"3,K-12345,1\""
+   [3 \"K12345\" 1] -> \"3,K12345,1\"
+   [] -> \"\""
   [coord]
-  (if (string? coord)
-    coord
-    (str/join "," coord)))
+  (cond
+    (string? coord) coord
+    (empty? coord) ""
+    :else (str/join "," coord)))
 
 ;; =============================================================================
 ;; Hash-based Navigation (Maps/Sets)
@@ -74,14 +78,14 @@
 (defn- find-by-hash
   "Find element in unordered collection by its hash.
 
-   Hash format:
-   - K-<hash> for map keys or set elements
-   - V-<hash> for map values
+   Hash format (no dash between letter and hash):
+   - K<hash> for map keys or set elements
+   - V<hash> for map values
 
    Returns zipper at the matching element, or nil if not found."
   [zloc hash-str]
-  (let [[prefix hash-val] (str/split hash-str #"-" 2)
-        target-hash (parse-long hash-val)
+  (let [prefix (subs hash-str 0 1)                    ;; "K" or "V"
+        target-hash (parse-long (subs hash-str 1))    ;; hash after first letter
         is-map? (= :map (z/tag zloc))
         is-set? (= :set (z/tag zloc))]
     (cond
@@ -136,19 +140,19 @@
    coord can be:
    - A string like \"3,2,1\"
    - A vector like [3 2 1]
-   - Mixed with hash refs: [3 \"K-12345\" 1]
+   - Mixed with hash refs: [3 \"K12345\" 1] or \"3,V12345,1\"
 
    Returns the zipper at the target location, or nil if navigation fails."
   [zloc coord]
   (let [parts (parse-coord coord)]
     (reduce
-      (fn [z part]
-        (when z
-          (if (string? part)
-            (find-by-hash z part)
-            (nth-child z part))))
-      zloc
-      parts)))
+     (fn [z part]
+       (when z
+         (if (string? part)
+           (find-by-hash z part)
+           (nth-child z part))))
+     zloc
+     parts)))
 
 ;; =============================================================================
 ;; Coordinate Extraction
@@ -173,18 +177,18 @@
 (defn- compute-hash-coord
   "Compute hash-based coordinate for element in unordered collection.
 
-   For sets: Returns \"K-<hash>\"
-   For maps: Returns \"K-<hash>\" for keys, \"V-<hash>\" for values"
+   For sets: Returns \"K<hash>\"
+   For maps: Returns \"K<hash>\" for keys, \"V<hash>\" for values"
   [zloc]
   (let [parent (z/up zloc)
         h (compute-form-hash zloc)]
     (if (= :set (z/tag parent))
-      (str "K-" h)
+      (str "K" h)
       ;; For maps, determine if this is a key or value
       (let [idx (child-index zloc)]
         (if (even? idx)
-          (str "K-" h)
-          (str "V-" h))))))
+          (str "K" h)
+          (str "V" h))))))
 
 (defn zloc->coord
   "Get ClojureStorm coordinate for a zipper position.
