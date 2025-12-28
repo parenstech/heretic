@@ -1,0 +1,134 @@
+{:paths ["src" "bb"]
+
+ :deps
+ {rewrite-clj/rewrite-clj {:mvn/version "1.1.47"}}
+
+ :tasks
+ {:requires [[babashka.fs :as fs]
+             [babashka.process :as p]
+             [clojure.edn :as edn]
+             [clojure.string :as str]]
+
+  :init
+  (do
+    (def config-file "heretic.edn")
+    (def heretic-dir ".heretic")
+
+    (defn load-config []
+      (if (fs/exists? config-file)
+        (edn/read-string (slurp config-file))
+        (throw (ex-info "Missing heretic.edn config file" {}))))
+
+    (defn clj-storm-opts [config]
+      (let [prefixes (:instrument-prefixes config)
+            skip-prefixes (:instrument-skip-prefixes config)]
+        (cond-> ["-Dclojure.storm.instrumentEnable=true"]
+          (seq prefixes)
+          (conj (str "-Dclojure.storm.instrumentOnlyPrefixes="
+                     (str/join "," prefixes)))
+          (seq skip-prefixes)
+          (conj (str "-Dclojure.storm.instrumentSkipPrefixes="
+                     (str/join "," skip-prefixes))))))
+
+    (defn has-arg? [arg]
+      (some (fn [a] (= a arg)) *command-line-args*))
+
+    (defn get-arg-value [arg]
+      (let [args *command-line-args*]
+        (loop [remaining args]
+          (when (seq remaining)
+            (if (= arg (first remaining))
+              (second remaining)
+              (recur (rest remaining))))))))
+
+  heretic:collect
+  {:doc "Collect test-to-code coverage mapping"
+   :task
+   (do
+     (println "Collecting coverage...")
+     (let [config (load-config)
+           opts (clj-storm-opts config)
+           force? (has-arg? "--force")
+           ns-filter (get-arg-value "--namespaces")]
+       ;; TODO: Implement coverage collection
+       ;; 1. Start ClojureStorm-enabled JVM
+       ;; 2. Initialize tracer callbacks
+       ;; 3. Discover and run tests one-by-one
+       ;; 4. Collect per-test coverage
+       ;; 5. Persist to .heretic/coverage/
+       ;; 6. Rebuild index
+       (println "TODO: Coverage collection not yet implemented")
+       (println "Config:" config)
+       (println "ClojureStorm opts:" opts)
+       (when force? (println "Force mode: recollecting all"))
+       (when ns-filter (println "Filtering namespaces:" ns-filter))))}
+
+  heretic:status
+  {:doc "Show stale test namespaces that need recollection"
+   :task
+   (do
+     (println "Coverage status:")
+     (if (fs/exists? heretic-dir)
+       (do
+         ;; TODO: Implement staleness checking
+         ;; 1. Load config
+         ;; 2. Find all test namespaces
+         ;; 3. Check each for staleness (test file changed, source deps changed)
+         ;; 4. Report stale vs fresh counts
+         (println "TODO: Status checking not yet implemented")
+         (let [coverage-dir (fs/file heretic-dir "coverage")]
+           (if (fs/exists? coverage-dir)
+             (let [files (fs/list-dir coverage-dir)]
+               (println (str "Found " (count files) " coverage files in " coverage-dir)))
+             (println "No coverage files found"))))
+       (println "No .heretic directory found. Run heretic:collect first.")))}
+
+  heretic:clean
+  {:doc "Remove .heretic directory and all coverage data"
+   :task
+   (do
+     (if (fs/exists? heretic-dir)
+       (do
+         (fs/delete-tree heretic-dir)
+         (println "Removed" heretic-dir))
+       (println "Nothing to clean - .heretic directory does not exist")))}
+
+  heretic:mutate
+  {:doc "Run mutation testing (Phase 2)"
+   :task
+   (do
+     (println "Running mutation testing...")
+     ;; TODO: Implement mutation testing
+     ;; 1. Load coverage map (or collect if stale/missing)
+     ;; 2. Generate mutations for source files
+     ;; 3. For each mutation:
+     ;;    a. Look up tests via coverage map
+     ;;    b. Apply mutation to source file
+     ;;    c. Reload affected namespaces
+     ;;    d. Run targeted tests
+     ;;    e. Record result (killed/survived)
+     ;;    f. Revert mutation
+     ;; 4. Generate report
+     (println "TODO: Mutation testing not yet implemented (Phase 2)"))}
+
+  heretic:survivors
+  {:doc "Show surviving mutations from last run (Phase 2)"
+   :task
+   (do
+     (println "Surviving mutations:")
+     ;; TODO: Implement survivor display
+     ;; 1. Load last mutation run results
+     ;; 2. Filter for :survived status
+     ;; 3. Show file, location, operator, original, mutation
+     (println "TODO: Survivor display not yet implemented (Phase 2)"))}
+
+  ;; Development tasks
+  dev:repl
+  {:doc "Start a development REPL"
+   :task
+   (p/shell "clj" "-M:dev" "-m" "nrepl.cmdline" "--interactive")}
+
+  test
+  {:doc "Run tests"
+   :task
+   (p/shell "clj" "-M:test")}}}

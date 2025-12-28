@@ -1,0 +1,15 @@
+{:paths ["src" "test"]
+
+ :deps {;; No deps in base - ClojureStorm replaces Clojure
+        }
+
+ :aliases
+ {:storm
+  {:classpath-overrides {org.clojure/clojure nil}
+   :extra-deps {com.github.flow-storm/clojure {:mvn/version "1.12.0-9"}}
+   :jvm-opts ["-Dclojure.storm.instrumentEnable=true"
+              "-Dclojure.storm.instrumentAutoPrefixes=false"
+              "-Dclojure.storm.instrumentOnlyPrefixes=sample"]}
+
+  :validate
+  {:main-opts ["-m" "validate"]}}}

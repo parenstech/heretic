@@ -1,0 +1,31 @@
+# Heretic coverage data
+.heretic/
+
+# Clojure/Java build artifacts
+target/
+classes/
+.cpcache/
+
+# Editor files
+*.swp
+*.swo
+*~
+.#*
+\#*\#
+
+# REPL history
+.nrepl-history
+.nrepl-port
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+.calva/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local configuration (not committed)
+local.edn

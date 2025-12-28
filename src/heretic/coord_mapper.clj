@@ -1,0 +1,240 @@
+(ns heretic.coord-mapper
+  "Bidirectional mapping between ClojureStorm coordinates and rewrite-clj zippers.
+
+   ClojureStorm uses positional paths into the AST:
+   - Sequential forms: [3 2 1] means 'child 3, then child 2, then child 1'
+   - Unordered forms (maps/sets): hash-based strings like \"K-12345\" for keys
+
+   rewrite-clj uses zippers for navigation. This namespace bridges the two:
+   - coord->zloc: Navigate a zipper using ClojureStorm coordinates
+   - zloc->coord: Get ClojureStorm coordinate for a zipper position
+
+   Validation requirement: Round-trip must be identity
+   (= coord (zloc->coord (coord->zloc zloc coord)))
+
+   Example coordinates:
+   (defn foo [a b] (+ a b))
+   ;;  0    1   2     3
+   ;; [3]     -> (+ a b)
+   ;; [3 0]   -> +
+   ;; [3 1]   -> a
+   ;; [3 2]   -> b"
+  (:require [rewrite-clj.zip :as z]
+            [rewrite-clj.node :as n]
+            [clojure.string :as str]))
+
+;; =============================================================================
+;; Coordinate Parsing
+;; =============================================================================
+
+(defn parse-coord
+  "Parse a stringified coordinate into components.
+
+   \"3,2,1\" -> [3 2 1]
+   \"3,K-12345,1\" -> [3 \"K-12345\" 1]
+
+   Components are either integers (for sequential access) or strings
+   (for hash-based access to map/set elements)."
+  [coord-str]
+  (if (vector? coord-str)
+    coord-str  ;; Already parsed
+    (mapv (fn [part]
+            (if (re-matches #"\d+" part)
+              (parse-long part)
+              part))
+          (str/split coord-str #","))))
+
+(defn stringify-coord
+  "Convert coordinate vector to string.
+
+   [3 2 1] -> \"3,2,1\"
+   [3 \"K-12345\" 1] -> \"3,K-12345,1\""
+  [coord]
+  (if (string? coord)
+    coord
+    (str/join "," coord)))
+
+;; =============================================================================
+;; Hash-based Navigation (Maps/Sets)
+;; =============================================================================
+
+(defn- compute-form-hash
+  "Compute hash for a rewrite-clj node, matching ClojureStorm's hash.
+
+   ClojureStorm uses hansel.utils/clojure-form-source-hash which:
+   1. Converts form to string via pr-str
+   2. Normalizes whitespace
+   3. Removes comments
+   4. Hashes the result"
+  [zloc]
+  ;; TODO: Match ClojureStorm's exact hashing algorithm
+  ;; For now, use a simplified version
+  (hash (z/string zloc)))
+
+(defn- find-by-hash
+  "Find element in unordered collection by its hash.
+
+   Hash format:
+   - K-<hash> for map keys or set elements
+   - V-<hash> for map values
+
+   Returns zipper at the matching element, or nil if not found."
+  [zloc hash-str]
+  (let [[prefix hash-val] (str/split hash-str #"-" 2)
+        target-hash (parse-long hash-val)
+        is-map? (= :map (z/tag zloc))
+        is-set? (= :set (z/tag zloc))]
+    (cond
+      ;; For sets, search all elements
+      is-set?
+      (loop [child (z/down zloc)]
+        (when child
+          (if (= target-hash (compute-form-hash child))
+            child
+            (recur (z/right child)))))
+
+      ;; For maps, search keys or values based on prefix
+      is-map?
+      (loop [child (z/down zloc)
+             is-key? true]
+        (when child
+          (let [matches? (and (= target-hash (compute-form-hash child))
+                              (case prefix
+                                "K" is-key?
+                                "V" (not is-key?)
+                                false))]
+            (if matches?
+              child
+              (recur (z/right child) (not is-key?))))))
+
+      :else nil)))
+
+;; =============================================================================
+;; Sequential Navigation
+;; =============================================================================
+
+(defn- nth-child
+  "Navigate to the nth child of a zipper location.
+   Returns nil if the child doesn't exist."
+  [zloc n]
+  (let [first-child (z/down zloc)]
+    (when first-child
+      (loop [current first-child
+             i 0]
+        (cond
+          (= i n) current
+          (nil? current) nil
+          :else (recur (z/right current) (inc i)))))))
+
+;; =============================================================================
+;; Coordinate Navigation
+;; =============================================================================
+
+(defn coord->zloc
+  "Navigate a zipper using ClojureStorm coordinates.
+
+   coord can be:
+   - A string like \"3,2,1\"
+   - A vector like [3 2 1]
+   - Mixed with hash refs: [3 \"K-12345\" 1]
+
+   Returns the zipper at the target location, or nil if navigation fails."
+  [zloc coord]
+  (let [parts (parse-coord coord)]
+    (reduce
+      (fn [z part]
+        (when z
+          (if (string? part)
+            (find-by-hash z part)
+            (nth-child z part))))
+      zloc
+      parts)))
+
+;; =============================================================================
+;; Coordinate Extraction
+;; =============================================================================
+
+(defn- child-index
+  "Get the index of a zipper among its siblings.
+   Returns the 0-based index."
+  [zloc]
+  (loop [z (z/left zloc)
+         idx 0]
+    (if z
+      (recur (z/left z) (inc idx))
+      idx)))
+
+(defn- is-unordered-collection?
+  "Check if the parent is an unordered collection (map or set)."
+  [zloc]
+  (when-let [parent (z/up zloc)]
+    (#{:map :set} (z/tag parent))))
+
+(defn- compute-hash-coord
+  "Compute hash-based coordinate for element in unordered collection.
+
+   For sets: Returns \"K-<hash>\"
+   For maps: Returns \"K-<hash>\" for keys, \"V-<hash>\" for values"
+  [zloc]
+  (let [parent (z/up zloc)
+        h (compute-form-hash zloc)]
+    (if (= :set (z/tag parent))
+      (str "K-" h)
+      ;; For maps, determine if this is a key or value
+      (let [idx (child-index zloc)]
+        (if (even? idx)
+          (str "K-" h)
+          (str "V-" h))))))
+
+(defn zloc->coord
+  "Get ClojureStorm coordinate for a zipper position.
+
+   Returns a vector like [3 2 1] or [3 \"K-12345\" 1].
+   Returns nil if at the root."
+  [zloc]
+  (loop [z zloc
+         coord []]
+    (if-let [parent (z/up z)]
+      (let [part (if (is-unordered-collection? z)
+                   (compute-hash-coord z)
+                   (child-index z))]
+        (recur parent (cons part coord)))
+      (when (seq coord)
+        (vec coord)))))
+
+;; =============================================================================
+;; Validation
+;; =============================================================================
+
+(defn validate-round-trip
+  "Validate that coord->zloc and zloc->coord are inverses.
+
+   Returns {:valid true} or {:valid false :error ...}"
+  [zloc coord]
+  (try
+    (let [target (coord->zloc zloc coord)]
+      (if (nil? target)
+        {:valid false
+         :error :navigation-failed
+         :coord coord}
+        (let [recovered (zloc->coord target)]
+          (if (= (parse-coord coord) recovered)
+            {:valid true}
+            {:valid false
+             :error :round-trip-mismatch
+             :original coord
+             :recovered recovered}))))
+    (catch Exception e
+      {:valid false
+       :error :exception
+       :message (.getMessage e)})))
+
+(defn validate-all-coords
+  "Validate round-trip for all coordinates in a form.
+
+   Returns sequence of validation results for failed coordinates."
+  [zloc coords]
+  (for [coord coords
+        :let [result (validate-round-trip zloc coord)]
+        :when (not (:valid result))]
+    result))

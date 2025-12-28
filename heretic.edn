@@ -1,0 +1,70 @@
+;; Heretic Mutation Testing Configuration
+;;
+;; This file configures test-to-code coverage collection and mutation testing.
+;; See docs/spec.md for full documentation.
+
+{;; =============================================================================
+ ;; Source and Test Paths
+ ;; =============================================================================
+
+ ;; Directories containing source code to mutate
+ :source-paths ["src"]
+
+ ;; Directories containing test code
+ :test-paths ["test"]
+
+ ;; Test namespaces to include
+ ;; Use :all to discover all test namespaces, or list specific ones
+ :test-namespaces :all
+
+ ;; =============================================================================
+ ;; ClojureStorm Instrumentation
+ ;; =============================================================================
+
+ ;; Namespace prefixes to instrument (passed to ClojureStorm)
+ ;; Only code in these namespaces will be tracked for coverage
+ :instrument-prefixes ["heretic"]
+
+ ;; Namespace prefixes to skip (e.g., test code, dev utilities)
+ :instrument-skip-prefixes ["heretic.dev"]
+
+ ;; =============================================================================
+ ;; Storage
+ ;; =============================================================================
+
+ ;; Directory for coverage data and indexes
+ :heretic-dir ".heretic"
+
+ ;; =============================================================================
+ ;; Collection Settings
+ ;; =============================================================================
+
+ ;; Collect test namespaces in parallel (Phase 3)
+ :parallel-collect false
+
+ ;; =============================================================================
+ ;; Mutation Settings (Phase 2)
+ ;; =============================================================================
+
+ ;; Mutation operators to apply
+ ;; Options: :arithmetic, :comparison, :boolean, :collection, :control-flow, :return-values
+ :mutation-operators [:arithmetic :comparison :boolean :return-values]
+
+ ;; Forms to skip when generating mutations
+ :skip-forms #{comment}
+
+ ;; Timeout for running tests per mutation (milliseconds)
+ :timeout-ms 5000
+
+ ;; Run mutations in parallel (Phase 3)
+ :parallel-mutate false
+
+ ;; =============================================================================
+ ;; Reporting (Phase 2)
+ ;; =============================================================================
+
+ ;; Report format: :terminal, :html, :json, :edn
+ :report-format :terminal
+
+ ;; Output path for HTML/JSON/EDN reports
+ :output-path "target/heretic-report"}
