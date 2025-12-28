@@ -99,9 +99,15 @@
 ;; Integration Tests (require ClojureStorm)
 ;; =============================================================================
 
-;; TODO: Add integration tests that run with :clojurestorm alias
-;; These should verify:
-;; - init! returns true on first call, false on subsequent calls
-;; - Emitter callbacks are received
-;; - Form IDs match FormRegistry
-;; - Coordinates match expected format
+;; Integration tests with live ClojureStorm are implemented in the validation
+;; project (/home/yenda/lab/projects/heretic/validation/) which:
+;; - Runs actual tests with instrumentation enabled
+;; - Verifies Emitter callbacks produce correct coverage data
+;; - Validates Form IDs match FormRegistry
+;; - Confirms coordinate format matches spec (strings, K/V hash prefixes)
+;;
+;; To run integration tests:
+;;   cd validation && clj -M:heretic -m heretic.core collect
+;;
+;; The validation project's .heretic/index.edn contains real coverage data
+;; that validates the entire collection pipeline.

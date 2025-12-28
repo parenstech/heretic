@@ -212,6 +212,97 @@
 ;; Integration Tests
 ;; =============================================================================
 
-;; TODO: Add integration tests that verify:
-;; - rebuild-index! persists correctly
-;; - Index survives round-trip through persistence
+(deftest test-rebuild-index-integration
+  (testing "rebuild-index! persists correctly from coverage files"
+    (let [temp-dir (io/file (System/getProperty "java.io.tmpdir")
+                            (str "heretic-rebuild-test-" (System/currentTimeMillis)))
+          heretic-dir (.getPath temp-dir)
+          coverage-dir (io/file temp-dir "coverage")]
+      (try
+        ;; Setup: create heretic directory structure
+        (.mkdirs coverage-dir)
+
+        ;; Create mock coverage files
+        (spit (io/file coverage-dir "my-app-core-test.edn")
+              (pr-str {:test-ns 'my.app.core-test
+                       :coverage {'my.app.core-test/test-add {12345 #{"3" "3,1"}}
+                                  'my.app.core-test/test-sub {12345 #{"4"}}}
+                       :source-deps #{"src/my/app/core.clj"}}))
+
+        (spit (io/file coverage-dir "my-app-util-test.edn")
+              (pr-str {:test-ns 'my.app.util-test
+                       :coverage {'my.app.util-test/test-helper {67890 #{"1" "2"}}}
+                       :source-deps #{"src/my/app/util.clj"}}))
+
+        ;; Rebuild the index
+        (coverage/rebuild-index! heretic-dir)
+
+        ;; Verify index file was created
+        (let [index-file (io/file temp-dir "index.edn")]
+          (is (.exists index-file) "Index file should be created"))
+
+        ;; Load and verify the index
+        (let [index (coverage/load-index heretic-dir)]
+          (is (some? index) "Index should be loadable")
+          (is (contains? index :coord-to-tests))
+          (is (contains? index :included-test-ns))
+          (is (contains? index :rebuilt-at))
+
+          ;; Verify included namespaces
+          (is (= #{'my.app.core-test 'my.app.util-test}
+                 (:included-test-ns index)))
+
+          ;; Verify coordinate mapping
+          (is (= #{'my.app.core-test/test-add}
+                 (get-in index [:coord-to-tests [12345 "3"]])))
+          (is (= #{'my.app.core-test/test-add}
+                 (get-in index [:coord-to-tests [12345 "3,1"]])))
+          (is (= #{'my.app.core-test/test-sub}
+                 (get-in index [:coord-to-tests [12345 "4"]])))
+          (is (= #{'my.app.util-test/test-helper}
+                 (get-in index [:coord-to-tests [67890 "1"]]))))
+
+        (finally
+          ;; Cleanup
+          (doseq [f (.listFiles coverage-dir)]
+            (.delete f))
+          (.delete coverage-dir)
+          (let [index-file (io/file temp-dir "index.edn")]
+            (when (.exists index-file) (.delete index-file)))
+          (.delete temp-dir))))))
+
+(deftest test-index-round-trip
+  (testing "Index survives round-trip through persistence"
+    (let [temp-dir (io/file (System/getProperty "java.io.tmpdir")
+                            (str "heretic-roundtrip-test-" (System/currentTimeMillis)))
+          heretic-dir (.getPath temp-dir)
+          coverage-dir (io/file temp-dir "coverage")]
+      (try
+        (.mkdirs coverage-dir)
+
+        ;; Create coverage with various data types
+        (spit (io/file coverage-dir "test-ns.edn")
+              (pr-str {:test-ns 'test.ns
+                       :coverage {'test.ns/test-a {12345 #{"" "3" "3,0" "3,1"}}
+                                  'test.ns/test-b {12345 #{"4"} 67890 #{"1,2,3"}}}}))
+
+        ;; Rebuild
+        (coverage/rebuild-index! heretic-dir)
+
+        ;; Load
+        (let [index (coverage/load-index heretic-dir)]
+          ;; Verify query functions work correctly
+          (is (= #{'test.ns/test-a}
+                 (coverage/tests-for-location index 12345 "")))
+          (is (= #{'test.ns/test-a 'test.ns/test-b}
+                 (coverage/tests-for-location index 12345)))
+          (is (= #{'test.ns/test-b}
+                 (coverage/tests-for-location index 67890 "1,2,3"))))
+
+        (finally
+          (doseq [f (.listFiles coverage-dir)]
+            (.delete f))
+          (.delete coverage-dir)
+          (let [index-file (io/file temp-dir "index.edn")]
+            (when (.exists index-file) (.delete index-file)))
+          (.delete temp-dir))))))
