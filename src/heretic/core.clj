@@ -126,22 +126,28 @@
   "Ensure coverage data exists and is fresh. Collects if needed."
   [config]
   (let [heretic-dir (:heretic-dir config)
-        index (coverage/load-index heretic-dir)]
-    (if index
-      ;; Check if any test namespaces are stale
-      (let [{:keys [stale-namespaces]} (status config)]
-        (if (empty? stale-namespaces)
-          (do
-            (println "Coverage data is up to date.")
-            index)
-          (do
-            (println "Coverage data is stale, recollecting...")
-            (collect! config :namespaces stale-namespaces)
-            (coverage/load-index heretic-dir))))
+        index (coverage/load-index heretic-dir)
+        {:keys [stale-namespaces]} (when index (status config))]
+    (cond
+      ;; No index exists - collect everything
+      (nil? index)
       (do
         (println "No coverage data found, collecting...")
         (collect! config)
-        (coverage/load-index heretic-dir)))))
+        (coverage/load-index heretic-dir))
+
+      ;; Index exists but some namespaces are stale
+      (seq stale-namespaces)
+      (do
+        (println "Coverage data is stale, recollecting...")
+        (collect! config :namespaces stale-namespaces)
+        (coverage/load-index heretic-dir))
+
+      ;; Index exists and everything is fresh
+      :else
+      (do
+        (println "Coverage data is up to date.")
+        index))))
 
 (defn- evaluate-mutation-with-reload!
   "Evaluate a single mutation with file modification and namespace reloading."

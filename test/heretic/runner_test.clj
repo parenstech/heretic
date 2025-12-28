@@ -63,9 +63,12 @@
 (deftest run-tests-empty-test
   (testing "Empty test set returns no-tests status"
     (let [result (runner/run-tests [] 5000)]
-      (is (= :no-tests (:status result)))
-      (is (= #{} (:tests-run result)))
-      (is (= {:pass 0 :fail 0 :error 0} (:results result))))))
+      (is (= :no-tests (:status result))
+          "Status should be :no-tests when no tests provided")
+      (is (= #{} (:tests-run result))
+          "No tests should be marked as run")
+      (is (= {:pass 0 :fail 0 :error 0} (:results result))
+          "All result counts should be zero"))))
 
 (deftest run-tests-passing-test
   (testing "Passing tests return completed status with pass count"
@@ -99,8 +102,10 @@
 (deftest run-tests-timeout-test
   (testing "Slow tests timeout correctly"
     (let [result (runner/run-tests [slow-test-sym] 100)]
-      (is (= :timeout (:status result)))
-      (is (= slow-test-sym (:failed-test result))))))
+      (is (= :timeout (:status result))
+          "Status should be :timeout when test exceeds timeout limit")
+      (is (= slow-test-sym (:failed-test result))
+          "Failed test should be the slow test that caused timeout"))))
 
 (deftest run-tests-nonexistent-var-test
   (testing "Nonexistent vars are skipped"
@@ -378,8 +383,8 @@
 (deftest evaluate-mutations-partial-timeout-test
   (testing "Batch evaluation with some mutations timing out"
     (let [index {:coord-to-tests {[100 [0]] #{passing-test-sym}
-                                   [101 [0]] #{slow-test-sym}
-                                   [102 [0]] #{failing-test-sym}}
+                                  [101 [0]] #{slow-test-sym}
+                                  [102 [0]] #{failing-test-sym}}
                  :form-to-tests {100 #{passing-test-sym}
                                  101 #{slow-test-sym}
                                  102 #{failing-test-sym}}}
@@ -395,7 +400,7 @@
 (deftest evaluate-mutations-all-timeout-test
   (testing "Batch evaluation where all mutations timeout"
     (let [index {:coord-to-tests {[100 [0]] #{slow-test-sym}
-                                   [101 [0]] #{slow-test-sym}}
+                                  [101 [0]] #{slow-test-sym}}
                  :form-to-tests {100 #{slow-test-sym}
                                  101 #{slow-test-sym}}}
           mutations [{:form-id 100 :coord [0]}

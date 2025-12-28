@@ -63,14 +63,19 @@
     (let [content "(defn add [a b] (+ a b))"
           file (create-test-file! "add.clj" content)
           sites (engine/find-mutation-sites file)]
-      (is (= 1 (count sites)))
+      (is (= 1 (count sites))
+          "Should find exactly one mutation site for single + operator")
       (let [site (first sites)]
-        (is (= file (:file site)))
-        ;; parser returns :operator as keyword directly
-        (is (= :swap-plus-minus (:operator site)))
-        (is (= "+" (:original site)))
-        (is (number? (:line site)))
-        (is (number? (:column site)))))))
+        (is (= file (:file site))
+            "Mutation site should reference source file")
+        (is (= :swap-plus-minus (:operator site))
+            "Operator should be swap-plus-minus for + symbol")
+        (is (= "+" (:original site))
+            "Original value should be + symbol as string")
+        (is (number? (:line site))
+            "Line number should be present")
+        (is (number? (:column site))
+            "Column number should be present")))))
 
 (deftest test-find-mutation-sites-multiple
   (testing "Finds multiple mutation sites in a file"
@@ -136,12 +141,16 @@
           mutation (assoc (first sites) :id (java.util.UUID/randomUUID))
           result (engine/apply-mutation! mutation)]
       ;; Check backup is stored
-      (is (= original (:backup result)))
+      (is (= original (:backup result))
+          "Backup should contain original file content for revert")
       ;; Check file was modified
       (let [modified (slurp file)]
-        (is (not= original modified))
-        (is (.contains modified "-"))
-        (is (not (.contains modified "(+ a b)")))))))
+        (is (not= original modified)
+            "File content should be different after mutation")
+        (is (.contains modified "-")
+            "Mutated file should contain - (replacement for +)")
+        (is (not (.contains modified "(+ a b)"))
+            "Mutated file should not contain original (+ a b)")))))
 
 (deftest test-apply-mutation-preserves-structure
   (testing "Mutation preserves file structure"
