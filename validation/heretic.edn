@@ -1,0 +1,7 @@
+;; Heretic test configuration for validation project
+{:source-paths ["src"]
+ :test-paths ["test"]
+ :test-namespaces :all
+ :instrument-prefixes ["sample"]
+ :instrument-skip-prefixes []
+ :heretic-dir ".heretic"}

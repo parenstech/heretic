@@ -213,11 +213,14 @@
 
         ;; Initialize tracer
         _ (tracer/init!)
+        _ (println "  Tracer initialized")
 
         ;; Discover test namespaces
+        _ (println "  Discovering test namespaces in:" test-paths)
         all-test-ns (if (= :all (:test-namespaces config))
                       (collector/discover-test-namespaces test-paths)
                       (:test-namespaces config))
+        _ (println "  Found namespaces:" (vec all-test-ns))
 
         ;; Filter to requested namespaces if specified
         target-ns (if namespaces
@@ -232,8 +235,13 @@
                     heretic-dir target-ns test-paths source-paths config))
 
         ;; Get form registry (after loading test namespaces)
-        _ (doseq [ns-sym stale-ns] (require ns-sym))
+        _ (println "  Loading" (count stale-ns) "stale namespaces...")
+        _ (doseq [ns-sym stale-ns]
+            (println "    Loading" ns-sym)
+            (require ns-sym))
+        _ (println "  Getting form registry...")
         forms (get-form-registry)
+        _ (println "  Found" (count forms) "forms")
 
         ;; Collect each stale namespace
         collected (for [ns-sym stale-ns]

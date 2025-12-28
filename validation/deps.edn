@@ -1,7 +1,6 @@
 {:paths ["src" "test"]
 
- :deps {;; No deps in base - ClojureStorm replaces Clojure
-        }
+ :deps {}
 
  :aliases
  {:storm
@@ -12,4 +11,15 @@
               "-Dclojure.storm.instrumentOnlyPrefixes=sample"]}
 
   :validate
-  {:main-opts ["-m" "validate"]}}}
+  {:main-opts ["-m" "validate"]}
+
+  ;; Run heretic coverage collection
+  :heretic
+  {:classpath-overrides {org.clojure/clojure nil}
+   :extra-deps {com.github.flow-storm/clojure {:mvn/version "1.12.0-9"}
+                com.github.flow-storm/flow-storm-dbg {:mvn/version "4.1.1"}
+                ;; Heretic as local dep
+                heretic/heretic {:local/root ".."}}
+   :jvm-opts ["-Dclojure.storm.instrumentEnable=true"
+              "-Dclojure.storm.instrumentAutoPrefixes=false"
+              "-Dclojure.storm.instrumentOnlyPrefixes=sample"]}}}
