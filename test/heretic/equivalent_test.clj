@@ -81,6 +81,24 @@
           mutation (make-mutation :swap-mult-div)]
       (is (nil? (equiv/likely-equivalent? mutation zloc))))))
 
+(deftest not-equivalent-nil-parent-test
+  (testing "Pattern check handles nil parent gracefully"
+    ;; When zloc is at root level (no parent), should return nil not crash
+    ;; This guards against mutations like (and parent ...) -> (or parent ...)
+    (let [zloc (parser/parse-string "+")  ; Just a symbol, no parent
+          mutation (make-mutation :swap-plus-minus)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))
+          "Should return nil when parent is nil, not crash"))))
+
+(deftest not-equivalent-non-list-parent-test
+  (testing "Pattern check handles non-list parent gracefully"
+    ;; When parent exists but is not a list (e.g., vector), should return nil
+    (let [zloc (-> (parser/parse-string "[+ x 0]")
+                   z/down)  ; Position at +
+          mutation (make-mutation :swap-plus-minus)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))
+          "Should return nil when parent is not a list"))))
+
 ;; =============================================================================
 ;; Boolean Pattern Tests
 ;; =============================================================================
