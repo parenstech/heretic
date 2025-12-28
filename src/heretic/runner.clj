@@ -93,10 +93,10 @@
                            nil))]
       (try
         (t/test-var test-var)
-        (catch AssertionError e
+        (catch AssertionError _e
           ;; clojure.test uses AssertionError for failures
           (swap! results update :fail inc))
-        (catch Exception e
+        (catch Exception _e
           (swap! results update :error inc))))
     @results))
 
