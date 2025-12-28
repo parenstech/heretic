@@ -1,9 +1,12 @@
 ---
-status: wip
+status: phase-2-complete
 contributions:
-  - "Missing: Phase 2 mutation operator specifications"
-  - "Missing: AI integration detailed flow"
-  - "Example: mutation operator implementation"
+  - "Needs: Phase 3 file-level parallelism implementation"
+  - "Needs: Phase 3 equivalent mutant detection"
+  - "Needs: Phase 3 HTML report templates"
+  - "Needs: Phase 3 watch mode implementation"
+  - "Needs: Phase 4 ClojureScript/shadow-cljs integration"
+  - "Needs: Phase 4 AI mutation operator protocol"
 ---
 
 # Heretic: Mutation Testing for Clojure
@@ -1285,20 +1288,296 @@ ClojureScript requires:
 - [ ] Basic terminal report
 - [ ] CLI: `heretic:mutate`
 
-### Phase 3: Full Mutation Suite
-- [ ] All mutation operators
-- [ ] HTML reports
-- [ ] Parallel coverage collection (by test namespace)
-- [ ] Parallel mutation testing (by source file)
-- [ ] Timeout handling
-- [ ] Watch mode (re-collect on file changes)
+### Phase 3: Full Mutation Suite + Performance
+
+**Implementation Insights from Phase 2:**
+
+The form-location-index pattern proved critical: ClojureStorm form-ids (compiler-assigned)
+don't match rewrite-clj form hashes. We bridge this gap by building an index of
+`{[file, line] -> form-id}` during coverage collection, allowing mutation sites
+(discovered via rewrite-clj) to look up their corresponding ClojureStorm form-ids
+for test targeting.
+
+#### 3.1 Complete Clojure-Specific Operators
+
+Expand from Phase 2's 18 operators to full Clojure-idiomatic coverage:
+
+**Collection Operators:**
+| Original | Mutation | Notes |
+|----------|----------|-------|
+| `first` | `last`, `rest` | Sequence endpoints |
+| `last` | `first`, `butlast` | Sequence endpoints |
+| `rest` | `next` | Nil vs empty-seq semantics |
+| `next` | `rest` | Empty-seq vs nil semantics |
+| `take` | `drop` | Collection slicing |
+| `drop` | `take` | Collection slicing |
+| `conj` | `disj` | Set operations only |
+| `inc` | `dec` | Numeric increment |
+| `dec` | `inc` | Numeric decrement |
+
+**Nil-Handling Operators:**
+| Original | Mutation | Notes |
+|----------|----------|-------|
+| `nil?` | `some?` | Nil check inversion |
+| `some?` | `nil?` | Existence check inversion |
+| `seq` | `empty?` | Truthy collection check |
+| `empty?` | `seq` | Empty check inversion |
+
+**Threading Operators:**
+| Original | Mutation | Notes |
+|----------|----------|-------|
+| `->` | `->>` | Thread-first ↔ thread-last |
+| `->>` | `->` | Thread-last ↔ thread-first |
+| `->` | `some->` | Add nil short-circuiting |
+| `->>` | `some->>` | Add nil short-circuiting |
+| `some->` | `->` | Remove nil safety |
+| `some->>` | `->>` | Remove nil safety |
+
+**Lazy/Eager Operators:**
+| Original | Mutation | Notes |
+|----------|----------|-------|
+| `map` | `mapv` | Lazy → eager |
+| `mapv` | `map` | Eager → lazy |
+| `filter` | `filterv` | Lazy → eager |
+| `for` | `doseq` | Lazy seq → side-effect iteration |
+
+**Higher-Order Function Operators:**
+| Original | Mutation | Notes |
+|----------|----------|-------|
+| `filter` | `remove` | Predicate inversion |
+| `remove` | `filter` | Predicate inversion |
+| `keep` | `filter` | Nil-filtering semantics |
+
+**Destructuring Operators:**
+| Original | Mutation | Notes |
+|----------|----------|-------|
+| `{:keys [user-id]}` | `{:keys [userId]}` | kebab ↔ camel |
+| `:user/id` | `:users/id` | Namespace typo |
+| `:user/id` | `:user-id` | Qualified → unqualified |
+
+**Return Value Operators:**
+| Original | Mutation | Notes |
+|----------|----------|-------|
+| Return value | `nil` | Nil return |
+| Non-empty coll | `[]`, `{}`, `#{}` | Empty collection |
+| Non-zero number | `0` | Zero return |
+| Non-empty string | `""` | Empty string |
+
+**Constant Replacement Operators:**
+| Original | Mutation | Notes |
+|----------|----------|-------|
+| `c` (integer) | `0` | Zero replacement |
+| `c` (integer) | `1` | One replacement |
+| `c` (integer) | `-1` | Negative one |
+| `c` (integer) | `c + 1` | Off-by-one (up) |
+| `c` (integer) | `c - 1` | Off-by-one (down) |
+
+#### 3.2 Equivalent Mutant Detection
+
+Avoid wasting time on semantically identical mutations:
+
+- [ ] **Static patterns**: Detect known equivalent transformations
+  - `(+ x 0)` → `x` is equivalent
+  - `(* x 1)` → `x` is equivalent
+  - `(and true x)` → `x` is equivalent
+- [ ] **Compile-time detection**: Compare AST structure after optimization
+- [ ] **ML-based detection** (Phase 4): Train classifier on labeled mutants
+
+#### 3.3 Subsumption Analysis
+
+Based on Arcmutate's approach - remove redundant mutants:
+
+- [ ] Track which tests kill which mutants
+- [ ] Identify mutants always killed by the same test set
+- [ ] Report minimal killing test set (MKTS) for efficiency
+- [ ] Skip testing mutants subsumed by already-tested ones
+
+Research shows subsumption can reduce mutation testing time by 30-50%.
+
+#### 3.4 Parallel Execution Architecture
+
+**Controller + Worker Model:**
+
+```
+┌─────────────────────────────────────────────────┐
+│                  Controller                      │
+│  - Generates mutant queue                       │
+│  - Dispatches to workers                        │
+│  - Collects results                             │
+│  - Handles timeouts                             │
+└──────────────────┬──────────────────────────────┘
+                   │
+       ┌───────────┼───────────┐
+       ▼           ▼           ▼
+  ┌─────────┐ ┌─────────┐ ┌─────────┐
+  │ Worker1 │ │ Worker2 │ │ Worker3 │
+  │ (JVM)   │ │ (JVM)   │ │ (JVM)   │
+  └─────────┘ └─────────┘ └─────────┘
+```
+
+Workers are pre-forked JVMs with:
+- Source code loaded but not instrumented
+- Test runner initialized
+- Communication via sockets or files
+
+**File-Level Parallelism (simpler initial approach):**
+- [ ] Parallel across source files (mutex within file)
+- [ ] Each file mutation is sequential
+- [ ] Simple locking, no JVM coordination needed
+
+**Process-Level Parallelism (Phase 4):**
+- [ ] Pre-fork worker JVMs
+- [ ] Socket-based task distribution
+- [ ] Mutant schemata via dynamic vars (no file modification)
+
+#### 3.5 Performance Optimizations
+
+- [ ] **Early termination**: Stop testing mutant on first failure
+- [ ] **Selective mutation**: Offer "fast" preset with 5 operators (research shows ~99% coverage)
+  - Comparison: `<`, `<=`, `>`, `>=`, `=`, `not=`
+  - Arithmetic: `+`, `-`, `*`, `/`
+  - Boolean: `and`, `or`, `true`, `false`
+- [ ] **Incremental mutation**: Only mutate changed functions
+- [ ] **Test ordering**: Run fastest tests first (from timing data)
+- [ ] **Clustering**: Group similar mutants, test one representative
+
+#### 3.6 HTML Reports
+
+Rich visual reports for CI/CD integration:
+
+- [ ] Mutation score dashboard
+- [ ] Source file heatmap (red = survivors, green = killed)
+- [ ] Survivor details with code snippets
+- [ ] Test effectiveness ranking
+- [ ] Trend charts (score over time)
+- [ ] Export to JSON for external tools
+
+#### 3.7 Watch Mode
+
+Continuous mutation testing during development:
+
+- [ ] Watch source and test files for changes
+- [ ] Incremental re-collect coverage on test changes
+- [ ] Re-mutate only affected functions on source changes
+- [ ] Live terminal dashboard with running results
+- [ ] Integration with editor notifications
+
+#### 3.8 Timeout Handling
+
+Robust handling of infinite loops and slow tests:
+
+- [ ] Per-mutant timeout (configurable, default 5s)
+- [ ] Timeout status tracking (`:timeout` in results)
+- [ ] Timeout multiplier based on baseline test time
+- [ ] Process-level kill for runaway tests
+- [ ] Graceful cleanup on timeout (revert mutation, restore state)
 
 **Note**: The split storage model (Phase 1) already supports incremental updates.
 Phase 3 adds parallelism and watch mode to leverage this.
 
-### Phase 4: Polish
-- [ ] ClojureScript support (Node.js first)
-- [ ] IDE integration
-- [ ] CI integration
-- [ ] Performance optimization
-- [ ] Worker pool for full parallelism
+**Acceptance Criteria:**
+- All Clojure-specific operators implemented and tested
+- Equivalent mutant detection reduces false survivors by >20%
+- File-level parallelism achieves linear speedup (2x cores = 2x faster)
+- HTML report provides actionable insights
+- Watch mode enables sub-second feedback on incremental changes
+
+### Phase 4: AI Integration + Polish
+
+#### 4.1 AI-Powered Mutation Generation
+
+Based on research showing traditional operators miss ~49% of real-world bugs,
+add LLM-powered semantic mutations:
+
+**AI Mutator Protocol:**
+```clojure
+(defprotocol AIMutator
+  (generate-mutations [this context]
+    "Generate semantic mutations using AI.
+     context: {:source-code, :function-name, :docstring, :schemas}"))
+```
+
+**AI Operators:**
+| ID | Name | Description |
+|----|------|-------------|
+| `ai-logic-invert` | Business logic inversion | Flip conditional meaning |
+| `ai-edge-case` | Edge case removal | Remove boundary handling |
+| `ai-semantic` | Semantic mutation | Wrong-but-plausible code |
+| `ai-nilsafe` | Nil safety removal | Remove nil guards |
+
+**Integration with Malli/Spec:**
+- Extract schemas for function inputs/outputs
+- Guide mutations to produce type-valid alternatives
+- Avoid obviously invalid mutations (wrong arity, type mismatches)
+
+**Cost/Quality Tradeoffs:**
+- [ ] Tiered approach: deterministic first, AI for survivors
+- [ ] Caching: reuse AI mutations for similar code patterns
+- [ ] Batch prompting: group multiple mutation sites per API call
+- [ ] Local models: support Ollama for cost-sensitive environments
+
+#### 4.2 ClojureScript Support
+
+**Node.js First Approach:**
+- ClojureScriptStorm integration (shadow-cljs)
+- Coverage via Node.js instrumentation
+- Form registry stored server-side
+- shadow-cljs rebuild after mutations
+
+**Browser Support (later):**
+- Coverage sent via HTTP POST from browser
+- Headless Chrome for test execution
+- Hot reload integration
+
+#### 4.3 IDE Integration
+
+- [ ] LSP server for inline mutation indicators
+- [ ] VS Code extension with survivor highlighting
+- [ ] Emacs/CIDER integration via nREPL
+- [ ] IntelliJ/Cursive plugin
+
+#### 4.4 CI/CD Integration
+
+- [ ] GitHub Actions workflow templates
+- [ ] GitLab CI configuration
+- [ ] Jenkins plugin
+- [ ] PR comment with mutation score delta
+- [ ] Quality gate: fail if score drops below threshold
+
+#### 4.5 Advanced Parallelism
+
+**Process Pool Architecture:**
+- [ ] Pre-fork worker JVMs at startup
+- [ ] Socket-based mutant distribution
+- [ ] Mutant schemata via dynamic vars:
+  ```clojure
+  (defonce ^:dynamic *mutant-id* nil)
+
+  (defn original-fn [x]
+    (case *mutant-id*
+      :m1 (- x 1)  ; mutation 1
+      :m2 (* x 2)  ; mutation 2
+      (+ x 1)))    ; original
+  ```
+- [ ] Zero-copy mutation (no file modification)
+- [ ] Worker health monitoring and restart
+
+**Performance Targets:**
+- 10x speedup over sequential on 8-core machine
+- Sub-minute mutation testing for typical projects (< 1000 LOC)
+- Linear scaling with additional cores
+
+#### 4.6 ML-Based Equivalent Detection
+
+Train classifier to identify equivalent mutants:
+- [ ] Labeled dataset from heretic runs
+- [ ] Features: AST diff, operator type, context
+- [ ] Model: lightweight decision tree or small NN
+- [ ] Integration: filter before testing phase
+
+**Acceptance Criteria:**
+- AI mutations catch bugs missed by deterministic operators
+- ClojureScript support works with shadow-cljs projects
+- IDE integration provides inline feedback
+- CI integration enables mutation testing in PRs
+- Worker pool achieves 10x speedup on multi-core
