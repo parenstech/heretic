@@ -39,75 +39,79 @@ Build a mapping of which tests exercise which code locations. This is a one-time
 ```clojure
 ;; Primary output: test → form → coords
 {:test-coverage
- {test-id-1 {form-id-1 #{"3" "3,2" "3,2,1"}
-             form-id-2 #{"1" "2,1"}}
-  test-id-2 {form-id-1 #{"3" "4"}
-             form-id-3 #{"1"}}}}
+ {my.app-test/test-addition {12345 #{"3" "3,1" "3,2"}
+                              12346 #{"1" "2,1"}}
+  my.app-test/test-subtraction {12345 #{"3" "4"}
+                                 12347 #{"1"}}}}
 
 ;; Inverse index (derived): form+coord → tests
 {:coord-to-tests
- {[form-id-1 "3"]     #{test-id-1 test-id-2}
-  [form-id-1 "3,2"]   #{test-id-1}
-  [form-id-1 "3,2,1"] #{test-id-1}
-  [form-id-1 "4"]     #{test-id-2}
+ {[12345 "3"]     #{my.app-test/test-addition my.app-test/test-subtraction}
+  [12345 "3,2"]   #{my.app-test/test-addition}
+  [12345 "3,2,1"] #{my.app-test/test-addition}
+  [12345 "4"]     #{my.app-test/test-subtraction}
   ...}}
 
-;; Form registry (from ClojureStorm): form-id → metadata
+;; Form registry (from ClojureStorm FormRegistry/getAllForms)
+;; Returns: {form-id -> form-metadata}
 {:forms
- {form-id-1 {:form/ns "my.app.core"
-             :form/form (defn foo [x] (+ x 1))
-             :form/emitted-coords #{"3" "3,1" "3,2"}}
+ {12345 {:form/ns "my.app.core"
+         :form/form (defn foo [x] (+ x 1))
+         :form/emitted-coords #{"3" "3,1" "3,2"}}
+  12346 {:form/ns "my.app.core"
+         :form/form (defn bar [a b] (* a b))
+         :form/emitted-coords #{"3" "3,1" "3,2"}}
   ...}}
+
+;; Metadata for staleness checking
+{:metadata
+ {:collected-at 1703789012345
+  :source-hash "abc123..."      ;; Hash of all source files
+  :test-hash "def456..."        ;; Hash of all test files
+  :config-hash "ghi789..."}}    ;; Hash of heretic config
 ```
 
 ### Components
 
-#### 1. Test Context Tracker
+#### 1. Coverage Tracer
 
-Tracks which test is currently executing.
-
-```clojure
-(ns heretic.context)
-
-(def ^:dynamic *current-test*
-  "The currently executing test identifier (symbol or keyword)"
-  nil)
-
-(defmacro with-test [test-id & body]
-  `(binding [*current-test* ~test-id]
-     ~@body))
-```
-
-#### 2. Coverage Tracer
-
-Receives callbacks from ClojureStorm and records coverage per-test.
+Receives callbacks from ClojureStorm and records coverage. ClojureStorm callbacks
+receive coordinates as **vectors** (e.g., `[3 2 1]`), which are then stringified
+for storage (e.g., `"3,2,1"`).
 
 ```clojure
 (ns heretic.tracer
-  (:require [heretic.context :refer [*current-test*]])
+  (:require [clojure.string :as str])
   (:import [clojure.storm Emitter Tracer FormRegistry]))
 
-;; Mutable for performance during collection
-(def ^:private coverage-data
-  "Atom of {test-id {form-id #{coords}}}"
+;; Current coverage accumulator (reset between tests)
+(def ^:private current-coverage
+  "Atom of {form-id #{coords}} for the currently running test"
   (atom {}))
 
-(defn- stringify-coord [coord]
+(defn- stringify-coord
+  "Convert coordinate vector to string.
+   ClojureStorm passes coords as vectors: [3 2 1] -> \"3,2,1\"
+   Hash-based coords for maps/sets arrive as strings: \"K-12345\""
+  [coord]
   (if (string? coord)
     coord
-    (clojure.string/join "," coord)))
+    (str/join "," coord)))
 
-(defn- record-hit! [form-id coord]
-  (when-let [test-id *current-test*]
-    (swap! coverage-data
-           update-in [test-id form-id]
-           (fnil conj #{})
-           (stringify-coord coord))))
+(defn- record-hit!
+  "Record a coverage hit for the current test.
+   Called by ClojureStorm for each expression evaluation."
+  [form-id coord]
+  (swap! current-coverage
+         update form-id
+         (fnil conj #{})
+         (stringify-coord coord)))
 
-(defn init! []
+(defn init!
   "Initialize ClojureStorm instrumentation with Heretic's callbacks"
+  []
   (Emitter/setInstrumentationEnable true)
-  (Emitter/setFnCallInstrumentationEnable false)  ; optional
+  (Emitter/setFnCallInstrumentationEnable false)
   (Emitter/setFnReturnInstrumentationEnable true)
   (Emitter/setExprInstrumentationEnable true)
   (Emitter/setBindInstrumentationEnable false)
@@ -117,109 +121,183 @@ Receives callbacks from ClojureStorm and records coverage per-test.
     :trace-fn-return-fn (fn [_ _ coord form-id] (record-hit! form-id coord))
     :trace-fn-unwind-fn (fn [_ _ coord form-id] (record-hit! form-id coord))}))
 
-(defn get-coverage []
-  "Return immutable snapshot of coverage data"
-  @coverage-data)
+(defn get-current-coverage
+  "Return coverage accumulated for the current test"
+  []
+  @current-coverage)
 
-(defn reset-coverage! []
-  "Clear coverage data for fresh collection"
-  (reset! coverage-data {}))
+(defn reset-current-coverage!
+  "Clear coverage for the next test"
+  []
+  (reset! current-coverage {}))
 ```
 
-#### 3. Test Runner Integration
+#### 2. Per-Test Coverage Collector
 
-Hook into clojure.test to bind test context.
+Runs each test individually and collects its coverage. This approach:
+- Works with **all test runners** (Kaocha, Cognitect, clojure.test)
+- Avoids threading issues with `binding`
+- Doesn't require `alter-var-root` hacks
 
 ```clojure
-(ns heretic.test-runner
-  (:require [clojure.test :as t]
-            [heretic.context :refer [*current-test*]]))
+(ns heretic.collector
+  (:require [heretic.tracer :as tracer]
+            [clojure.test :as t]))
 
-(defn wrap-test-var
-  "Wrap clojure.test/test-var to track current test"
-  [original-test-var]
-  (fn [v]
-    (binding [*current-test* (symbol v)]
-      (original-test-var v))))
+(defn discover-test-vars
+  "Find all test vars in the given namespaces"
+  [test-namespaces]
+  (for [ns-sym test-namespaces
+        :let [ns-obj (the-ns ns-sym)]
+        [_ v] (ns-publics ns-obj)
+        :when (:test (meta v))]
+    v))
 
-(defn install-test-wrapper! []
-  "Patch clojure.test to track test context"
-  (alter-var-root #'t/test-var wrap-test-var))
+(defn run-test-with-coverage
+  "Run a single test and capture its coverage.
+   Returns {test-symbol -> {form-id -> #{coords}}}"
+  [test-var]
+  (tracer/reset-current-coverage!)
+  (try
+    ;; Run the test (works regardless of test runner)
+    (test-var)
+    (catch Throwable t
+      ;; Log but continue - we still want the coverage
+      (println "Test threw exception:" (.getMessage t))))
+  ;; Return coverage for this test
+  {(symbol test-var) (tracer/get-current-coverage)})
+
+(defn collect-all-coverage
+  "Run all tests one by one and collect per-test coverage.
+   Returns {:test-coverage {test-sym {form-id #{coords}}}}"
+  [test-namespaces]
+  (tracer/init!)
+  (let [test-vars (discover-test-vars test-namespaces)
+        coverage (reduce
+                   (fn [acc test-var]
+                     (merge acc (run-test-with-coverage test-var)))
+                   {}
+                   test-vars)]
+    {:test-coverage coverage}))
 ```
 
-#### 4. Coverage Map Builder
+#### 3. Coverage Map Builder
 
 Process raw coverage into queryable indexes.
 
 ```clojure
 (ns heretic.coverage-map
-  (:require [heretic.tracer :as tracer])
+  (:require [heretic.collector :as collector])
   (:import [clojure.storm FormRegistry]))
 
-(defn build-coverage-map []
-  "Build complete coverage map with all indexes"
-  (let [test-coverage (tracer/get-coverage)
-        forms (into {} (FormRegistry/getAllForms))
+(defn get-form-registry
+  "Get all forms from ClojureStorm's FormRegistry.
+   Returns {form-id -> {:form/ns, :form/form, :form/emitted-coords}}"
+  []
+  (into {} (FormRegistry/getAllForms)))
 
-        ;; Build inverse index: [form-id coord] → #{test-ids}
-        coord-to-tests
-        (reduce-kv
-         (fn [idx test-id form-coords]
-           (reduce-kv
-            (fn [idx form-id coords]
-              (reduce
-               (fn [idx coord]
-                 (update idx [form-id coord] (fnil conj #{}) test-id))
-               idx
-               coords))
+(defn build-inverse-index
+  "Build form+coord -> tests index from test-coverage"
+  [test-coverage]
+  (reduce-kv
+    (fn [idx test-id form-coords]
+      (reduce-kv
+        (fn [idx form-id coords]
+          (reduce
+            (fn [idx coord]
+              (update idx [form-id coord] (fnil conj #{}) test-id))
             idx
-            form-coords))
-         {}
-         test-coverage)]
+            coords))
+        idx
+        form-coords))
+    {}
+    test-coverage))
 
+(defn build-coverage-map
+  "Build complete coverage map with all indexes"
+  [test-namespaces source-paths test-paths config]
+  (let [{:keys [test-coverage]} (collector/collect-all-coverage test-namespaces)
+        forms (get-form-registry)
+        coord-to-tests (build-inverse-index test-coverage)]
     {:test-coverage test-coverage
      :coord-to-tests coord-to-tests
-     :forms forms}))
+     :forms forms
+     :metadata {:collected-at (System/currentTimeMillis)
+                :source-hash (hash-files source-paths)
+                :test-hash (hash-files test-paths)
+                :config-hash (hash config)}}))
 
 (defn tests-for-location
   "Given a form-id and optional coord, return tests that hit it"
   ([coverage-map form-id]
-   ;; All tests that hit any coord in this form
    (into #{}
          (for [[test-id forms] (:test-coverage coverage-map)
                :when (contains? forms form-id)]
            test-id)))
 
   ([coverage-map form-id coord]
-   ;; Tests that hit this specific coord
    (get-in coverage-map [:coord-to-tests [form-id coord]] #{})))
 ```
 
-#### 5. Persistence
+#### 4. Persistence
 
-Save/load coverage maps to avoid re-collection.
+Save/load coverage maps with atomic writes to prevent corruption.
 
 ```clojure
 (ns heretic.persistence
   (:require [clojure.edn :as edn]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io])
+  (:import [java.io File]
+           [java.nio.file Files StandardCopyOption]))
 
 (def default-path ".heretic/coverage-map.edn")
 
-(defn save-coverage-map! [coverage-map path]
-  (io/make-parents path)
-  (spit path (pr-str coverage-map)))
+(defn- atomic-spit!
+  "Write content atomically using temp file + rename.
+   Prevents corruption if process crashes mid-write."
+  [path content]
+  (let [file (io/file path)
+        parent (.getParentFile file)
+        temp-file (File/createTempFile "heretic" ".tmp" parent)]
+    (try
+      (spit temp-file content)
+      (Files/move (.toPath temp-file)
+                  (.toPath file)
+                  (into-array [StandardCopyOption/REPLACE_EXISTING
+                               StandardCopyOption/ATOMIC_MOVE]))
+      (catch Exception e
+        (.delete temp-file)
+        (throw e)))))
 
-(defn load-coverage-map [path]
+(defn save-coverage-map!
+  "Save coverage map atomically"
+  [coverage-map path]
+  (io/make-parents path)
+  (atomic-spit! path (pr-str coverage-map)))
+
+(defn load-coverage-map
+  "Load coverage map from disk"
+  [path]
   (when (.exists (io/file path))
     (edn/read-string (slurp path))))
 
+(defn- hash-files
+  "Compute hash of file contents for staleness detection"
+  [paths]
+  (let [contents (mapcat #(file-seq (io/file %)) paths)
+        file-hashes (for [f contents
+                          :when (.isFile f)]
+                      (hash (slurp f)))]
+    (hash (vec file-hashes))))
+
 (defn coverage-map-stale?
-  "Check if coverage map needs regeneration based on test file timestamps"
-  [coverage-map-path test-paths]
-  (let [map-time (.lastModified (io/file coverage-map-path))]
-    (some #(> (.lastModified (io/file %)) map-time)
-          test-paths)))
+  "Check if coverage map needs regeneration.
+   Stale if source files, test files, OR config changed."
+  [coverage-map source-paths test-paths config]
+  (let [{:keys [source-hash test-hash config-hash]} (:metadata coverage-map)]
+    (or (not= source-hash (hash-files source-paths))
+        (not= test-hash (hash-files test-paths))
+        (not= config-hash (hash config)))))
 ```
 
 ### Collection Flow
@@ -229,17 +307,24 @@ Save/load coverage maps to avoid re-collection.
 
 2. Heretic:
    a. Calls heretic.tracer/init! to set up ClojureStorm callbacks
-   b. Calls heretic.test-runner/install-test-wrapper! to patch clojure.test
-   c. Runs the test suite (all tests)
-   d. Each test execution:
-      - Binds *current-test* to test identifier
-      - ClojureStorm calls our callbacks for each expression
-      - We record (test-id, form-id, coord) tuples
-   e. After all tests: heretic.coverage-map/build-coverage-map
-   f. Persist to .heretic/coverage-map.edn
+   b. Discovers all test vars in test namespaces
+   c. For each test var:
+      i.   Reset current coverage accumulator
+      ii.  Run the single test
+      iii. Capture coverage: {form-id -> #{coords}}
+      iv.  Store under test identifier
+   d. Build inverse index (coord -> tests)
+   e. Persist atomically to .heretic/coverage-map.edn
 
 3. Output: coverage map ready for mutation testing
 ```
+
+**Key design decision**: Running tests one-by-one is slower than running all tests
+at once, but it:
+- Works with ALL test runners (not just clojure.test)
+- Avoids thread-local binding issues with async tests
+- Produces accurate per-test coverage
+- Is only done once per test suite change
 
 ---
 
@@ -281,13 +366,13 @@ Clojure-specific mutations to apply:
 | `false` | `true` |
 
 #### Collection Operators
-| Original | Mutation |
-|----------|----------|
-| `first` | `last`, `rest` |
-| `last` | `first`, `butlast` |
-| `conj` | `disj` (for sets) |
-| `inc` | `dec` |
-| `dec` | `inc` |
+| Original | Mutation | Context |
+|----------|----------|---------|
+| `first` | `last`, `rest` | sequences only |
+| `last` | `first`, `butlast` | sequences only |
+| `conj` | `disj` | sets only |
+| `inc` | `dec` | |
+| `dec` | `inc` | |
 
 #### Control Flow
 | Original | Mutation |
@@ -295,6 +380,8 @@ Clojure-specific mutations to apply:
 | `if` condition | negate condition |
 | `when` condition | negate condition |
 | `cond` branch | remove branch |
+
+**Note**: Don't mutate inside quoted forms (`'(...)` or `(quote ...)`).
 
 #### Return Values
 | Original | Mutation |
@@ -324,6 +411,7 @@ Parse Clojure source to identify mutation sites.
   "Find all locations in the AST where mutations can be applied.
    Returns seq of {:zloc, :form-id, :coord, :operator, :mutations}"
   ;; Walk the tree, identify operators that can be mutated
+  ;; Skip quoted forms
   )
 
 (defn apply-mutation [zloc mutation]
@@ -331,28 +419,54 @@ Parse Clojure source to identify mutation sites.
   )
 ```
 
-#### 2. Form-to-Source Mapper
+#### 2. Coordinate Mapper
 
-Map ClojureStorm's form-ids back to source locations.
+Bidirectional mapping between ClojureStorm coordinates and rewrite-clj zippers.
 
 ```clojure
-(ns heretic.source-mapper
-  (:import [clojure.storm FormRegistry]))
+(ns heretic.coord-mapper
+  (:require [rewrite-clj.zip :as z]
+            [clojure.string :as str]))
 
-(defn build-source-index [source-paths]
-  "Build index from source locations to form-ids.
-   Returns {[file line col] -> form-id}"
-  ;; Parse each file
-  ;; Match forms to FormRegistry entries by namespace + form structure
-  )
+(defn- nth-child
+  "Navigate to the nth child of a zipper location"
+  [zloc n]
+  (nth (iterate z/right (z/down zloc)) n))
 
-(defn form-id-for-location [source-index file line col]
-  "Given a source location, find the form-id"
-  )
+(defn- find-by-hash
+  "Find element in unordered collection by its hash.
+   Hash format: K-<hash> for keys/set-elements, V-<hash> for values"
+  [zloc hash-str]
+  (let [[prefix hash-val] (str/split hash-str #"-" 2)
+        target-hash (parse-long hash-val)]
+    ;; Walk children, compute hash of each, find match
+    ;; For maps: K- matches keys, V- matches values
+    ;; For sets: K- matches elements
+    ))
 
-(defn coord-for-subexpr [form-id subexpr-location]
-  "Given a form-id and location within that form, find the coord string"
-  ;; This requires understanding ClojureStorm's coordinate scheme
+(defn coord->zloc
+  "Navigate a zipper using ClojureStorm coordinates.
+   coord can be a string \"3,2,1\" or vector [3 2 1]"
+  [zloc coord]
+  (let [parts (if (string? coord)
+                (map #(if (re-matches #"\d+" %)
+                        (parse-long %)
+                        %)
+                     (str/split coord #","))
+                coord)]
+    (reduce
+      (fn [z part]
+        (if (string? part)
+          (find-by-hash z part)
+          (nth-child z part)))
+      zloc
+      parts)))
+
+(defn zloc->coord
+  "Get ClojureStorm coordinate for a zipper position.
+   Returns vector like [3 2 1]"
+  [zloc]
+  ;; Walk up to root, collecting indices/hashes
   )
 ```
 
@@ -368,7 +482,7 @@ protocols, multimethods, and dependency ordering.
 (defn init! [source-paths]
   "Initialize clj-reload with source directories"
   (reload/init {:dirs source-paths
-                :output :quiet}))  ;; Silent for mutation testing
+                :output :quiet}))
 
 (defn reload-after-mutation!
   "Reload changed namespaces after a mutation is applied.
@@ -398,7 +512,7 @@ clj-reload solves critical namespace reloading problems:
    first and reloading dependencies first
 
 3. **Lifecycle hooks**: Supports `before-ns-unload` and `after-ns-reload` hooks
-   per namespace
+   (configured globally via `:unload-hook` and `:reload-hook` in init)
 
 4. **Zero dependencies**: Small, focused library with no runtime dependencies
 
@@ -411,7 +525,7 @@ Apply mutations and track results.
 ```clojure
 (ns heretic.mutation-engine
   (:require [heretic.parser :as parser]
-            [heretic.source-mapper :as mapper]
+            [heretic.coord-mapper :as mapper]
             [heretic.coverage-map :as coverage]
             [heretic.reloader :as reloader]))
 
@@ -431,14 +545,14 @@ Apply mutations and track results.
   "Apply mutation to source file"
   ;; 1. Read file
   ;; 2. Parse with rewrite-clj
-  ;; 3. Navigate to mutation location
+  ;; 3. Navigate to mutation location using coord-mapper
   ;; 4. Replace node
-  ;; 5. Write file back
+  ;; 5. Write file back (atomic)
   )
 
 (defn revert-mutation! [mutation]
   "Revert mutation, restore original source"
-  ;; 1. Write original content back to file
+  ;; 1. Write original content back to file (atomic)
   )
 ```
 
@@ -459,9 +573,9 @@ Run only tests relevant to a mutation.
    (:form-id mutation)
    (:coord mutation)))
 
-(defn run-tests [test-ids {:keys [timeout]}]
-  "Run specific tests, return results"
-  ;; Filter test vars to only those in test-ids
+(defn run-tests [test-syms {:keys [timeout]}]
+  "Run specific tests by symbol, return results"
+  ;; Resolve test vars from symbols
   ;; Run with timeout
   ;; Return {:passed, :failed, :errors, :duration}
   )
@@ -555,6 +669,7 @@ Generate mutation testing reports.
 ;; heretic.edn or in deps.edn under :heretic alias
 {:source-paths ["src"]
  :test-paths ["test"]
+ :test-namespaces [my.app.core-test my.app.util-test]  ;; or :all
  :coverage-map-path ".heretic/coverage-map.edn"
 
  ;; Namespace filtering (passed to ClojureStorm)
@@ -565,8 +680,7 @@ Generate mutation testing reports.
  :mutation-operators [:arithmetic :comparison :boolean :return-values]
  :skip-forms #{comment}
  :timeout-ms 5000
- :parallel true
- :max-workers 4
+ :parallel false  ;; Phase 3 feature
 
  ;; Reporting
  :report-format :html
@@ -580,6 +694,9 @@ Generate mutation testing reports.
 ```bash
 # Collect coverage map (explicit)
 bb heretic:collect
+
+# Force recollection even if not stale
+bb heretic:collect --force
 
 # Run mutation testing
 bb heretic:mutate
@@ -629,8 +746,9 @@ JVM args for ClojureStorm:
 
 ### ClojureStorm Coordinate System
 
-ClojureStorm uses positional paths into the AST, stored as vectors and
-stringified with commas:
+ClojureStorm uses positional paths into the AST. Coordinates arrive at tracer
+callbacks as **vectors** (e.g., `[3 2 1]`) and are stringified for storage
+(e.g., `"3,2,1"`).
 
 ```clojure
 ;; For the form:
@@ -644,42 +762,63 @@ stringified with commas:
 ;; [3 2]   → b           → stringified as "3,2"
 ```
 
-For maps and sets (unordered), coordinates use hash-based identifiers:
-- Map keys: `"K-<hash>"`
-- Map values: `"V-<hash>"`
-- Set elements: `"K-<hash>"`
+For **maps and sets** (unordered), coordinates use hash-based identifiers:
+- Map keys: `"K<hash>"` where hash is computed from `pr-str` of the key
+- Map values: `"V<hash>"`
+- Set elements: `"K<hash>"`
+
+```clojure
+;; For the form:
+{:a 1 :b 2}
+
+;; Coordinates might be:
+;; ["K12345"]  → :a (key)
+;; ["V12345"]  → 1 (value for :a)
+;; ["K67890"]  → :b (key)
+;; ["V67890"]  → 2 (value for :b)
+```
+
+The hash is computed by `hansel.utils/clojure-form-source-hash` which normalizes
+whitespace and removes comments before hashing.
+
+**Important limitations:**
+- **Records are NOT recursed** - they're treated as leaf forms
+- **Metadata cannot always be attached** - some objects (primitives, Java objects)
+  silently skip coordinate tagging
+- **Lazy sequences are forced** - coordinates are assigned eagerly via `doall`
 
 The coordinate scheme is implemented in `hansel.utils/walk-code-form`.
 
 ### Mapping rewrite-clj to ClojureStorm Coordinates
 
-rewrite-clj uses zipper navigation. To convert:
+rewrite-clj uses zipper navigation. The `heretic.coord-mapper` namespace provides
+bidirectional conversion:
 
 ```clojure
-(defn coord->zloc [zloc coord]
-  "Navigate a zipper using ClojureStorm coordinates"
-  (reduce
-    (fn [z idx]
-      (if (string? idx)
-        ;; Map/set element - search by hash
-        (find-by-hash z idx)
-        ;; Sequential - navigate by position
-        (-> z z/down (nth-right idx))))
-    zloc
-    coord))
+;; ClojureStorm coord → rewrite-clj zipper position
+(coord->zloc root-zloc "3,2,1")  ;; Navigate to [3 2 1]
+
+;; rewrite-clj zipper position → ClojureStorm coord
+(zloc->coord some-zloc)  ;; Returns [3 2 1]
+```
+
+**Validation requirement**: The coordinate mapper MUST be tested with round-trip
+validation before Phase 1 is complete:
+```clojure
+(= (zloc->coord (coord->zloc zloc coord)) coord)  ;; Must be true
 ```
 
 ### clj-reload Integration
 
 clj-reload provides the reloading infrastructure:
 
-1. **Initialization**: `(reload/init {:dirs source-paths})`
+1. **Initialization**: `(reload/init {:dirs source-paths :output :quiet})`
 
 2. **After mutation**: `(reload/reload)` detects file changes and reloads
    affected namespaces in correct order
 
 3. **Unload cycle**: For each affected namespace:
-   - Calls `before-ns-unload` hook if defined
+   - Calls `before-ns-unload` hook if defined (global config, not per-namespace)
    - Calls `remove-ns` to fully remove the namespace
    - Removes from `*loaded-libs*`
 
@@ -694,13 +833,17 @@ clj-reload provides the reloading infrastructure:
 
 ## Open Questions
 
-### 1. Coordinate Mapping (Medium Risk)
+### 1. Coordinate Mapping Edge Cases (Medium Risk)
 
 The core coordinate scheme (integer indices for sequential forms) maps cleanly
-between ClojureStorm and rewrite-clj. Map/set coordinates using hashes need
-special handling but are resolvable.
+between ClojureStorm and rewrite-clj. Known edge cases:
 
-**Action**: Build and test the `coord->zloc` translation layer early.
+- **Hash collisions**: Unlikely but possible for map/set coordinates
+- **Records**: Not recursed into - mutations inside records won't have deep coords
+- **Reader macros**: `#(...)`, `@`, `'` expand before instrumentation
+
+**Action**: Build and validate the coordinate mapper with extensive test cases
+including maps, sets, and nested structures.
 
 ### 2. Parallel Execution
 
@@ -727,16 +870,28 @@ ClojureScript requires:
 ## Implementation Phases
 
 ### Phase 1: Coverage Collection (MVP)
-- [ ] Set up ClojureStorm integration
-- [ ] Implement test context tracking
-- [ ] Build coverage map data structure
-- [ ] Persistence (save/load)
+
+**Priority 1: Validation (do first)**
+- [ ] Verify FormRegistry output format matches spec assumptions
+- [ ] Build and test coordinate mapper with round-trip validation
+- [ ] Integration test with real clojure.test suite
+
+**Priority 2: Core Implementation**
+- [ ] Set up ClojureStorm integration (tracer callbacks)
+- [ ] Implement per-test coverage collection
+- [ ] Build coverage map with inverse index
+- [ ] Atomic file persistence with staleness detection
 - [ ] Basic CLI: `heretic:collect`
+
+**Acceptance criteria**:
+- Running `heretic:collect` on a sample project produces a coverage map
+- Coverage map correctly identifies which tests hit which code
+- Round-trip: `coord->zloc` and `zloc->coord` are inverses
 
 ### Phase 2: Basic Mutation Testing
 - [ ] Source parsing with rewrite-clj
 - [ ] Implement 2-3 mutation operators (arithmetic, boolean)
-- [ ] Form-id to source mapping
+- [ ] Form-id to source mapping via coordinate mapper
 - [ ] clj-reload integration for namespace reloading
 - [ ] Targeted test execution
 - [ ] Basic terminal report
