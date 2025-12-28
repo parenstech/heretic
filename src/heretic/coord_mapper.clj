@@ -63,17 +63,36 @@
 ;; =============================================================================
 
 (defn- compute-form-hash
-  "Compute hash for a rewrite-clj node, matching ClojureStorm's hash.
+  "Compute hash for a rewrite-clj node, matching ClojureStorm's hansel.utils/clojure-form-source-hash.
 
-   ClojureStorm uses hansel.utils/clojure-form-source-hash which:
-   1. Converts form to string via pr-str
-   2. Normalizes whitespace
-   3. Removes comments
-   4. Hashes the result"
+   The algorithm:
+   1. Converts form to string via z/string
+   2. Removes reader tags (#tag)
+   3. Removes metadata keywords (^:key)
+   4. Removes metadata maps (^{...})
+   5. Removes comments (; ...)
+   6. Removes all whitespace
+   7. Computes a 32-bit hash using a position-weighted sum
+
+   Returns the hash as a Long."
   [zloc]
-  ;; TODO: Match ClojureStorm's exact hashing algorithm
-  ;; For now, use a simplified version
-  (hash (z/string zloc)))
+  (let [M 4294967291
+        s (z/string zloc)
+        clean-s (-> s
+                    (str/replace #"#[/.a-zA-Z0-9_-]+" "")  ;; remove tags
+                    (str/replace #"\^:[a-zA-Z0-9_-]+" "")  ;; remove meta keys
+                    (str/replace #"\^\{.+?\}" "")          ;; remove meta maps
+                    (str/replace #";.+\n" "")              ;; remove comments
+                    (str/replace #"[ \t\n]+" ""))]         ;; remove non visible
+    (loop [sum 0
+           mul 1
+           i 0
+           [c & srest] clean-s]
+      (if (nil? c)
+        (mod sum M)
+        (let [mul' (if (zero? (mod i 4)) 1 (* mul 256))
+              sum' (+ sum (* (long c) mul'))]
+          (recur sum' mul' (inc i) srest))))))
 
 (defn- find-by-hash
   "Find element in unordered collection by its hash.

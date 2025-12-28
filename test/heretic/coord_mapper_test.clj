@@ -6,7 +6,8 @@
 
    Validation requirement:
    (= coord (zloc->coord (coord->zloc zloc coord)))"
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [heretic.coord-mapper :as mapper]
             [rewrite-clj.zip :as z]))
 
@@ -94,23 +95,123 @@
           (is (:valid result)
               (str "Round-trip failed for " coord ": " result)))))))
 
-;; TODO: Add round-trip tests for maps and sets
-;; These require matching ClojureStorm's hash algorithm
-
 ;; =============================================================================
-;; Map/Set Navigation (TODO)
+;; Map/Set Navigation
 ;; =============================================================================
 
-(deftest ^:pending test-map-navigation
+(deftest test-map-navigation
   (testing "Navigates maps using hash coordinates"
-    ;; TODO: Implement and test hash-based navigation
-    ;; Requires matching ClojureStorm's exact hashing
-    (is (= :pending :pending) "Pending: Phase 2 feature")))
+    (let [zloc (z/of-string "{:a 1 :b 2}")
+          ;; Navigate to each element and get its coordinate
+          key-a (z/down zloc)
+          val-1 (z/right key-a)
+          key-b (z/right val-1)
+          val-2 (z/right key-b)
+          ;; Get the hash-based coordinates
+          coord-key-a (mapper/zloc->coord key-a)
+          coord-val-1 (mapper/zloc->coord val-1)
+          coord-key-b (mapper/zloc->coord key-b)
+          coord-val-2 (mapper/zloc->coord val-2)]
 
-(deftest ^:pending test-set-navigation
+      (testing "zloc->coord returns K-prefixed coords for keys"
+        (is (= 1 (count coord-key-a)))
+        (is (string? (first coord-key-a)))
+        (is (str/starts-with? (first coord-key-a) "K")))
+
+      (testing "zloc->coord returns V-prefixed coords for values"
+        (is (= 1 (count coord-val-1)))
+        (is (string? (first coord-val-1)))
+        (is (str/starts-with? (first coord-val-1) "V")))
+
+      (testing "coord->zloc navigates to correct key"
+        (is (= :a (z/sexpr (mapper/coord->zloc zloc coord-key-a))))
+        (is (= :b (z/sexpr (mapper/coord->zloc zloc coord-key-b)))))
+
+      (testing "coord->zloc navigates to correct value"
+        (is (= 1 (z/sexpr (mapper/coord->zloc zloc coord-val-1))))
+        (is (= 2 (z/sexpr (mapper/coord->zloc zloc coord-val-2)))))
+
+      (testing "round-trip for map keys"
+        (is (:valid (mapper/validate-round-trip zloc coord-key-a)))
+        (is (:valid (mapper/validate-round-trip zloc coord-key-b))))
+
+      (testing "round-trip for map values"
+        (is (:valid (mapper/validate-round-trip zloc coord-val-1)))
+        (is (:valid (mapper/validate-round-trip zloc coord-val-2))))))
+
+  (testing "Navigates nested maps"
+    (let [zloc (z/of-string "{:outer {:inner 42}}")
+          outer-key (z/down zloc)
+          outer-val (z/right outer-key)
+          coord-outer-val (mapper/zloc->coord outer-val)]
+
+      (testing "outer value is the inner map"
+        (is (= {:inner 42} (z/sexpr (mapper/coord->zloc zloc coord-outer-val)))))
+
+      ;; Navigate into the inner map
+      (let [inner-zloc (mapper/coord->zloc zloc coord-outer-val)
+            inner-key (z/down inner-zloc)
+            inner-val (z/right inner-key)
+            coord-inner-key (mapper/zloc->coord inner-key)
+            coord-inner-val (mapper/zloc->coord inner-val)]
+
+        (testing "inner map key navigation"
+          (is (= :inner (z/sexpr (mapper/coord->zloc zloc coord-inner-key)))))
+
+        (testing "inner map value navigation"
+          (is (= 42 (z/sexpr (mapper/coord->zloc zloc coord-inner-val)))))
+
+        (testing "round-trip for nested elements"
+          (is (:valid (mapper/validate-round-trip zloc coord-inner-key)))
+          (is (:valid (mapper/validate-round-trip zloc coord-inner-val))))))))
+
+(deftest test-set-navigation
   (testing "Navigates sets using hash coordinates"
-    ;; TODO: Implement and test hash-based navigation
-    (is (= :pending :pending) "Pending: Phase 2 feature")))
+    (let [zloc (z/of-string "#{:a :b :c}")
+          ;; Navigate to each element and get its coordinate
+          el-a (z/down zloc)
+          el-b (z/right el-a)
+          el-c (z/right el-b)
+          ;; Get the hash-based coordinates
+          coord-a (mapper/zloc->coord el-a)
+          coord-b (mapper/zloc->coord el-b)
+          coord-c (mapper/zloc->coord el-c)]
+
+      (testing "zloc->coord returns K-prefixed coords for set elements"
+        (is (= 1 (count coord-a)))
+        (is (string? (first coord-a)))
+        (is (str/starts-with? (first coord-a) "K"))
+        (is (str/starts-with? (first coord-b) "K"))
+        (is (str/starts-with? (first coord-c) "K")))
+
+      (testing "coord->zloc navigates to correct elements"
+        (is (= :a (z/sexpr (mapper/coord->zloc zloc coord-a))))
+        (is (= :b (z/sexpr (mapper/coord->zloc zloc coord-b))))
+        (is (= :c (z/sexpr (mapper/coord->zloc zloc coord-c)))))
+
+      (testing "round-trip for set elements"
+        (is (:valid (mapper/validate-round-trip zloc coord-a)))
+        (is (:valid (mapper/validate-round-trip zloc coord-b)))
+        (is (:valid (mapper/validate-round-trip zloc coord-c))))))
+
+  (testing "Navigates sets with complex elements"
+    (let [zloc (z/of-string "#{[1 2] {:a 1} (+ 1 2)}")
+          el-1 (z/down zloc)
+          el-2 (z/right el-1)
+          el-3 (z/right el-2)
+          coord-1 (mapper/zloc->coord el-1)
+          coord-2 (mapper/zloc->coord el-2)
+          coord-3 (mapper/zloc->coord el-3)]
+
+      (testing "coord->zloc works with complex elements"
+        (is (= [1 2] (z/sexpr (mapper/coord->zloc zloc coord-1))))
+        (is (= {:a 1} (z/sexpr (mapper/coord->zloc zloc coord-2))))
+        (is (= '(+ 1 2) (z/sexpr (mapper/coord->zloc zloc coord-3)))))
+
+      (testing "round-trip for complex set elements"
+        (is (:valid (mapper/validate-round-trip zloc coord-1)))
+        (is (:valid (mapper/validate-round-trip zloc coord-2)))
+        (is (:valid (mapper/validate-round-trip zloc coord-3)))))))
 
 ;; =============================================================================
 ;; Edge Cases

@@ -31,9 +31,28 @@ Heretic uses [ClojureStorm](https://github.com/flow-storm/flow-storm-debugger) (
 
 ## Status
 
-**Early development** - Phase 1 (coverage collection) is being implemented.
+**Phase 1 complete** - Coverage collection is fully functional. Phase 2 (mutation testing) is next.
 
 See [docs/spec.md](docs/spec.md) for the full specification.
+
+## CRITICAL: Self-Instrumentation Warning
+
+**Heretic code must NOT be instrumented by ClojureStorm.** If it is, infinite recursion occurs because tracer callbacks invoke instrumented code, which triggers more callbacks, and so on.
+
+You **must** configure ClojureStorm to skip Heretic namespaces using one of these approaches:
+
+**Option 1: Explicit prefixes (recommended)**
+```
+-Dclojure.storm.instrumentAutoPrefixes=false
+-Dclojure.storm.instrumentOnlyPrefixes=<your-app-prefix>
+```
+
+**Option 2: Skip Heretic explicitly**
+```
+-Dclojure.storm.instrumentSkipPrefixes=heretic
+```
+
+Without these flags, collection will hang or stack overflow.
 
 ## Installation
 
@@ -123,6 +142,18 @@ Full configuration options in `heretic.edn`:
 
 This approach works with any test runner (Kaocha, Cognitect, clojure.test) since it runs tests individually rather than wrapping the test framework.
 
+### Output Structure
+
+After collection, the `.heretic/` directory contains:
+
+```
+.heretic/
+├── meta.edn           # Form registry from ClojureStorm
+├── coverage/
+│   └── my.app.core-test.edn   # Per-namespace coverage
+└── index.edn          # Inverse index: [form-id coord] → #{tests}
+```
+
 ## Mutation Operators (Phase 2)
 
 | Category | Original | Mutations |
@@ -155,6 +186,6 @@ clj -M:dev:clojurestorm
 
 ## License
 
-Copyright (c) 2024
+Copyright (c) 2025
 
 Distributed under the Eclipse Public License 2.0.
