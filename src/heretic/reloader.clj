@@ -20,8 +20,7 @@
 ;; State
 ;; =============================================================================
 
-(defonce ^:private initialized-state (atom false))
-(defonce ^:private current-dirs (atom nil))
+(defonce ^:private state (atom {:initialized? false :dirs nil}))
 
 ;; =============================================================================
 ;; Initialization
@@ -40,12 +39,12 @@
    Subsequent calls with same dirs are no-ops. Call with different dirs to reinitialize."
   [source-paths & {:as opts}]
   (try
-    (let [dirs (vec source-paths)]
-      (when (or (not @initialized-state)
-                (not= dirs @current-dirs))
+    (let [dirs (vec source-paths)
+          {:keys [initialized?] current-dirs :dirs} @state]
+      (when (or (not initialized?)
+                (not= dirs current-dirs))
         (reload/init (merge {:dirs dirs} opts))
-        (reset! current-dirs dirs)
-        (reset! initialized-state true)))
+        (reset! state {:initialized? true :dirs dirs})))
     {:success true}
     (catch Exception e
       {:success false :error e})))
@@ -53,13 +52,12 @@
 (defn initialized?
   "Returns true if clj-reload has been initialized."
   []
-  @initialized-state)
+  (:initialized? @state))
 
 (defn reset-state!
   "Reset initialization state. Primarily for testing."
   []
-  (reset! initialized-state false)
-  (reset! current-dirs nil)
+  (reset! state {:initialized? false :dirs nil})
   nil)
 
 ;; =============================================================================
@@ -79,7 +77,7 @@
 
    Throws if not initialized."
   [& {:keys [only] :as opts}]
-  (when-not @initialized-state
+  (when-not (:initialized? @state)
     (throw (ex-info "Reloader not initialized. Call init! first."
                     {:type :not-initialized})))
   (try
@@ -129,7 +127,7 @@
   ([]
    (find-test-namespaces #".*-test$"))
   ([pattern]
-   (when-not @initialized-state
+   (when-not (:initialized? @state)
      (throw (ex-info "Reloader not initialized. Call init! first."
                      {:type :not-initialized})))
    (try
