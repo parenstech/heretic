@@ -95,18 +95,27 @@
        (println "Nothing to clean - .heretic directory does not exist")))}
 
   heretic:mutate
-  {:doc "Run mutation testing (Phase 2)"
+  {:doc "Run mutation testing on source files"
    :task
-   (do
-     (println "Running mutation testing...")
-     (println "TODO: Mutation testing not yet implemented (Phase 2)"))}
+   (let [config (load-config)
+         code (str "(require '[heretic.core :as heretic])"
+                   "(heretic/mutate! (heretic/load-config))")]
+     (run-with-clojurestorm config code))}
 
   heretic:survivors
-  {:doc "Show surviving mutations from last run (Phase 2)"
+  {:doc "Show surviving mutations from last run"
    :task
-   (do
-     (println "Surviving mutations:")
-     (println "TODO: Survivor display not yet implemented (Phase 2)"))}
+   (let [config (load-config)
+         code (str "(require '[heretic.core :as heretic])"
+                   "(require '[heretic.reporter :as reporter])"
+                   "(let [survivors (heretic/survivors (heretic/load-config))]"
+                   "  (if (seq survivors)"
+                   "    (doseq [s survivors]"
+                   "      (println (format \"  %s:%d %s → %s\""
+                   "                        (:file s) (:line s)"
+                   "                        (:original s) (:replacement s))))"
+                   "    (println \"No surviving mutations.\")))"))]
+     (run-with-clojurestorm config code))}
 
   ;; Development tasks
   dev:repl

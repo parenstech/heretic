@@ -17,7 +17,11 @@
             [clojure.set :as set]
             [heretic.collector :as collector]
             [heretic.coverage-map :as coverage]
-            [heretic.persistence :as persist]))
+            [heretic.mutation-engine :as engine]
+            [heretic.persistence :as persist]
+            [heretic.reloader :as reloader]
+            [heretic.reporter :as reporter]
+            [heretic.runner :as runner]))
 
 ;; =============================================================================
 ;; Configuration
@@ -118,35 +122,165 @@
 ;; Mutation Testing (Phase 2)
 ;; =============================================================================
 
+(defn- ensure-coverage!
+  "Ensure coverage data exists and is fresh. Collects if needed."
+  [config]
+  (let [heretic-dir (:heretic-dir config)
+        index (coverage/load-index heretic-dir)]
+    (if index
+      ;; Check if any test namespaces are stale
+      (let [{:keys [stale-namespaces]} (status config)]
+        (if (empty? stale-namespaces)
+          (do
+            (println "Coverage data is up to date.")
+            index)
+          (do
+            (println "Coverage data is stale, recollecting...")
+            (collect! config :namespaces stale-namespaces)
+            (coverage/load-index heretic-dir))))
+      (do
+        (println "No coverage data found, collecting...")
+        (collect! config)
+        (coverage/load-index heretic-dir)))))
+
+(defn- evaluate-mutation-with-reload!
+  "Evaluate a single mutation with file modification and namespace reloading."
+  [index mutation config]
+  (engine/with-mutation [applied mutation]
+    ;; Reload changed namespaces
+    (let [reload-result (reloader/reload!)]
+      (if (:success reload-result)
+        ;; Run tests for this mutation
+        (runner/evaluate-mutation index applied config)
+        ;; Reload failed - treat as error
+        {:mutation applied
+         :status :error
+         :tests-run #{}
+         :duration-ms 0
+         :error-message (str "Reload failed: " (:error reload-result))}))))
+
+(defn- print-progress
+  "Print mutation testing progress."
+  [current total status]
+  (let [pct (int (* 100.0 (/ current total)))
+        status-indicator (case status
+                           :killed "✓"
+                           :survived "✗"
+                           :no-coverage "○"
+                           :timeout "⏱"
+                           :error "!"
+                           "?")]
+    (print (format "\r[%3d%%] %d/%d mutations tested %s" pct current total status-indicator))
+    (flush)))
+
 (defn mutate!
   "Run mutation testing on the codebase.
 
    Options:
    - :files - Specific source files to mutate (default: all in source-paths)
    - :operators - Mutation operators to use (default: from config)
+   - :verbose - Print detailed progress
 
-   Returns mutation testing results."
-  [config & {:keys [files operators]}]
-  ;; TODO: Implement mutation testing (Phase 2)
-  ;; 1. Load coverage map (or collect if stale/missing)
-  ;; 2. Generate mutations for source files
-  ;; 3. For each mutation:
-  ;;    a. Look up relevant tests
-  ;;    b. Apply mutation
-  ;;    c. Reload namespaces
-  ;;    d. Run tests
-  ;;    e. Record result
-  ;;    f. Revert mutation
-  ;; 4. Generate report
-  (throw (ex-info "Mutation testing not yet implemented (Phase 2)" {})))
+   Returns mutation testing results including:
+   {:total, :killed, :survived, :no-coverage, :mutation-score, :survivors}"
+  [config & {:keys [files operators verbose]}]
+  (println "═══════════════════════════════════════════════════════════════")
+  (println "                    Heretic Mutation Testing")
+  (println "═══════════════════════════════════════════════════════════════")
+  (println)
+
+  ;; Step 1: Ensure coverage exists
+  (let [index (ensure-coverage! config)]
+    (when-not index
+      (throw (ex-info "Failed to load coverage index" {})))
+
+    ;; Step 2: Initialize reloader
+    (println)
+    (println "Initializing namespace reloader...")
+    (let [source-paths (:source-paths config)]
+      (reloader/init! source-paths))
+    (println "Reloader ready.")
+
+    ;; Step 3: Generate mutations
+    (println)
+    (println "Scanning for mutation sites...")
+    (let [source-paths (:source-paths config)
+          mutations (if files
+                      (mapcat engine/mutations-for-file files)
+                      (engine/generate-mutations source-paths))
+          mutations-vec (vec mutations)
+          total (count mutations-vec)]
+
+      (println (format "Found %d mutation sites." total))
+
+      (if (zero? total)
+        (do
+          (println "No mutations to test.")
+          {:total 0
+           :killed 0
+           :survived 0
+           :no-coverage 0
+           :timeout 0
+           :error 0
+           :mutation-score 1.0
+           :survivors []})
+
+        ;; Step 4: Evaluate each mutation
+        (do
+          (println)
+          (println "Running mutation tests...")
+          (let [timeout-ms (or (:timeout-ms config) 5000)
+                test-config {:timeout-ms timeout-ms}
+                results (atom [])
+                start-time (System/currentTimeMillis)]
+
+            (doseq [[idx mutation] (map-indexed vector mutations-vec)]
+              (try
+                (let [result (evaluate-mutation-with-reload! index mutation test-config)]
+                  (swap! results conj result)
+                  (print-progress (inc idx) total (:status result)))
+                (catch Exception e
+                  (swap! results conj {:mutation mutation
+                                       :status :error
+                                       :tests-run #{}
+                                       :duration-ms 0
+                                       :error-message (str e)})
+                  (print-progress (inc idx) total :error))))
+
+            (println)  ; Newline after progress
+
+            ;; Step 5: Generate summary
+            (let [all-results @results
+                  summary (runner/summarize-results all-results)
+                  survivors (filter #(= :survived (:status %)) all-results)
+                  final-result (assoc summary
+                                      :survivors (mapv :mutation survivors)
+                                      :total-duration-ms (- (System/currentTimeMillis) start-time))]
+
+              ;; Step 6: Print report
+              (println)
+              (reporter/print-summary all-results)
+
+              (when (seq survivors)
+                (println)
+                (reporter/print-survivors all-results))
+
+              ;; Return results
+              final-result)))))))
 
 (defn survivors
   "Get surviving mutations from last run.
 
+   Loads results from .heretic/mutation-results.edn if present.
    Returns sequence of mutations that were not killed by tests."
   [config]
-  ;; TODO: Implement survivor retrieval (Phase 2)
-  (throw (ex-info "Survivor retrieval not yet implemented (Phase 2)" {})))
+  (let [heretic-dir (:heretic-dir config)
+        results-file (io/file heretic-dir "mutation-results.edn")]
+    (if (.exists results-file)
+      (let [data (edn/read-string (slurp results-file))]
+        (:survivors data))
+      (throw (ex-info "No mutation results found. Run `mutate!` first."
+                      {:path (.getPath results-file)})))))
 
 ;; =============================================================================
 ;; CLI Helpers
