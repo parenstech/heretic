@@ -1,12 +1,13 @@
 ---
 status: phase-2-complete
 contributions:
-  - "Needs: Phase 3 file-level parallelism implementation"
-  - "Needs: Phase 3 equivalent mutant detection"
-  - "Needs: Phase 3 HTML report templates"
-  - "Needs: Phase 3 watch mode implementation"
+  - "Needs: Phase 3 complete Clojure-specific mutation operators (collection, nil-handling, threading)"
+  - "Needs: Phase 3 file-level parallelism with controller/worker model"
+  - "Needs: Phase 3 equivalent mutant detection and subsumption analysis"
+  - "Needs: Phase 3 HTML report generation with source heatmaps"
+  - "Needs: Phase 3 watch mode for continuous mutation testing"
   - "Needs: Phase 4 ClojureScript/shadow-cljs integration"
-  - "Needs: Phase 4 AI mutation operator protocol"
+  - "Needs: Phase 4 AI-powered semantic mutation generation"
 ---
 
 # Heretic: Mutation Testing for Clojure
