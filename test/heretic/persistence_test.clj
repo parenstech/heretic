@@ -6,9 +6,9 @@
    - EDN serialization round-trips
    - File hashing for staleness detection
    - Per-namespace coverage file management"
-  (:require [clojure.test :refer [deftest is testing use-fixtures]]
-            [heretic.persistence :as persist]
-            [clojure.java.io :as io]))
+  (:require [clojure.java.io :as io]
+            [clojure.test :refer [deftest is testing use-fixtures]]
+            [heretic.persistence :as persist]))
 
 ;; =============================================================================
 ;; Test Fixtures
@@ -126,11 +126,11 @@
   (testing "Namespace is stale when no coverage file exists"
     (persist/ensure-heretic-dir! *test-dir*)
     (is (true? (persist/test-ns-stale?
-                 *test-dir*
-                 'my.app.core-test
-                 ["test"]
-                 ["src"]
-                 {})))))
+                *test-dir*
+                'my.app.core-test
+                ["test"]
+                ["src"]
+                {})))))
 
 (deftest test-stale-when-test-file-changes
   (testing "Namespace is stale when test file changes"
@@ -144,31 +144,31 @@
       (persist/ensure-heretic-dir! *test-dir*)
       (let [current-hash (persist/hash-file test-file)]
         (persist/save-test-ns-coverage! *test-dir*
-          {:test-ns 'my.app.core-test
-           :coverage {}
-           :source-deps #{}
-           :hashes {:test-file current-hash
-                    :source-files nil
-                    :config (hash {})}}))
+                                        {:test-ns 'my.app.core-test
+                                         :coverage {}
+                                         :source-deps #{}
+                                         :hashes {:test-file current-hash
+                                                  :source-files nil
+                                                  :config (hash {})}}))
 
       ;; Not stale initially
       (is (false? (persist/test-ns-stale?
-                    *test-dir*
-                    'my.app.core-test
-                    [(str (io/file *test-dir* "test"))]
-                    ["src"]
-                    {})))
+                   *test-dir*
+                   'my.app.core-test
+                   [(str (io/file *test-dir* "test"))]
+                   ["src"]
+                   {})))
 
       ;; Modify the test file
       (spit test-file "(ns my.app.core-test)\n(deftest new-test)")
 
       ;; Now it should be stale
       (is (true? (persist/test-ns-stale?
-                   *test-dir*
-                   'my.app.core-test
-                   [(str (io/file *test-dir* "test"))]
-                   ["src"]
-                   {}))))))
+                  *test-dir*
+                  'my.app.core-test
+                  [(str (io/file *test-dir* "test"))]
+                  ["src"]
+                  {}))))))
 
 (deftest test-stale-when-source-deps-change
   (testing "Namespace is stale when source dependencies change"
@@ -188,31 +188,31 @@
             src-path (.getPath src-file)
             source-hash (persist/hash-files [src-path])]
         (persist/save-test-ns-coverage! *test-dir*
-          {:test-ns 'my.app.core-test
-           :coverage {}
-           :source-deps #{src-path}
-           :hashes {:test-file test-hash
-                    :source-files source-hash
-                    :config (hash {})}}))
+                                        {:test-ns 'my.app.core-test
+                                         :coverage {}
+                                         :source-deps #{src-path}
+                                         :hashes {:test-file test-hash
+                                                  :source-files source-hash
+                                                  :config (hash {})}}))
 
       ;; Not stale initially
       (is (false? (persist/test-ns-stale?
-                    *test-dir*
-                    'my.app.core-test
-                    [(str (io/file *test-dir* "test"))]
-                    [(str (io/file *test-dir* "src"))]
-                    {})))
+                   *test-dir*
+                   'my.app.core-test
+                   [(str (io/file *test-dir* "test"))]
+                   [(str (io/file *test-dir* "src"))]
+                   {})))
 
       ;; Modify the source file
       (spit src-file "(ns my.app.core)\n(defn foo [] 42)")
 
       ;; Now it should be stale
       (is (true? (persist/test-ns-stale?
-                   *test-dir*
-                   'my.app.core-test
-                   [(str (io/file *test-dir* "test"))]
-                   [(str (io/file *test-dir* "src"))]
-                   {}))))))
+                  *test-dir*
+                  'my.app.core-test
+                  [(str (io/file *test-dir* "test"))]
+                  [(str (io/file *test-dir* "src"))]
+                  {}))))))
 
 (deftest test-stale-when-config-changes
   (testing "Namespace is stale when config changes"
@@ -227,28 +227,72 @@
       (let [config {:source-paths ["src"]}
             test-hash (persist/hash-file test-file)]
         (persist/save-test-ns-coverage! *test-dir*
-          {:test-ns 'my.app.core-test
-           :coverage {}
-           :source-deps #{}
-           :hashes {:test-file test-hash
-                    :source-files nil
-                    :config (hash config)}}))
+                                        {:test-ns 'my.app.core-test
+                                         :coverage {}
+                                         :source-deps #{}
+                                         :hashes {:test-file test-hash
+                                                  :source-files nil
+                                                  :config (hash config)}}))
 
       ;; Not stale with same config
       (is (false? (persist/test-ns-stale?
-                    *test-dir*
-                    'my.app.core-test
-                    [(str (io/file *test-dir* "test"))]
-                    ["src"]
-                    {:source-paths ["src"]})))
-
-      ;; Stale with different config
-      (is (true? (persist/test-ns-stale?
                    *test-dir*
                    'my.app.core-test
                    [(str (io/file *test-dir* "test"))]
                    ["src"]
-                   {:source-paths ["src"] :new-option true}))))))
+                   {:source-paths ["src"]})))
+
+      ;; Stale with different config
+      (is (true? (persist/test-ns-stale?
+                  *test-dir*
+                  'my.app.core-test
+                  [(str (io/file *test-dir* "test"))]
+                  ["src"]
+                  {:source-paths ["src"] :new-option true}))))))
+
+(deftest test-fresh-when-nothing-changed
+  (testing "Namespace is fresh when nothing has changed"
+    ;; Setup: create test file and source file with dependencies
+    (let [test-dir (io/file *test-dir* "test" "my" "app")
+          test-file (io/file test-dir "core_test.clj")
+          src-dir (io/file *test-dir* "src" "my" "app")
+          src-file (io/file src-dir "core.clj")
+          config {:source-paths ["src"]}]
+      (.mkdirs test-dir)
+      (.mkdirs src-dir)
+      (spit test-file "(ns my.app.core-test (:require [my.app.core]))")
+      (spit src-file "(ns my.app.core)\n(defn foo [] 42)")
+
+      ;; Save coverage with all current hashes
+      (persist/ensure-heretic-dir! *test-dir*)
+      (let [test-hash (persist/hash-file test-file)
+            src-path (.getPath src-file)
+            source-hash (persist/hash-files [src-path])]
+        (persist/save-test-ns-coverage! *test-dir*
+                                        {:test-ns 'my.app.core-test
+                                         :coverage {'my.app.core-test/test-foo {12345 #{"3" "3,1"}}}
+                                         :source-deps #{src-path}
+                                         :hashes {:test-file test-hash
+                                                  :source-files source-hash
+                                                  :config (hash config)}}))
+
+      ;; Verify it's fresh immediately after saving
+      (is (false? (persist/test-ns-stale?
+                   *test-dir*
+                   'my.app.core-test
+                   [(str (io/file *test-dir* "test"))]
+                   [(str (io/file *test-dir* "src"))]
+                   config))
+          "Should be fresh immediately after coverage collection")
+
+      ;; Verify it remains fresh on subsequent checks (simulating re-run)
+      (is (false? (persist/test-ns-stale?
+                   *test-dir*
+                   'my.app.core-test
+                   [(str (io/file *test-dir* "test"))]
+                   [(str (io/file *test-dir* "src"))]
+                   config))
+          "Should remain fresh on repeated staleness checks"))))
 
 (deftest test-find-stale-test-namespaces
   (testing "find-stale-test-namespaces returns correct set"
@@ -265,21 +309,21 @@
             config {}]
         ;; Save coverage for core-test (will be fresh)
         (persist/save-test-ns-coverage! *test-dir*
-          {:test-ns 'my.app.core-test
-           :coverage {}
-           :source-deps #{}
-           :hashes {:test-file (persist/hash-file test-file-1)
-                    :source-files nil
-                    :config (hash config)}})
+                                        {:test-ns 'my.app.core-test
+                                         :coverage {}
+                                         :source-deps #{}
+                                         :hashes {:test-file (persist/hash-file test-file-1)
+                                                  :source-files nil
+                                                  :config (hash config)}})
 
         ;; Save coverage for util-test, then modify the file (will be stale)
         (persist/save-test-ns-coverage! *test-dir*
-          {:test-ns 'my.app.util-test
-           :coverage {}
-           :source-deps #{}
-           :hashes {:test-file (persist/hash-file test-file-2)
-                    :source-files nil
-                    :config (hash config)}})
+                                        {:test-ns 'my.app.util-test
+                                         :coverage {}
+                                         :source-deps #{}
+                                         :hashes {:test-file (persist/hash-file test-file-2)
+                                                  :source-files nil
+                                                  :config (hash config)}})
 
         ;; Modify util-test to make it stale
         (spit test-file-2 "(ns my.app.util-test)\n(deftest new-test)")
@@ -289,11 +333,11 @@
 
         ;; Find stale namespaces
         (let [stale (persist/find-stale-test-namespaces
-                      *test-dir*
-                      ['my.app.core-test 'my.app.util-test 'my.app.other-test]
-                      test-paths
-                      ["src"]
-                      config)]
+                     *test-dir*
+                     ['my.app.core-test 'my.app.util-test 'my.app.other-test]
+                     test-paths
+                     ["src"]
+                     config)]
           ;; core-test is fresh, util-test and other-test are stale
           (is (not (contains? stale 'my.app.core-test)))
           (is (contains? stale 'my.app.util-test))
