@@ -87,10 +87,14 @@
   (try
     ;; Run the test function directly (works regardless of test runner)
     (test-var)
-    (catch Throwable t
+    (catch Exception e
       ;; Log but continue - we still want the coverage data
       ;; Test failures are expected during mutation testing
-      (println "Test threw exception:" (.getMessage t))))
+      (println "Test threw exception:" (.getMessage e)))
+    (catch AssertionError e
+      ;; Test assertion failures (clojure.test uses AssertionError)
+      ;; Log but continue - we still want the coverage data
+      (println "Test assertion failed:" (.getMessage e))))
   ;; Return coverage for this test
   {(symbol test-var) (tracer/get-current-coverage)})
 
@@ -139,7 +143,7 @@
    stale-ns is a set of namespace symbols that need recollection.
    Returns map of {ns-sym -> coverage-data} for collected namespaces."
   [stale-ns]
-  (when-not (tracer/initialized?*)
+  (when-not (tracer/initialized?)
     (tracer/init!))
   (into {}
         (for [ns-sym stale-ns]

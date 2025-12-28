@@ -81,13 +81,13 @@
   (testing "shutdown! resets initialized state"
     ;; Start from a known state by shutting down first
     (tracer/shutdown!)
-    (is (false? (tracer/initialized?*))
-        "After shutdown!, initialized?* should return false"))
+    (is (false? (tracer/initialized?))
+        "After shutdown!, initialized? should return false"))
 
   (testing "shutdown! is idempotent"
     (tracer/shutdown!)
     (tracer/shutdown!)
-    (is (false? (tracer/initialized?*))
+    (is (false? (tracer/initialized?))
         "Multiple shutdown! calls should be safe"))
 
   ;; Note: We cannot test init! without ClojureStorm on the classpath

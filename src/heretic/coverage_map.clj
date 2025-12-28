@@ -136,6 +136,17 @@
    {}
    coverage-files))
 
+(defn- build-form-to-tests
+  "Build form-id -> tests index from coord-to-tests.
+
+   Aggregates all tests that hit any coordinate in each form for O(1) form-level lookup."
+  [coord-to-tests]
+  (reduce-kv
+   (fn [acc [form-id _coord] tests]
+     (update acc form-id (fnil into #{}) tests))
+   {}
+   coord-to-tests))
+
 (defn rebuild-index!
   "Rebuild inverse index from all coverage files.
 
@@ -144,9 +155,11 @@
   (let [coverage-files (for [f (persist/list-coverage-files heretic-dir)]
                          (persist/load-edn f))
         coord-to-tests (build-inverse-index coverage-files)
+        form-to-tests (build-form-to-tests coord-to-tests)
         included-ns (into #{} (map :test-ns coverage-files))]
     (persist/save-index! heretic-dir
                          {:coord-to-tests coord-to-tests
+                          :form-to-tests form-to-tests
                           :included-test-ns included-ns
                           :rebuilt-at (System/currentTimeMillis)})))
 
@@ -163,14 +176,10 @@
   "Given a form-id and optional coord, return tests that hit it.
 
    With coord: Returns tests that hit that specific coordinate.
-   Without coord: Returns all tests that hit any coordinate in the form."
+   Without coord: Returns all tests that hit any coordinate in the form (O(1) lookup)."
   ([index form-id]
-   ;; For form-level lookup, scan all coords for this form-id
-   (into #{}
-         (for [[[fid _] tests] (:coord-to-tests index)
-               :when (= fid form-id)
-               test tests]
-           test)))
+   ;; Use form-to-tests index for O(1) form-level lookup
+   (get-in index [:form-to-tests form-id] #{}))
 
   ([index form-id coord]
    (get-in index [:coord-to-tests [form-id coord]] #{})))
@@ -243,16 +252,18 @@
         forms (get-form-registry)
         _ (println "  Found" (count forms) "forms")
 
-        ;; Collect each stale namespace
-        collected (for [ns-sym stale-ns]
-                    (do
-                      (println "  Collecting" ns-sym "...")
-                      (let [coverage-data (collect-test-namespace! ns-sym forms source-paths config)]
-                        (persist/save-test-ns-coverage! heretic-dir coverage-data)
-                        coverage-data)))
+        ;; Collect each stale namespace (using into [] for eager evaluation)
+        ;; Side effects happen in the body, so we use reduce rather than lazy for
+        collected (reduce
+                   (fn [acc ns-sym]
+                     (println "  Collecting" ns-sym "...")
+                     (let [coverage-data (collect-test-namespace! ns-sym forms source-paths config)]
+                       (persist/save-test-ns-coverage! heretic-dir coverage-data)
+                       (conj acc coverage-data)))
+                   []
+                   stale-ns)
 
-        ;; Force evaluation
-        collected-count (count (doall collected))
+        collected-count (count collected)
 
         ;; Save global metadata
         _ (persist/save-meta! heretic-dir

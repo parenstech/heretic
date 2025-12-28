@@ -1,10 +1,14 @@
+---
+status: stable
+contributions:
+  - "Needs: updated benchmarks with Phase 1 implementation"
+---
+
 # Heretic: AI-Powered Mutation Testing for Clojure
 
 ## Research Document
 
 **Project:** Heretic - Mutation testing that uses AI to break code in subtle, semantically meaningful ways
-
-**Status:** Research phase
 
 **Last Updated:** 2025-12-28
 

@@ -36,7 +36,7 @@
     12346 #{\"\" \"1\" \"2,1\"}}"
   (atom {}))
 
-(def ^:private initialized?
+(def ^:private tracer-initialized
   "Track whether ClojureStorm callbacks have been initialized."
   (atom false))
 
@@ -90,7 +90,7 @@
    Note: Requires ClojureStorm on classpath. Start JVM with:
    -Dclojure.storm.instrumentEnable=true"
   []
-  (if @initialized?
+  (if @tracer-initialized
     false
     (do
       ;; Configure what gets instrumented
@@ -110,15 +110,15 @@
         :trace-fn-unwind-fn (fn [_result _throwable coord form-id]
                               (record-hit! form-id coord))})
 
-      (reset! initialized? true)
+      (reset! tracer-initialized true)
       true)))
 
-(defn initialized?*
+(defn initialized?
   "Check if tracer has been initialized.
 
    Returns true if init! has been called successfully."
   []
-  @initialized?)
+  @tracer-initialized)
 
 (defn get-current-coverage
   "Return coverage accumulated for the current test.
@@ -150,7 +150,7 @@
 
    Returns nil."
   []
-  (when @initialized?
+  (when @tracer-initialized
     (Emitter/setInstrumentationEnable false))
-  (reset! initialized? false)
+  (reset! tracer-initialized false)
   nil)

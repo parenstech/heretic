@@ -1,6 +1,13 @@
+---
+status: wip
+contributions:
+  - "Missing: controller/worker implementation details"
+  - "Missing: mutant schemata implementation guide"
+  - "Example: custom operator implementation"
+---
+
 # Heretic Architecture & Design
 
-**Status:** Draft
 **Last Updated:** 2025-12-28
 
 This document describes the architectural design of Heretic, informed by the research in `research.md`.

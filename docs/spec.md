@@ -1,3 +1,11 @@
+---
+status: wip
+contributions:
+  - "Missing: Phase 2 mutation operator specifications"
+  - "Missing: AI integration detailed flow"
+  - "Example: mutation operator implementation"
+---
+
 # Heretic: Mutation Testing for Clojure
 
 ## Overview

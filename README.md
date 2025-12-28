@@ -1,3 +1,10 @@
+---
+status: stable
+contributions:
+  - "Example: real-world project usage"
+  - "Example: CI integration patterns"
+---
+
 # Heretic
 
 Mutation testing for Clojure with intelligent test selection.

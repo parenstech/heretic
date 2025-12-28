@@ -52,15 +52,19 @@
 
 (deftest test-tests-for-location-form-level
   (testing "Returns all tests for form when no coord given"
+    ;; Index now includes form-to-tests for O(1) form-level lookup
     (let [index {:coord-to-tests {[12345 "3"] #{'test-a}
                                   [12345 "4"] #{'test-b}
-                                  [67890 "1"] #{'test-c}}}]
+                                  [67890 "1"] #{'test-c}}
+                 :form-to-tests {12345 #{'test-a 'test-b}
+                                 67890 #{'test-c}}}]
       (is (= #{'test-a 'test-b}
              (coverage/tests-for-location index 12345))))))
 
 (deftest test-tests-for-location-missing
   (testing "Returns empty set for unknown location"
-    (let [index {:coord-to-tests {}}]
+    (let [index {:coord-to-tests {}
+                 :form-to-tests {}}]
       (is (= #{} (coverage/tests-for-location index 99999 "1")))
       (is (= #{} (coverage/tests-for-location index 99999))))))
 
