@@ -360,3 +360,72 @@
       (is (some? (:coord m)))
       (is (some? (:form-id m)))
       (is (string? (:coord m))))))
+
+;; =============================================================================
+;; Mutation Survivor Tests
+;; =============================================================================
+;; These tests are specifically designed to kill mutation survivors.
+
+(deftest test-generate-mutations-excludes-non-clj-files
+  (testing "Line 89: and -> or mutation killer - must be both a file AND end with .clj"
+    ;; Create a regular file without .clj extension
+    (let [_ (create-test-file! "src/readme.txt" "(+ 1 2)")
+          source-path (.getPath (io/file *temp-dir* "src"))
+          mutations (engine/generate-mutations [source-path])]
+      ;; If and->or mutation, .txt file would be included (it IS a file)
+      (is (empty? mutations)
+          "Non-.clj files must not generate mutations"))))
+
+(deftest test-generate-mutations-excludes-directories-ending-in-clj
+  (testing "Line 89: and -> or mutation killer - must be a file, not directory"
+    ;; Create a directory that ends in .clj (weird but valid)
+    (let [dir-path (io/file *temp-dir* "src" "weird.clj")
+          _ (.mkdirs dir-path)
+          source-path (.getPath (io/file *temp-dir* "src"))
+          mutations (engine/generate-mutations [source-path])]
+      ;; If and->or mutation, directory would be included (it ends with .clj)
+      (is (empty? mutations)
+          "Directories ending in .clj must not generate mutations"))))
+
+(deftest test-find-form-by-id-exact-match
+  (testing "Lines 110, 114: = vs <= mutation killer - form-id must match exactly"
+    ;; Create a file with multiple top-level forms
+    (let [content "(def a 1)\n(def b (+ 2 3))\n(def c 4)"
+          file (create-test-file! "multi-form.clj" content)
+          mutations (engine/mutations-for-file file)]
+      ;; Find the mutation for the + operator
+      (let [plus-mutation (first (filter #(= :swap-plus-minus (:operator %)) mutations))]
+        (is (some? plus-mutation)
+            "Should find + mutation")
+        ;; Apply the mutation - it should modify only the second form
+        (let [applied (engine/apply-mutation! plus-mutation)
+              modified (slurp file)]
+          (try
+            ;; The mutation should have replaced + with - in the second form only
+            (is (.contains modified "(def b (- 2 3))")
+                "Mutation should modify the exact form, not first form with <= hash")
+            ;; First and third forms should be unchanged
+            (is (.contains modified "(def a 1)")
+                "First form should be unchanged")
+            (is (.contains modified "(def c 4)")
+                "Third form should be unchanged")
+            (finally
+              (engine/revert-mutation! applied))))))))
+
+(deftest test-find-form-by-id-single-form-exact-match
+  (testing "Line 114: = vs <= mutation killer - single form must match exactly"
+    ;; Create a file with a single form
+    (let [content "(+ 1 2)"
+          file (create-test-file! "single-form.clj" content)
+          mutations (engine/mutations-for-file file)
+          mutation (first (filter #(= :swap-plus-minus (:operator %)) mutations))]
+      (is (some? mutation)
+          "Should find + mutation")
+      ;; Verify the mutation can be applied successfully (exact match works)
+      (let [applied (engine/apply-mutation! mutation)
+            modified (slurp file)]
+        (try
+          (is (= "(- 1 2)" modified)
+              "Single form mutation should work with exact form-id match")
+          (finally
+            (engine/revert-mutation! applied)))))))
