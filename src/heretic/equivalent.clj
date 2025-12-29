@@ -10,10 +10,55 @@
    - Multiplying by one: (* x 1) -> (/ x 1) is equivalent
    - Boolean identity: (and true x) -> (or true x) changes behavior but
      (and x true) at the end may not if x is already boolean
+   - Boundary comparisons: (>= (count x) 0) is always true
+   - Function contracts: (nil? (str x)) is always false
 
    This module provides static pattern detection to identify likely equivalent
    mutants before running tests."
   (:require [rewrite-clj.zip :as z]))
+
+;; =============================================================================
+;; Helper Functions for Pattern Detection
+;; =============================================================================
+
+(defn- non-negative-fn?
+  "Check if a symbol represents a function that always returns non-negative values."
+  [sym]
+  (contains? #{'count '.length '.size 'Math/abs} sym))
+
+(defn- never-nil-fn?
+  "Check if a symbol represents a function that never returns nil."
+  [sym]
+  (contains? #{'str 'vec 'vector 'set 'hash-set 'list 'count 'inc 'dec
+               'name 'keyword 'symbol 'namespace} sym))
+
+(defn- realizing-fn?
+  "Check if a symbol represents a function that realizes lazy sequences."
+  [sym]
+  (contains? #{'vec 'into 'count 'doall 'dorun 'str 'apply 'reduce
+               'frequencies 'group-by 'sort 'sort-by} sym))
+
+(defn- single-arity-fn?
+  "Check if a symbol represents a common single-arity function."
+  [sym]
+  (contains? #{'inc 'dec 'str 'name 'keyword 'symbol 'count 'first 'last
+               'rest 'next 'seq 'vec 'set 'keys 'vals 'not 'identity
+               'clojure.core/inc 'clojure.core/dec} sym))
+
+(defn- in-realizing-context?
+  "Check if the current location is inside a realizing function call."
+  [zloc]
+  (when-let [gp (some-> zloc z/up z/up)]
+    (when (= :list (z/tag gp))
+      (realizing-fn? (first (z/child-sexprs gp))))))
+
+(defn- literal-non-nil?
+  "Check if a value is a non-nil literal."
+  [v]
+  (or (number? v) (string? v) (keyword? v) (boolean? v)
+      (and (vector? v) true)
+      (and (map? v) true)
+      (and (set? v) true)))
 
 ;; =============================================================================
 ;; Equivalent Mutation Patterns
@@ -139,7 +184,162 @@
                      (when (and grandparent (= :list (z/tag grandparent)))
                        (let [gp-children (z/child-sexprs grandparent)]
                          (= 'not (first gp-children))))))))
-    :reason "(not (some? x)) is not equivalent to (nil? x), but the swap pattern is suspicious"}])
+    :reason "(not (some? x)) is not equivalent to (nil? x), but the swap pattern is suspicious"}
+
+   ;; =========================================================================
+   ;; Boundary Comparison Patterns (count/length are always non-negative)
+   ;; =========================================================================
+
+   ;; (>= (count x) 0) is always true - swapping >= to > changes behavior
+   ;; but (< (count x) 0) is always false - any mutation here is equivalent
+   {:operator :swap-lt-lte
+    :context (fn [zloc]
+               (let [parent (z/up zloc)]
+                 (when (and parent (= :list (z/tag parent)))
+                   (let [[op left right] (z/child-sexprs parent)]
+                     (and (= '< op)
+                          (= 0 right)
+                          (seq? left)
+                          (non-negative-fn? (first left)))))))
+    :reason "(< (count x) 0) is always false"}
+
+   {:operator :swap-lte-lt
+    :context (fn [zloc]
+               (let [parent (z/up zloc)]
+                 (when (and parent (= :list (z/tag parent)))
+                   (let [[op left right] (z/child-sexprs parent)]
+                     (and (= '<= op)
+                          (= 0 right)
+                          (seq? left)
+                          (non-negative-fn? (first left)))))))
+    :reason "(<= (count x) 0) is only true when count=0, but (<= x 0) for non-negative is equivalent to (= x 0)"}
+
+   ;; =========================================================================
+   ;; Multiply by Zero Pattern (result is always 0)
+   ;; =========================================================================
+
+   {:operator :swap-mult-div
+    :context (fn [zloc]
+               (let [parent (z/up zloc)]
+                 (when (and parent (= :list (z/tag parent)))
+                   (some #(= 0 %)
+                         (rest (z/child-sexprs parent))))))
+    :reason "Multiplying by zero always returns zero"}
+
+   {:operator :swap-div-mult
+    :context (fn [zloc]
+               (let [parent (z/up zloc)]
+                 (when (and parent (= :list (z/tag parent)))
+                   ;; (/ 0 x) is always 0 (unless x is 0, but that's an error anyway)
+                   (= 0 (second (z/child-sexprs parent))))))
+    :reason "Dividing zero by anything is zero"}
+
+   ;; =========================================================================
+   ;; Function Contract Patterns
+   ;; =========================================================================
+
+   ;; (nil? (str x)) is always false - str never returns nil
+   {:operator :swap-nil-some
+    :context (fn [zloc]
+               (let [parent (z/up zloc)]
+                 (when (and parent (= :list (z/tag parent)))
+                   (let [arg (second (z/child-sexprs parent))]
+                     (and (seq? arg)
+                          (never-nil-fn? (first arg)))))))
+    :reason "Function never returns nil, so nil? is always false"}
+
+   ;; (some? (str x)) is always true - str never returns nil
+   {:operator :swap-some-nil
+    :context (fn [zloc]
+               (let [parent (z/up zloc)]
+                 (when (and parent (= :list (z/tag parent)))
+                   (let [arg (second (z/child-sexprs parent))]
+                     (and (seq? arg)
+                          (never-nil-fn? (first arg)))))))
+    :reason "Function never returns nil, so some? is always true"}
+
+   ;; =========================================================================
+   ;; Lazy/Eager Equivalences
+   ;; =========================================================================
+
+   ;; (map f coll) vs (mapv f coll) when wrapped in vec/into/count
+   {:operator :swap-map-mapv
+    :context (fn [zloc] (in-realizing-context? zloc))
+    :reason "map/mapv equivalent when immediately realized"}
+
+   {:operator :swap-mapv-map
+    :context (fn [zloc] (in-realizing-context? zloc))
+    :reason "mapv/map equivalent when immediately realized"}
+
+   {:operator :swap-filter-filterv
+    :context (fn [zloc] (in-realizing-context? zloc))
+    :reason "filter/filterv equivalent when immediately realized"}
+
+   {:operator :swap-filterv-filter
+    :context (fn [zloc] (in-realizing-context? zloc))
+    :reason "filterv/filter equivalent when immediately realized"}
+
+   ;; =========================================================================
+   ;; Collection Literal Patterns
+   ;; =========================================================================
+
+   ;; (empty? []) is always true
+   {:operator :swap-seq-empty
+    :context (fn [zloc]
+               (let [parent (z/up zloc)]
+                 (when (and parent (= :list (z/tag parent)))
+                   (let [arg (second (z/child-sexprs parent))]
+                     (contains? #{[] {} #{} '()} arg)))))
+    :reason "empty? on literal empty collection is always true"}
+
+   ;; (seq []) is always nil
+   {:operator :swap-empty-seq
+    :context (fn [zloc]
+               (let [parent (z/up zloc)]
+                 (when (and parent (= :list (z/tag parent)))
+                   (let [arg (second (z/child-sexprs parent))]
+                     (contains? #{[] {} #{} '()} arg)))))
+    :reason "seq on literal empty collection is always nil"}
+
+   ;; (first [x]) == (last [x]) for single element
+   {:operator :swap-first-last
+    :context (fn [zloc]
+               (let [parent (z/up zloc)]
+                 (when (and parent (= :list (z/tag parent)))
+                   (let [arg (second (z/child-sexprs parent))]
+                     (and (vector? arg) (= 1 (count arg)))))))
+    :reason "first and last are equivalent on single-element collection"}
+
+   {:operator :swap-last-first
+    :context (fn [zloc]
+               (let [parent (z/up zloc)]
+                 (when (and parent (= :list (z/tag parent)))
+                   (let [arg (second (z/child-sexprs parent))]
+                     (and (vector? arg) (= 1 (count arg)))))))
+    :reason "last and first are equivalent on single-element collection"}
+
+   ;; =========================================================================
+   ;; Threading Macro Equivalences
+   ;; =========================================================================
+
+   ;; (-> x) == x (threading with single value is identity)
+   {:operator :swap-thread-first-last
+    :context (fn [zloc]
+               (let [parent (z/up zloc)]
+                 (when (and parent (= :list (z/tag parent)))
+                   (let [children (rest (z/child-sexprs parent))]
+                     ;; Only the initial value, no transformations
+                     (= 1 (count children))))))
+    :reason "Threading with single value is identity"}
+
+   ;; some-> vs -> when initial is non-nil literal
+   {:operator :swap-some-thread-first
+    :context (fn [zloc]
+               (let [parent (z/up zloc)]
+                 (when (and parent (= :list (z/tag parent)))
+                   (let [initial (second (z/child-sexprs parent))]
+                     (literal-non-nil? initial)))))
+    :reason "some-> is equivalent to -> when initial value is non-nil literal"}])
 
 ;; =============================================================================
 ;; Detection Functions

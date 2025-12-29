@@ -10,15 +10,331 @@
    - Kill pattern: The set of tests that kill a given mutant
    - Subsumption: Mutant A subsumes B if every test that kills B also kills A
    - Minimal mutant set: Mutants with unique kill patterns (non-subsumed)
+   - Operator subsumption: Pre-computed relationships between mutation operators
+   - Dominator mutants: Mutants at the top of the subsumption hierarchy
 
    Main API:
    - `analyze-kill-patterns` - Group mutants by which test killed them
    - `find-subsumed` - Identify mutants that could potentially be skipped
    - `subsumption-stats` - Report on potential savings from subsumption
-
-   Note: This is Phase 3.3 groundwork. Actual skipping of subsumed mutants
-   requires careful consideration of mutation ordering and early termination."
+   - `operator-subsumption` - Get statically-known operator relationships
+   - `find-dominator-mutants` - Find mutants that are not subsumed by others
+   - `minimal-mutation-set` - Select representative mutants per location"
   (:require [clojure.set :as set]))
+
+;; =============================================================================
+;; Operator-Level Subsumption (RORG Schema)
+;; =============================================================================
+;; Based on research: if one mutation is killed, related mutations are likely killed too.
+;; This allows us to skip redundant mutations at the operator level.
+
+(def relational-operator-subsumption
+  "Subsumption relationships for relational operator replacement (ROR).
+
+   Based on the RORG (Relational Operator Replacement with Guard) schema.
+   For each original operator, lists the minimal set of replacement operators
+   that subsume all others. If any of these mutants survive, test quality is
+   at that level; if killed, all subsumed variants would also be killed.
+
+   Format: {original-op -> [minimal-replacement-ops]}
+
+   Example: For `<`, only need to test `<=`, `!=`, and `false`.
+   If `<` -> `<=` is killed, then `<` -> `true` would also be killed."
+  {'<  [:swap-lt-lte :swap-lt-neq :replace-comparison-false]
+   '>  [:swap-gt-gte :swap-gt-neq :replace-comparison-false]
+   '<= [:swap-lte-lt :swap-lte-eq :replace-comparison-true]
+   '>= [:swap-gte-gt :swap-gte-eq :replace-comparison-true]
+   '=  [:swap-eq-lte :swap-eq-gte :replace-comparison-false]
+   'not= [:swap-neq-lt :swap-neq-gt :replace-comparison-true]})
+
+(def arithmetic-operator-subsumption
+  "Subsumption for arithmetic operators (AOR).
+
+   For arithmetic, swapping to the inverse operator typically subsumes
+   other mutations. If `+` -> `-` is killed, then `+` -> `*` would likely be too.
+
+   Simplified AORs uses only inverse operators."
+  {'+  [:swap-plus-minus]              ; If + -> - killed, others subsumed
+   '-  [:swap-minus-plus]
+   '*  [:swap-mult-div]
+   '/  [:swap-div-mult]})
+
+(def boolean-operator-subsumption
+  "Subsumption for boolean operators."
+  {'and [:swap-and-or :replace-and-false]
+   'or  [:swap-or-and :replace-or-true]
+   'not [:remove-not]})
+
+(def all-operator-subsumption
+  "Combined operator subsumption tables."
+  (merge relational-operator-subsumption
+         arithmetic-operator-subsumption
+         boolean-operator-subsumption))
+
+(defn minimal-operators-for
+  "Get the minimal set of operators to use for a given original operator.
+
+   Arguments:
+   - original-sym: The original operator symbol (e.g., '<, '+, 'and)
+
+   Returns vector of operator keywords representing minimal mutant set,
+   or nil if no subsumption information available."
+  [original-sym]
+  (get all-operator-subsumption original-sym))
+
+(defn subsumed-by?
+  "Check if operator A is subsumed by operator B.
+
+   Arguments:
+   - op-a: Operator keyword (e.g., :swap-lt-gt)
+   - op-b: Operator keyword (e.g., :swap-lt-lte)
+
+   Returns true if B subsumes A (killing B implies killing A)."
+  [op-a op-b original-sym]
+  (when-let [minimal-ops (minimal-operators-for original-sym)]
+    (and (contains? (set minimal-ops) op-b)
+         (not (contains? (set minimal-ops) op-a)))))
+
+(defn filter-by-operator-subsumption
+  "Filter mutations to only include non-subsumed operators for each location.
+
+   Arguments:
+   - mutations: Sequence of mutation records with :operator and :original
+
+   Returns:
+   {:mutations [...] - Non-subsumed mutations
+    :subsumed [...] - Subsumed mutations (skipped)
+    :subsumed-count n}"
+  [mutations]
+  (let [;; Group mutations by location (file + line + coord)
+        by-location (group-by #(select-keys % [:file :line :coord]) mutations)
+        ;; For each location, keep only minimal operators
+        filtered-and-subsumed
+        (reduce-kv
+         (fn [acc _loc loc-mutations]
+           (let [;; Group by original symbol
+                 by-original (group-by :original loc-mutations)
+                 ;; For each original, filter to minimal set
+                 processed
+                 (mapcat (fn [[orig muts]]
+                           (if-let [minimal-ops (minimal-operators-for orig)]
+                             (let [minimal-set (set minimal-ops)
+                                   {keep true skip false}
+                                   (group-by #(contains? minimal-set (:operator %)) muts)]
+                               [{:keep (or keep []) :skip (or skip [])}])
+                             [{:keep muts :skip []}]))
+                         by-original)]
+             {:keep (into (:keep acc) (mapcat :keep processed))
+              :skip (into (:skip acc) (mapcat :skip processed))}))
+         {:keep [] :skip []}
+         by-location)]
+    {:mutations (:keep filtered-and-subsumed)
+     :subsumed (:skip filtered-and-subsumed)
+     :subsumed-count (count (:skip filtered-and-subsumed))}))
+
+;; =============================================================================
+;; Dominator Mutant Selection
+;; =============================================================================
+
+(defn find-dominator-mutants
+  "Find mutants that dominate others in the subsumption hierarchy.
+
+   A dominator mutant has a minimal kill set - no other mutant has a strict
+   subset of tests that kill it. These are the 'hardest' mutants to kill.
+
+   In subsumption terms: if A's kills ⊆ B's kills, then A dominates B
+   (A is harder to kill, and any test that kills A also kills B).
+
+   For mutation reduction: testing only dominators is sufficient because
+   killing a dominator implies killing all mutants it dominates.
+
+   Arguments:
+   - kill-matrix: Result from build-kill-matrix with :matrix as {idx -> #{test-indices}}
+
+   Returns set of mutant indices that are dominators (minimal kill sets)."
+  [{:keys [matrix]}]
+  (let [mutant-indices (keys matrix)]
+    (set
+     (filter
+      (fn [m-idx]
+        (let [m-kills (get matrix m-idx #{})]
+          ;; m is dominator if no other mutant has a strict subset of m's kills
+          ;; (meaning no one is "harder" to kill than m)
+          (not-any?
+           (fn [[other-idx other-kills]]
+             (and (not= m-idx other-idx)
+                  ;; other dominates m if other's kills are a proper subset
+                  (set/subset? other-kills m-kills)
+                  (not= other-kills m-kills)))
+           matrix)))
+      mutant-indices))))
+
+(defn dominator-reduction-stats
+  "Calculate statistics about dominator-based mutant reduction.
+
+   Arguments:
+   - kill-matrix: Result from build-kill-matrix
+
+   Returns:
+   {:total-mutants n
+    :dominator-count n
+    :reduction-percentage pct}"
+  [kill-matrix]
+  (let [total (count (:mutants kill-matrix))
+        dominators (find-dominator-mutants kill-matrix)
+        dom-count (count dominators)]
+    {:total-mutants total
+     :dominator-count dom-count
+     :dominated-count (- total dom-count)
+     :reduction-percentage (if (pos? total)
+                             (* 100.0 (/ (- total dom-count) total))
+                             0.0)}))
+
+;; =============================================================================
+;; Full Kill Matrix Mode (Calibration)
+;; =============================================================================
+
+(defn merge-kill-matrices
+  "Merge multiple kill matrices from different runs.
+
+   Used for calibration mode where we run all tests (not early exit)
+   to build complete subsumption information.
+
+   Arguments:
+   - matrices: Sequence of kill matrix maps
+
+   Returns combined kill matrix."
+  [matrices]
+  (let [all-mutants (into [] (distinct (mapcat :mutants matrices)))
+        all-tests (into [] (distinct (mapcat :tests matrices)))
+        test-idx-map (zipmap all-tests (range))
+        mutant-idx-map (zipmap all-mutants (range))
+        ;; Build combined matrix
+        combined-matrix
+        (reduce
+         (fn [acc {:keys [mutants tests matrix]}]
+           (let [local-test-idx (zipmap tests (range))]
+             (reduce-kv
+              (fn [m local-m-idx local-kills]
+                (let [global-m-idx (get mutant-idx-map (nth mutants local-m-idx))
+                      global-kills (set (map #(get test-idx-map (nth tests %)) local-kills))]
+                  (update m global-m-idx (fnil into #{}) global-kills)))
+              acc
+              matrix)))
+         {}
+         matrices)]
+    {:mutants all-mutants
+     :tests all-tests
+     :matrix combined-matrix}))
+
+(defn complete-subsumption-analysis
+  "Perform complete subsumption analysis on a full kill matrix.
+
+   Unlike early-exit mode, this requires running all tests for each mutant
+   to build complete kill sets.
+
+   Arguments:
+   - kill-matrix: Full kill matrix with complete test coverage per mutant
+
+   Returns:
+   {:dominators #{mutant-indices}
+    :subsumption-graph {m-idx -> #{dominated-by-m-indices}}
+    :stats {...}}"
+  [kill-matrix]
+  (let [{:keys [matrix]} kill-matrix
+        mutant-indices (set (keys matrix))
+        ;; Build subsumption graph: m1 -> #{m2, m3} means m1 subsumes m2, m3
+        subsumption-graph
+        (reduce
+         (fn [graph m-idx]
+           (let [m-kills (get matrix m-idx #{})]
+             (assoc graph m-idx
+                    (set (filter
+                          (fn [other-idx]
+                            (and (not= m-idx other-idx)
+                                 (let [other-kills (get matrix other-idx #{})]
+                                   ;; m subsumes other if other's kills ⊂ m's kills
+                                   (and (set/subset? other-kills m-kills)
+                                        (not= other-kills m-kills)))))
+                          mutant-indices)))))
+         {}
+         mutant-indices)
+        dominators (find-dominator-mutants kill-matrix)]
+    {:dominators dominators
+     :subsumption-graph subsumption-graph
+     :stats (dominator-reduction-stats kill-matrix)}))
+
+(defn select-minimal-mutants
+  "Select a minimal set of mutants that covers all tests.
+
+   Uses a greedy set-cover algorithm: repeatedly select the mutant
+   whose kills cover the most uncovered tests.
+
+   Arguments:
+   - kill-matrix: Full kill matrix
+
+   Returns vector of selected mutant indices."
+  [{:keys [matrix tests]}]
+  (let [all-test-indices (set (range (count tests)))]
+    (loop [uncovered all-test-indices
+           selected []]
+      (if (empty? uncovered)
+        selected
+        ;; Find mutant that covers most uncovered tests
+        (let [best-mutant
+              (apply max-key
+                     (fn [m-idx]
+                       (count (set/intersection (get matrix m-idx #{}) uncovered)))
+                     (keys matrix))
+              new-covered (get matrix best-mutant #{})]
+          (if (empty? (set/intersection new-covered uncovered))
+            selected  ; No progress, done
+            (recur (set/difference uncovered new-covered)
+                   (conj selected best-mutant))))))))
+
+;; =============================================================================
+;; Enhanced Incremental Analysis
+;; =============================================================================
+
+(defn can-skip-mutation?
+  "Determine if a mutation result can be inferred from previous run history.
+
+   Arguments:
+   - mutation: Mutation record
+   - history: Map of {mutation-identity -> previous-result}
+   - changed-tests: Set of test symbols that have changed since last run
+   - changed-files: Set of source files that have changed
+
+   Returns {:skip true :inferred-status ...} or {:skip false :reason ...}"
+  [mutation history changed-tests changed-files]
+  (let [m-id (select-keys mutation [:file :line :coord :operator])
+        prev-result (get history m-id)]
+    (cond
+      ;; No previous result
+      (nil? prev-result)
+      {:skip false :reason :no-history}
+
+      ;; Source file changed - must re-test
+      (contains? changed-files (:file mutation))
+      {:skip false :reason :source-changed}
+
+      ;; Previously killed, killer test unchanged
+      (and (= :killed (:status prev-result))
+           (not (contains? changed-tests (:killed-by prev-result))))
+      {:skip true :inferred-status :killed :reason :unchanged-killer}
+
+      ;; Previously survived, no covering tests changed
+      (and (= :survived (:status prev-result))
+           (empty? (set/intersection changed-tests (:tests-run prev-result))))
+      {:skip true :inferred-status :survived :reason :unchanged-covering-tests}
+
+      ;; Previously timed out or errored, source unchanged
+      (and (contains? #{:timeout :error} (:status prev-result))
+           (not (contains? changed-files (:file mutation))))
+      {:skip true :inferred-status (:status prev-result) :reason :unchanged-problematic}
+
+      :else
+      {:skip false :reason :requires-retest})))
 
 ;; =============================================================================
 ;; Kill Pattern Analysis

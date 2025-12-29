@@ -273,3 +273,136 @@
       (is (= [] (:mutants matrix)))
       (is (= [] (:tests matrix)))
       (is (= {} (:matrix matrix))))))
+
+;; =============================================================================
+;; Operator Subsumption Tests (RORG Schema)
+;; =============================================================================
+
+(deftest minimal-operators-for-relational-test
+  (testing "Returns minimal operators for relational operators"
+    (is (= [:swap-lt-lte :swap-lt-neq :replace-comparison-false]
+           (sub/minimal-operators-for '<)))
+    (is (= [:swap-gt-gte :swap-gt-neq :replace-comparison-false]
+           (sub/minimal-operators-for '>)))))
+
+(deftest minimal-operators-for-arithmetic-test
+  (testing "Returns minimal operators for arithmetic operators"
+    (is (= [:swap-plus-minus] (sub/minimal-operators-for '+)))
+    (is (= [:swap-minus-plus] (sub/minimal-operators-for '-)))
+    (is (= [:swap-mult-div] (sub/minimal-operators-for '*)))))
+
+(deftest minimal-operators-for-unknown-test
+  (testing "Returns nil for unknown operators"
+    (is (nil? (sub/minimal-operators-for 'unknown-op)))))
+
+(deftest filter-by-operator-subsumption-test
+  (testing "Filters mutations by operator subsumption"
+    (let [mutations [{:operator :swap-plus-minus :original '+ :file "a.clj" :line 1 :coord [0]}
+                     {:operator :swap-plus-mult :original '+ :file "a.clj" :line 1 :coord [0]}]
+          result (sub/filter-by-operator-subsumption mutations)]
+      ;; swap-plus-minus is in minimal set, swap-plus-mult is not
+      (is (= 1 (count (:mutations result))))
+      (is (= :swap-plus-minus (:operator (first (:mutations result))))))))
+
+;; =============================================================================
+;; Dominator Mutant Tests
+;; =============================================================================
+
+(deftest find-dominator-mutants-test
+  (testing "Finds dominator mutants in kill matrix"
+    (let [matrix {:mutants [{:id 0} {:id 1} {:id 2}]
+                  :tests ['t1 't2 't3]
+                  :matrix {0 #{0 1}      ; killed by t1, t2 - dominator (minimal, no subset)
+                           1 #{0 1 2}    ; killed by t1, t2, t3 - dominated by 0 and 2
+                           2 #{2}}}      ; killed by t3 only - dominator (minimal, no subset)
+          dominators (sub/find-dominator-mutants matrix)]
+      ;; Dominators have minimal kill sets (hardest to kill)
+      ;; 0 dominates 1 (0's kills ⊂ 1's kills)
+      ;; 2 dominates 1 (2's kills ⊂ 1's kills)
+      ;; 0 and 2 are incomparable (neither's kills is a subset of the other)
+      (is (contains? dominators 0))
+      (is (contains? dominators 2))
+      (is (not (contains? dominators 1))))))
+
+(deftest dominator-reduction-stats-test
+  (testing "Calculates dominator reduction statistics"
+    (let [matrix {:mutants [{:id 0} {:id 1} {:id 2}]
+                  :tests ['t1 't2 't3]
+                  :matrix {0 #{0 1}
+                           1 #{0 1 2}
+                           2 #{2}}}
+          stats (sub/dominator-reduction-stats matrix)]
+      (is (= 3 (:total-mutants stats)))
+      (is (= 2 (:dominator-count stats)))
+      (is (= 1 (:dominated-count stats)))
+      (is (number? (:reduction-percentage stats))))))
+
+;; =============================================================================
+;; Full Kill Matrix / Calibration Mode Tests
+;; =============================================================================
+
+(deftest complete-subsumption-analysis-test
+  (testing "Performs complete subsumption analysis"
+    (let [matrix {:mutants [{:id 0} {:id 1}]
+                  :tests ['t1 't2]
+                  :matrix {0 #{0}
+                           1 #{0 1}}}
+          analysis (sub/complete-subsumption-analysis matrix)]
+      (is (set? (:dominators analysis)))
+      (is (map? (:subsumption-graph analysis)))
+      (is (map? (:stats analysis))))))
+
+(deftest select-minimal-mutants-test
+  (testing "Selects minimal set of mutants covering all tests"
+    (let [matrix {:mutants [{:id 0} {:id 1} {:id 2}]
+                  :tests ['t1 't2 't3]
+                  :matrix {0 #{0 1}      ; covers t1, t2
+                           1 #{1 2}      ; covers t2, t3
+                           2 #{0}}}      ; covers t1
+          minimal (sub/select-minimal-mutants matrix)]
+      ;; Should select mutants that cover all tests with minimal redundancy
+      (is (vector? minimal))
+      ;; Mutants 0 and 1 together cover all tests
+      (is (<= (count minimal) 2)))))
+
+;; =============================================================================
+;; Enhanced Incremental Analysis Tests
+;; =============================================================================
+
+(deftest can-skip-mutation-no-history-test
+  (testing "Cannot skip when no history"
+    (let [result (sub/can-skip-mutation?
+                  {:file "a.clj" :line 1 :coord [0] :operator :swap}
+                  {}  ; empty history
+                  #{}  ; no changed tests
+                  #{})] ; no changed files
+      (is (false? (:skip result)))
+      (is (= :no-history (:reason result))))))
+
+(deftest can-skip-mutation-source-changed-test
+  (testing "Cannot skip when source file changed"
+    ;; History key must match the format from (select-keys mutation [:file :line :coord :operator])
+    (let [mutation {:file "a.clj" :line 1 :coord [0] :operator :swap}
+          history {{:file "a.clj" :line 1 :coord [0] :operator :swap}
+                   {:status :killed :killed-by 't1}}
+          result (sub/can-skip-mutation?
+                  mutation
+                  history
+                  #{}
+                  #{"a.clj"})]  ; file changed
+      (is (false? (:skip result)))
+      (is (= :source-changed (:reason result))))))
+
+(deftest can-skip-mutation-unchanged-killer-test
+  (testing "Can skip when killer test unchanged"
+    (let [mutation {:file "a.clj" :line 1 :coord [0] :operator :swap}
+          history {{:file "a.clj" :line 1 :coord [0] :operator :swap}
+                   {:status :killed :killed-by 'test/killer :tests-run #{'test/killer}}}
+          result (sub/can-skip-mutation?
+                  mutation
+                  history
+                  #{}  ; no changed tests
+                  #{})] ; no changed files
+      (is (true? (:skip result)))
+      (is (= :killed (:inferred-status result)))
+      (is (= :unchanged-killer (:reason result))))))
