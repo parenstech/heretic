@@ -154,4 +154,116 @@
                    "  (println)"
                    "  (println \"Note: Tests requiring ClojureStorm skipped. Use 'bb test' for full suite.\")"
                    "  (System/exit (if (and (zero? (:fail summary)) (zero? (:error summary))) 0 1)))")]
-     (p/shell "clj" "-Sdeps" "{:paths [\"src\" \"test\"]}" "-M" "-e" code))}}}
+     (p/shell "clj" "-Sdeps" "{:paths [\"src\" \"test\"]}" "-M" "-e" code))}
+
+  ;; =============================================================================
+  ;; Self-Testing Infrastructure
+  ;; =============================================================================
+  ;; Heretic tests itself using a git worktree to avoid self-corruption.
+  ;; The mutation engine runs in one JVM, tests run in worktree via nREPL.
+
+  self-test:setup
+  {:doc "Create worktree for self-testing and show REPL start instructions"
+   :task
+   (let [worktree-path "../heretic-under-test"
+         worktree-abs (str (fs/absolutize worktree-path))]
+     (if (fs/exists? worktree-path)
+       (do
+         (println "Worktree already exists at" worktree-abs)
+         (println "")
+         (println "To start the worktree REPL:")
+         (println (str "  cd " worktree-abs))
+         (println "  clj -M:dev:test:clojurestorm -m nrepl.cmdline --interactive")
+         (println "")
+         (println "Note the port number, then run:")
+         (println "  bb self-test --port <PORT>"))
+       (do
+         (println "Creating worktree at" worktree-abs "...")
+         (p/shell "git" "worktree" "add" worktree-path "HEAD")
+         (println "")
+         (println "Worktree created! Now start the worktree REPL:")
+         (println (str "  cd " worktree-abs))
+         (println "  clj -M:dev:test:clojurestorm -m nrepl.cmdline --interactive")
+         (println "")
+         (println "Note the port number, then run:")
+         (println "  bb self-test --port <PORT>"))))}
+
+  self-test:cleanup
+  {:doc "Remove the self-testing worktree"
+   :task
+   (let [worktree-path "../heretic-under-test"]
+     (if (fs/exists? worktree-path)
+       (do
+         ;; Reset any leftover mutations first
+         (println "Resetting any leftover mutations...")
+         (p/shell {:dir worktree-path :continue true} "git" "checkout" ".")
+         (println "Removing worktree...")
+         (p/shell "git" "worktree" "remove" "--force" worktree-path)
+         (println "Worktree removed."))
+       (println "No worktree found at" worktree-path)))}
+
+  self-test
+  {:doc "Run mutation testing on Heretic itself via worktree nREPL"
+   :task
+   (let [;; Parse --port argument
+         port-idx (.indexOf (vec *command-line-args*) "--port")
+         port (when (and (>= port-idx 0)
+                         (< (inc port-idx) (count *command-line-args*)))
+                (parse-long (nth *command-line-args* (inc port-idx))))
+
+         ;; Parse --file argument (optional, for testing specific file)
+         file-idx (.indexOf (vec *command-line-args*) "--file")
+         target-file (when (and (>= file-idx 0)
+                                (< (inc file-idx) (count *command-line-args*)))
+                       (nth *command-line-args* (inc file-idx)))
+
+         ;; Parse --limit argument (optional, limit number of mutations)
+         limit-idx (.indexOf (vec *command-line-args*) "--limit")
+         limit (when (and (>= limit-idx 0)
+                          (< (inc limit-idx) (count *command-line-args*)))
+                 (parse-long (nth *command-line-args* (inc limit-idx))))
+
+         worktree-path "../heretic-under-test"]
+     (cond
+       (not port)
+       (do
+         (println "Usage: bb self-test --port <PORT> [--file <FILE>] [--limit <N>]")
+         (println "")
+         (println "First run 'bb self-test:setup' and start the worktree REPL."))
+
+       (not (fs/exists? worktree-path))
+       (do
+         (println "Worktree not found. Run 'bb self-test:setup' first."))
+
+       :else
+       (let [config (load-config)
+             worktree-abs (str (fs/absolutize worktree-path))
+             code (str "(require '[heretic.self-test :as st])"
+                       "(st/run-self-test! "
+                       "{:port " port
+                       " :worktree-path \"" worktree-abs "\""
+                       (when target-file (str " :file \"" target-file "\""))
+                       (when limit (str " :limit " limit))
+                       "})")]
+         (run-with-clojurestorm config code))))}
+
+  self-test:status
+  {:doc "Check self-testing setup status"
+   :task
+   (let [worktree-path "../heretic-under-test"
+         worktree-abs (str (fs/absolutize worktree-path))]
+     (println "Self-test status:")
+     (println "")
+     (if (fs/exists? worktree-path)
+       (do
+         (println "  Worktree: " worktree-abs)
+         (println "  Status: READY")
+         (println "")
+         (println "To start testing:")
+         (println "  1. cd" worktree-abs)
+         (println "  2. clj -M:dev:test:clojurestorm -m nrepl.cmdline --interactive")
+         (println "  3. bb self-test --port <PORT>"))
+       (do
+         (println "  Worktree: NOT FOUND")
+         (println "")
+         (println "Run 'bb self-test:setup' to create the worktree."))))}}}
