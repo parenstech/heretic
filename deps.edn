@@ -13,8 +13,8 @@
   ;; HTML generation for reports
   hiccup/hiccup {:mvn/version "2.0.0-RC3"}
 
-  ;; File watching for watch mode
-  hawk/hawk {:mvn/version "0.2.11"}}
+  ;; File watching for watch mode (used by Kaocha, better Mac support)
+  com.nextjournal/beholder {:mvn/version "1.0.2"}}
 
  :aliases
  {:dev

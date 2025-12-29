@@ -5,17 +5,19 @@
    - Source file changes: Re-mutate affected file
    - Test file changes: Re-collect coverage, then re-mutate affected sources
 
+   Uses nextjournal/beholder for file watching (JNA-based WatchService on Mac,
+   same library used by Kaocha).
+
    Usage:
    (def watcher (start-watch! config))
    ;; ... work on code ...
    (stop! watcher)"
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
-            [hawk.core :as hawk]
+            [nextjournal.beholder :as beholder]
             [heretic.coverage-map :as coverage]
             [heretic.mutation-engine :as engine]
             [heretic.runner :as runner]
-            [heretic.reporter :as reporter]
             [heretic.reloader :as reloader]))
 
 ;; =============================================================================
@@ -36,26 +38,22 @@
        (or (str/ends-with? path ".clj")
            (str/ends-with? path ".cljc"))))
 
-(defn- in-path? [paths file]
-  (let [file-path (.getCanonicalPath (io/file file))]
-    (some (fn [path]
+(defn- in-path? [paths path-str]
+  (let [file-path (.getCanonicalPath (io/file path-str))]
+    (some (fn [dir]
             (str/starts-with? file-path
-                              (.getCanonicalPath (io/file path))))
+                              (.getCanonicalPath (io/file dir))))
           paths)))
 
-(defn- source-file? [config file]
-  (in-path? (:source-paths config) file))
+(defn- source-file? [config path]
+  (in-path? (:source-paths config) path))
 
-(defn- test-file? [config file]
-  (in-path? (:test-paths config) file))
+(defn- test-file? [config path]
+  (in-path? (:test-paths config) path))
 
 ;; =============================================================================
 ;; Change Handlers
 ;; =============================================================================
-
-(defn- file-path [event]
-  (when-let [f (:file event)]
-    (.getPath f)))
 
 (defn- handle-source-change
   "Handle source file change - run mutations for the affected file."
@@ -199,21 +197,19 @@
                             result))
                         debounce-ms)]
 
-      ;; Start file watcher
-      (let [all-paths (concat (:source-paths config) (:test-paths config))
-            watcher (hawk/watch!
-                     [{:paths all-paths
-                       :filter (fn [_ {:keys [file]}]
-                                 (and file (clj-file? (.getPath file))))
-                       :handler (fn [_ {:keys [kind file] :as event}]
-                                  (when (and (#{:modify :create} kind) file)
-                                    (let [path (.getPath file)]
-                                      (cond
-                                        (source-file? config file)
-                                        (source-handler path)
+      ;; Start file watcher using beholder
+      ;; beholder callback receives {:type :modify/:create/:delete, :path "..."}
+      (let [all-paths (vec (concat (:source-paths config) (:test-paths config)))
+            handler (fn [{:keys [type path]}]
+                      (when (and (#{:modify :create} type)
+                                 (clj-file? path))
+                        (cond
+                          (source-file? config path)
+                          (source-handler path)
 
-                                        (test-file? config file)
-                                        (test-handler path)))))}])]
+                          (test-file? config path)
+                          (test-handler path))))
+            watcher (apply beholder/watch handler all-paths)]
 
         (reset! watcher-state {:watcher watcher
                                :config config
@@ -234,7 +230,7 @@
      (stop! (:watcher state))))
   ([watcher]
    (when watcher
-     (hawk/stop! watcher)
+     (beholder/stop watcher)
      (reset! watcher-state nil)
      (println "\nWatch mode stopped."))))
 

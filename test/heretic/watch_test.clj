@@ -34,19 +34,19 @@
 (deftest in-path?-test
   (testing "in-path? checks if file is under given paths"
     ;; Use actual paths that exist
-    (is (#'watch/in-path? ["."] (io/file "deps.edn")))
-    (is (#'watch/in-path? ["src"] (io/file "src/heretic/core.clj")))
-    (is (not (#'watch/in-path? ["nonexistent"] (io/file "src/heretic/core.clj"))))))
+    (is (#'watch/in-path? ["."] "deps.edn"))
+    (is (#'watch/in-path? ["src"] "src/heretic/core.clj"))
+    (is (not (#'watch/in-path? ["nonexistent"] "src/heretic/core.clj")))))
 
 (deftest source-file?-test
   (testing "source-file? identifies source files"
-    (is (#'watch/source-file? test-config (io/file "src/heretic/core.clj")))
-    (is (not (#'watch/source-file? test-config (io/file "test/heretic/core_test.clj"))))))
+    (is (#'watch/source-file? test-config "src/heretic/core.clj"))
+    (is (not (#'watch/source-file? test-config "test/heretic/core_test.clj")))))
 
 (deftest test-file?-test
   (testing "test-file? identifies test files"
-    (is (#'watch/test-file? test-config (io/file "test/heretic/core_test.clj")))
-    (is (not (#'watch/test-file? test-config (io/file "src/heretic/core.clj"))))))
+    (is (#'watch/test-file? test-config "test/heretic/core_test.clj"))
+    (is (not (#'watch/test-file? test-config "src/heretic/core.clj")))))
 
 ;; =============================================================================
 ;; Status Tests
@@ -60,13 +60,3 @@
 ;; Note: Testing start-watch! and stop! requires actual file system watching
 ;; which is better suited for integration tests. These unit tests focus on
 ;; the pure helper functions.
-
-;; =============================================================================
-;; File Path Extraction Tests
-;; =============================================================================
-
-(deftest file-path-test
-  (testing "file-path extracts path from event"
-    (is (= "foo.clj" (#'watch/file-path {:file (io/file "foo.clj")})))
-    (is (nil? (#'watch/file-path {:file nil})))
-    (is (nil? (#'watch/file-path {})))))
