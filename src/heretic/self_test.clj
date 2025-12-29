@@ -77,6 +77,20 @@
 ;; Mutation Generation for Worktree
 ;; =============================================================================
 
+;; Files that should be excluded from self-testing because they are part of
+;; the test infrastructure itself. Mutating these breaks the test execution.
+(def ^:private self-test-critical-files
+  #{"self_test.clj"
+    "nrepl_runner.clj"})
+
+(defn- should-exclude?
+  "Check if a file path should be excluded based on exclusion patterns."
+  [file-path exclude-patterns]
+  (let [filename (-> file-path (str/split #"/") last)]
+    (some #(or (= filename %)
+               (str/ends-with? file-path %))
+          exclude-patterns)))
+
 (defn generate-worktree-mutations
   "Generate mutations for files in the worktree.
 
@@ -86,12 +100,19 @@
      - :file - Specific file to mutate (relative path)
      - :operators - Operators to use (default: :minimal preset)
      - :limit - Max number of mutations
+     - :exclude - Collection of file patterns to exclude (default: self-test critical files)
+     - :include-critical? - If true, don't exclude self-test critical files (default: false)
 
    Returns sequence of mutations with :file pointing to worktree paths."
   [worktree-root opts]
   (let [target-file (:file opts)
         operators (or (:operators opts) (ops/operators-for-preset :minimal))
         limit (:limit opts)
+        include-critical? (:include-critical? opts false)
+        exclude-patterns (cond
+                           (:exclude opts) (set (:exclude opts))
+                           include-critical? #{}
+                           :else self-test-critical-files)
 
         ;; If specific file, use it; otherwise scan src/heretic/
         source-paths (if target-file
@@ -100,8 +121,13 @@
 
         mutations (if target-file
                     (engine/mutations-for-file (str worktree-root "/" target-file) operators)
-                    (engine/generate-mutations source-paths operators))]
-    (cond->> mutations
+                    (engine/generate-mutations source-paths operators))
+
+        ;; Filter out excluded files
+        filtered (if (seq exclude-patterns)
+                   (remove #(should-exclude? (:file %) exclude-patterns) mutations)
+                   mutations)]
+    (cond->> filtered
       limit (take limit))))
 
 ;; =============================================================================
@@ -141,9 +167,11 @@
      - :file - Specific file to test (optional)
      - :limit - Max mutations to test (optional)
      - :operators - Operators to use (optional, default :minimal)
+     - :exclude - File patterns to exclude (optional, default: self-test critical files)
+     - :include-critical? - If true, test critical infrastructure files (optional)
 
    Returns summary map with results."
-  [{:keys [port worktree-path file limit operators] :as opts}]
+  [{:keys [port worktree-path file limit operators exclude include-critical?] :as opts}]
   (println "")
   (println "=== Heretic Self-Test ===")
   (println "")
@@ -151,6 +179,12 @@
   (println "nREPL port:" port)
   (when file (println "Target file:" file))
   (when limit (println "Mutation limit:" limit))
+  (let [excluded (cond
+                   exclude (set exclude)
+                   include-critical? #{}
+                   :else self-test-critical-files)]
+    (when (seq excluded)
+      (println "Excluding:" (str/join ", " excluded))))
   (println "")
 
   ;; Connect to worktree REPL
