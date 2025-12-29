@@ -200,3 +200,205 @@
   (testing "quick-equivalent-check returns nil when no pattern matches"
     (let [mutation (make-mutation :swap-plus-minus :file "src/math.clj")]
       (is (nil? (equiv/quick-equivalent-check mutation))))))
+
+;; =============================================================================
+;; Comprehensive Tests to Kill Surviving Mutations
+;; =============================================================================
+
+;; Kill: rest->next mutations (lines 37, 45, 54, 62)
+;; rest returns () for single element, next returns nil
+(deftest rest-vs-next-single-element-test
+  (testing "Pattern check with single-element list (just function, no args)"
+    ;; (+ ) has only the function symbol, rest gives (), next gives nil
+    ;; some on () returns nil, some on nil returns nil - but behavior differs
+    (let [zloc (-> (parser/parse-string "(+)")
+                   z/down)
+          mutation (make-mutation :swap-plus-minus)]
+      ;; Should not detect as equivalent since there's no 0 argument
+      (is (nil? (equiv/likely-equivalent? mutation zloc))
+          "Single element list should not match zero pattern"))))
+
+;; Kill: and->or mutations for each operator (lines 43, 52, 60)
+(deftest minus-plus-non-list-parent-test
+  (testing "swap-minus-plus with non-list parent"
+    (let [zloc (-> (parser/parse-string "[- x 0]")
+                   z/down)
+          mutation (make-mutation :swap-minus-plus)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest mult-div-non-list-parent-test
+  (testing "swap-mult-div with non-list parent"
+    (let [zloc (-> (parser/parse-string "[* x 1]")
+                   z/down)
+          mutation (make-mutation :swap-mult-div)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest div-mult-non-list-parent-test
+  (testing "swap-div-mult with non-list parent"
+    (let [zloc (-> (parser/parse-string "[/ x 1]")
+                   z/down)
+          mutation (make-mutation :swap-div-mult)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+;; Kill: and->or mutations (lines 69, 79, 81, 89, 91)
+(deftest and-or-non-list-parent-test
+  (testing "swap-and-or with non-list parent"
+    (let [zloc (-> (parser/parse-string "[and true x]")
+                   z/down)
+          mutation (make-mutation :swap-and-or)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest or-and-non-list-parent-test
+  (testing "swap-or-and with non-list parent"
+    (let [zloc (-> (parser/parse-string "[or false x]")
+                   z/down)
+          mutation (make-mutation :swap-or-and)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest eq-neq-non-list-parent-test
+  (testing "swap-eq-neq with non-list parent"
+    (let [zloc (-> (parser/parse-string "[= x x]")
+                   z/down)
+          mutation (make-mutation :swap-eq-neq)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+;; Kill: =->not= mutations (lines 61, 89, 92)
+(deftest divide-by-two-not-equivalent-test
+  (testing "Dividing by 2 (not 1) is not equivalent"
+    (let [zloc (-> (parser/parse-string "(/ x 2)")
+                   z/down)
+          mutation (make-mutation :swap-div-mult)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest eq-neq-different-values-test
+  (testing "Comparing different values is not equivalent"
+    (let [zloc (-> (parser/parse-string "(= x y)")
+                   z/down)
+          mutation (make-mutation :swap-eq-neq)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest eq-neq-same-values-is-equivalent-test
+  (testing "Comparing same values IS equivalent"
+    (let [zloc (-> (parser/parse-string "(= x x)")
+                   z/down)
+          mutation (make-mutation :swap-eq-neq)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))
+          "Comparing identical values should be detected as equivalent"))))
+
+;; Kill: 2->1, 2->0 mutations (line 91) - count check
+(deftest and-three-args-not-equivalent-test
+  (testing "and with 3 args (not 2) is not detected as equivalent"
+    (let [zloc (-> (parser/parse-string "(and true x y)")
+                   z/down)
+          mutation (make-mutation :swap-and-or)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))
+          "3-arg and should not match 2-arg pattern"))))
+
+(deftest and-one-arg-not-equivalent-test
+  (testing "and with 1 arg is not detected as equivalent"
+    (let [zloc (-> (parser/parse-string "(and true)")
+                   z/down)
+          mutation (make-mutation :swap-and-or)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))
+          "1-arg and should not match 2-arg pattern"))))
+
+(deftest or-three-args-not-equivalent-test
+  (testing "or with 3 args is not detected as equivalent"
+    (let [zloc (-> (parser/parse-string "(or false x y)")
+                   z/down)
+          mutation (make-mutation :swap-or-and)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest eq-three-args-not-equivalent-test
+  (testing "= with 3 args is not detected as equivalent even if all same"
+    (let [zloc (-> (parser/parse-string "(= x x x)")
+                   z/down)
+          mutation (make-mutation :swap-eq-neq)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))
+          "3-arg = should not match 2-arg pattern"))))
+
+;; Kill: nil->X mutations (line 109) - check-pattern exception handling
+(deftest check-pattern-exception-returns-nil-test
+  (testing "check-pattern returns nil on exception, not false or other value"
+    ;; Create a situation where the context function would throw
+    ;; by using a mutation that doesn't match any pattern
+    (let [mutation (make-mutation :unknown-operator)
+          zloc (-> (parser/parse-string "(foo)") z/down)
+          result (equiv/likely-equivalent? mutation zloc)]
+      (is (nil? result)
+          "Unknown operator should return nil"))))
+
+(deftest filter-handles-zloc-fn-exception-test
+  (testing "filter-equivalent-mutations handles zloc-fn throwing exception"
+    (let [mutations [(make-mutation :swap-plus-minus :id 1)]
+          zloc-fn (fn [_] (throw (Exception. "zloc error")))
+          result (equiv/filter-equivalent-mutations mutations zloc-fn)]
+      ;; Should treat as testable (not crash)
+      (is (= 1 (count (:mutations result))))
+      (is (= 0 (:filtered-count result))))))
+
+(deftest filter-handles-nil-zloc-test
+  (testing "filter-equivalent-mutations handles nil zloc"
+    (let [mutations [(make-mutation :swap-plus-minus)]
+          zloc-fn (fn [_] nil)
+          result (equiv/filter-equivalent-mutations mutations zloc-fn)]
+      ;; Should treat as testable
+      (is (= 1 (count (:mutations result))))
+      (is (= 0 (:filtered-count result))))))
+
+;; Kill: true->false mutations (lines 121, 174)
+(deftest likely-equivalent-returns-true-in-map-test
+  (testing "likely-equivalent? returns map with :equivalent? true"
+    (let [zloc (-> (parser/parse-string "(+ x 0)")
+                   z/down)
+          mutation (make-mutation :swap-plus-minus)
+          result (equiv/likely-equivalent? mutation zloc)]
+      (is (map? result))
+      (is (true? (:equivalent? result))
+          ":equivalent? must be true, not just truthy"))))
+
+(deftest quick-check-returns-true-in-map-test
+  (testing "quick-equivalent-check returns map with :equivalent? true"
+    (let [mutation (make-mutation :replace-0-to-1 :file "src/default_config.clj")
+          result (equiv/quick-equivalent-check mutation)]
+      (is (map? result))
+      (is (true? (:equivalent? result))
+          ":equivalent? must be true, not just truthy"))))
+
+;; Additional edge cases for rest->next (lines 71, 80, 90)
+(deftest and-or-rest-vs-next-test
+  (testing "and/or pattern with single boolean arg"
+    ;; (and true) - rest gives (true), checking (some true? (true)) works
+    ;; but next would give nil on single element after rest
+    (let [zloc (-> (parser/parse-string "(and true)")
+                   z/down)
+          mutation (make-mutation :swap-and-or)]
+      ;; Should NOT match because count is 1, not 2
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest eq-neq-rest-vs-next-test
+  (testing "= pattern uses rest correctly"
+    ;; (= x) - single arg, rest gives (x), count is 1, not 2
+    (let [zloc (-> (parser/parse-string "(= x)")
+                   z/down)
+          mutation (make-mutation :swap-eq-neq)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))
+          "Single arg = should not match 2-arg pattern"))))
+
+;; Kill: and->or at line 161 (in simple-equivalent-patterns check)
+(deftest simple-pattern-and-check-test
+  (testing "simple pattern check uses and correctly"
+    ;; The simple pattern checks (and (= :replace-0-to-1 op) (re-find ...))
+    ;; If mutated to or, wrong operator would match
+    (let [wrong-op (make-mutation :swap-plus-minus :file "src/default_config.clj")
+          result (equiv/quick-equivalent-check wrong-op)]
+      (is (nil? result)
+          "Wrong operator should not match even with matching filename"))))
+
+(deftest simple-pattern-both-conditions-required-test
+  (testing "simple pattern requires both operator AND filename match"
+    ;; Right operator, wrong filename
+    (let [wrong-file (make-mutation :replace-0-to-1 :file "src/math.clj")
+          result (equiv/quick-equivalent-check wrong-file)]
+      (is (nil? result)
+          "Right operator with wrong filename should not match"))))
