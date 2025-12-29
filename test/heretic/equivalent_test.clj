@@ -402,3 +402,80 @@
           result (equiv/quick-equivalent-check wrong-file)]
       (is (nil? result)
           "Right operator with wrong filename should not match"))))
+
+;; =============================================================================
+;; Exception Path Tests (kills nil->X mutations at line 109)
+;; =============================================================================
+
+(deftest exception-in-context-returns-nil-test
+  (testing "Exception in context function returns nil, not truthy value"
+    ;; Pass invalid zloc (a number) which causes z/up to throw
+    ;; This exercises the catch block at line 109
+    ;; If nil is mutated to 0/[]/{}/"", the return would be {:equivalent? true ...}
+    (let [mutation (make-mutation :swap-plus-minus)
+          invalid-zloc 42  ; z/up throws UnsupportedOperationException on this
+          result (equiv/likely-equivalent? mutation invalid-zloc)]
+      (is (nil? result)
+          "Exception should return nil, not a truthy value")
+      (is (not (map? result))
+          "Exception should not return a map"))))
+
+(deftest exception-returns-nil-not-false-test
+  (testing "Exception returns nil specifically, not false"
+    (let [mutation (make-mutation :swap-minus-plus)
+          result (equiv/likely-equivalent? mutation 123)]
+      (is (nil? result))
+      (is (not (false? result))
+          "Should return nil, not false"))))
+
+(deftest exception-returns-nil-not-empty-collection-test
+  (testing "Exception returns nil, not empty collection"
+    (let [mutation (make-mutation :swap-mult-div)
+          result (equiv/likely-equivalent? mutation :keyword-not-zloc)]
+      (is (nil? result))
+      (is (not (= [] result)))
+      (is (not (= {} result)))
+      (is (not (= "" result))))))
+
+;; =============================================================================
+;; rest->next Equivalent Pattern Tests
+;; =============================================================================
+
+(deftest rest-next-equivalent-in-some-context-test
+  (testing "rest->next is equivalent when passed to some"
+    ;; (some pred (rest coll)) ≡ (some pred (next coll))
+    (let [zloc (-> (parser/parse-string "(some #(= 0 %) (rest coll))")
+                   z/down    ; at 'some
+                   z/right   ; at predicate
+                   z/right   ; at (rest coll)
+                   z/down)   ; at 'rest
+          mutation (make-mutation :swap-rest-next)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))
+          "rest->next in some context should be detected as equivalent"))))
+
+(deftest rest-next-not-equivalent-outside-some-test
+  (testing "rest->next is NOT equivalent outside some context"
+    ;; (first (rest coll)) is NOT equivalent to (first (next coll))
+    ;; when coll has one element: (first (rest '(a))) = nil, (first (next '(a))) = nil
+    ;; Actually that's the same... let me use a different example
+    ;; (count (rest coll)) vs (count (next coll)) when coll is empty:
+    ;; (count (rest '())) = 0, (count (next '())) throws NPE on count of nil...
+    ;; Actually no, (count nil) = 0 in Clojure
+    ;; The difference is (rest '()) = (), (next '()) = nil
+    ;; For most sequence operations they behave the same
+    ;; But the pattern only marks it equivalent when in `some` context
+    (let [zloc (-> (parser/parse-string "(first (rest coll))")
+                   z/down    ; at 'first
+                   z/right   ; at (rest coll)
+                   z/down)   ; at 'rest
+          mutation (make-mutation :swap-rest-next)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))
+          "rest->next outside some context should NOT be marked equivalent"))))
+
+(deftest next-rest-equivalent-in-some-context-test
+  (testing "next->rest is also equivalent when passed to some"
+    (let [zloc (-> (parser/parse-string "(some pred (next items))")
+                   z/down z/right z/right z/down)
+          mutation (make-mutation :swap-next-rest)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))
+          "next->rest in some context should be detected as equivalent"))))

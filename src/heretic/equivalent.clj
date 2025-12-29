@@ -90,7 +90,32 @@
                    (let [children (rest (z/child-sexprs parent))]
                      (and (= 2 (count children))
                           (apply = children))))))
-    :reason "Comparing identical values"}])
+    :reason "Comparing identical values"}
+
+   ;; rest->next when result is passed to `some`
+   ;; (some pred (rest coll)) ≡ (some pred (next coll))
+   ;; because some returns nil for both () and nil
+   {:operator :swap-rest-next
+    :context (fn [zloc]
+               ;; Check if this rest call is a direct argument to `some`
+               ;; (some pred (rest ...)) - rest is at position 2 in some's args
+               (let [parent (z/up zloc)]
+                 (when (and parent (= :list (z/tag parent)))
+                   (let [grandparent (z/up parent)]
+                     (when (and grandparent (= :list (z/tag grandparent)))
+                       (let [gp-children (z/child-sexprs grandparent)]
+                         (= 'some (first gp-children))))))))
+    :reason "rest/next equivalent when passed to some (both return nil for empty)"}
+
+   {:operator :swap-next-rest
+    :context (fn [zloc]
+               (let [parent (z/up zloc)]
+                 (when (and parent (= :list (z/tag parent)))
+                   (let [grandparent (z/up parent)]
+                     (when (and grandparent (= :list (z/tag grandparent)))
+                       (let [gp-children (z/child-sexprs grandparent)]
+                         (= 'some (first gp-children))))))))
+    :reason "rest/next equivalent when passed to some (both return nil for empty)"}])
 
 ;; =============================================================================
 ;; Detection Functions
