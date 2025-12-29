@@ -858,6 +858,26 @@ Design consideration: Should Heretic support combining multiple first-order muta
 
 ## 6. AI Integration
 
+### 6.0 Provider Abstraction (Dependency Injection)
+
+Heretic has **zero LLM dependencies**. Users inject their own provider implementation.
+
+**Minimal Protocol:**
+```clojure
+(defprotocol LLMProvider
+  (completion [this messages opts]
+    "Execute a completion request.
+     Returns: {:content string :usage {:prompt-tokens n :completion-tokens n}}"))
+```
+
+**Why minimal?** Following Clojure protocol best practices:
+- Protocols define primitives, not domain operations
+- Domain logic (mutation generation, equivalent detection) lives in regular functions
+- Heretic owns all prompts and response parsing
+- Any LLM library (clj-http, openai-clojure, Bosquet, etc.) can implement the protocol
+
+See `docs/spec.md` section 4.0 for full design and example adapters.
+
 ### 6.1 Three-Agent Workflow (Meta ACH Pattern)
 
 Based on Meta's research, use a **three-agent pipeline** for AI mutations:

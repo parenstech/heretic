@@ -1507,97 +1507,176 @@ Phase 3 adds parallelism and watch mode to leverage this.
 
 #### 4.0 LLM Infrastructure (Prerequisite)
 
-Before integrating AI features, establish infrastructure:
+Before integrating AI features, establish infrastructure.
 
-**Cost Control:**
-- [ ] Token counting and budget tracking per run
-- [ ] Configurable cost limits: `:llm-budget-cents 100`
-- [ ] Cost reporting in mutation results
-- [ ] Tiered approach: deterministic first, AI for survivors only
+**Design Principle: Minimal Protocol + Dependency Injection**
 
-**Provider Abstraction:**
+Heretic defines a minimal protocol for LLM communication. Users inject their own
+implementation (Babel, direct HTTP, Ollama, etc.). Heretic has **zero LLM dependencies**.
+
 ```clojure
-(defprotocol LLMProvider
-  (generate [this prompt opts] "Generate completion")
-  (estimate-cost [this prompt] "Estimate cost before calling"))
+(ns heretic.ai.protocol
+  "Minimal LLM protocol. Providers implement one method.")
 
-;; Implementations
-(defrecord ClaudeProvider [api-key model])
-(defrecord OllamaProvider [endpoint model])  ; Local, free
-(defrecord OpenAIProvider [api-key model])
+(defprotocol LLMProvider
+  (completion [this messages opts]
+    "Execute a completion request.
+
+     messages - vector of {:role \"user\"/\"assistant\"/\"system\" :content string}
+     opts     - {:temperature 0.3, :max-tokens 4096, ...}
+
+     Returns: {:content string
+               :usage {:prompt-tokens n :completion-tokens n}
+               :model string}"))
 ```
 
-**Local Model Support:**
-- [ ] Ollama integration for development/CI (free)
-- [ ] Support CodeLlama, DeepSeek-Coder for mutation generation
-- [ ] Fallback chain: local → cloud when quality needed
+**Why minimal?** Following Clojure protocol best practices:
+- Protocols define primitives, not domain operations
+- New providers implement one simple method
+- Domain logic (mutation generation, equivalent detection) lives in regular functions
+- Heretic owns all prompts and response parsing
 
-**Caching:**
+**Example: Raw HTTP Provider** (using clj-http):
+```clojure
+(ns myapp.heretic-provider
+  (:require [heretic.ai.protocol :as heretic]
+            [clj-http.client :as http]
+            [jsonista.core :as json]))
+
+(defrecord AnthropicProvider [api-key model]
+  heretic/LLMProvider
+  (completion [_ messages opts]
+    (let [response (http/post "https://api.anthropic.com/v1/messages"
+                    {:headers {"x-api-key" api-key
+                               "anthropic-version" "2023-06-01"
+                               "content-type" "application/json"}
+                     :body (json/write-value-as-string
+                             {:model (or (:model opts) model "claude-3-5-sonnet-20241022")
+                              :max_tokens (or (:max-tokens opts) 4096)
+                              :messages messages})})
+          body (json/read-value (:body response) json/keyword-keys-object-mapper)]
+      {:content (-> body :content first :text)
+       :usage {:prompt-tokens (-> body :usage :input_tokens)
+               :completion-tokens (-> body :usage :output_tokens)}
+       :model (:model body)})))
+
+(defn make-provider [{:keys [api-key model]}]
+  (->AnthropicProvider
+    (or api-key (System/getenv "ANTHROPIC_API_KEY"))
+    (or model "claude-3-5-sonnet-20241022")))
+```
+
+**Example: openai-clojure Provider**:
+```clojure
+(ns myapp.heretic-openai
+  (:require [heretic.ai.protocol :as heretic]
+            [wkok.openai-clojure.api :as openai]))
+
+(defrecord OpenAIProvider [opts]
+  heretic/LLMProvider
+  (completion [_ messages _]
+    (let [response (openai/create-chat-completion
+                     (merge opts {:model "gpt-4o" :messages messages}))]
+      {:content (-> response :choices first :message :content)
+       :usage (:usage response)
+       :model (:model response)})))
+```
+
+**Configuration:**
+```clojure
+;; heretic.edn
+{:ai {:enabled true
+      :provider-fn myapp.heretic-babel/make-provider
+      :provider-opts {:provider :anthropic
+                      :model :claude-3.5-sonnet
+                      :api-key "..."}
+      :strategy :tiered}}  ; deterministic first, AI for survivors
+```
+
+**Checklist:**
+- [ ] Define `heretic.ai.protocol/LLMProvider` protocol
+- [ ] Create `heretic.ai.prompts` namespace for prompt templates
+- [ ] Implement response parsing with validation
+- [ ] Add example adapters in documentation (Babel, raw HTTP, Ollama)
+- [ ] Tiered strategy: deterministic first, AI for survivors only
 - [ ] Cache LLM responses by (source-hash, prompt-template)
-- [ ] Reuse mutations for unchanged code
-- [ ] Persist cache across runs
+- [ ] Report token usage in mutation results
 
 #### 4.1 AI-Powered Mutation Generation
 
 Based on research showing traditional operators miss ~49% of real-world bugs,
-add LLM-powered semantic mutations:
+add LLM-powered semantic mutations.
 
-**AI Mutator Protocol:**
+**Architecture: Domain Functions on Minimal Protocol**
+
+Heretic owns all mutation logic. The protocol just sends/receives messages:
+
 ```clojure
-(defprotocol AIMutator
-  (generate-mutations [this context]
-    "Generate semantic mutations using AI.
-     context: {:source-code, :function-name, :docstring, :schemas}"))
+(ns heretic.ai.mutations
+  (:require [heretic.ai.protocol :as ai]
+            [heretic.ai.prompts :as prompts]
+            [heretic.parser :as parser]))
+
+(defn generate-mutations
+  "Generate AI mutations for a function.
+   Heretic owns the prompts and parsing - provider just does completion."
+  [provider context]
+  (let [messages (prompts/mutation-messages context)
+        response (ai/completion provider messages {:temperature 0.3})
+        mutations (parse-mutations (:content response))]
+    {:mutations (filter-compilable mutations)
+     :usage (:usage response)}))
+
+(defn augment-survivors
+  "Add AI mutations for functions where deterministic mutations survived.
+   This is the recommended tiered approach for cost control."
+  [provider survivors opts]
+  (let [by-function (group-by :function-name survivors)]
+    (mapcat (fn [[fn-name _]]
+              (generate-mutations provider {:function-name fn-name ...}))
+            (keys by-function))))
 ```
 
-**AI Operators:**
-| ID | Name | Description |
-|----|------|-------------|
-| `ai-logic-invert` | Business logic inversion | Flip conditional meaning |
-| `ai-edge-case` | Edge case removal | Remove boundary handling |
-| `ai-semantic` | Semantic mutation | Wrong-but-plausible code |
-| `ai-nilsafe` | Nil safety removal | Remove nil guards |
+**Clojure-Specific Prompts:**
 
-**Integration with Malli/Spec:**
-- Extract schemas for function inputs/outputs
-- Guide mutations to produce type-valid alternatives
-- Avoid obviously invalid mutations (wrong arity, type mismatches)
-
-**Cost/Quality Tradeoffs:**
-- [ ] Tiered approach: deterministic first, AI for survivors
-- [ ] Caching: reuse AI mutations for similar code patterns
-- [ ] Use local models (Ollama) for development, cloud for CI
-
-**Clojure-Specific Prompt Engineering:**
 ```clojure
-;; Prompt template optimized for Clojure
-(def mutation-prompt
-  "You are mutating Clojure code. Given this function:
+(ns heretic.ai.prompts)
 
-   ```clojure
-   {source-code}
-   ```
+(def system-prompt
+  "You are an expert at finding subtle bugs in Clojure code.
+   Generate mutations that represent realistic developer mistakes.
 
-   Generate 3 subtle bugs that:
-   1. Compile without errors
-   2. Represent realistic Clojure mistakes (nil punning, lazy/eager, threading)
-   3. Would be missed by weak tests
+   Focus on Clojure-specific issues:
+   - Nil punning mistakes (nil vs empty collection)
+   - Lazy vs eager evaluation bugs
+   - Wrong threading macro direction (-> vs ->>)
+   - Destructuring errors (missing keys, wrong nesting)
+   - Off-by-one in sequence operations
+   - Keyword typos or wrong namespaced keywords
+   - Arity mistakes in partial application")
 
-   Focus on: destructuring errors, wrong threading macro, nil vs empty confusion,
-   lazy sequence issues, keyword typos, arity mistakes.
-
-   Return ONLY the mutated code blocks, no explanation.")
+(defn mutation-messages [{:keys [source-code function-name docstring max-mutations]}]
+  [{:role "system" :content system-prompt}
+   {:role "user"
+    :content (str "Generate " (or max-mutations 5) " subtle mutations for:\n\n"
+                  "```clojure\n" source-code "\n```\n"
+                  (when function-name (str "\nFunction: " function-name))
+                  (when docstring (str "\nPurpose: " docstring))
+                  "\n\nReturn as JSON: {\"mutations\": [{\"mutated\": \"...\", "
+                  "\"explanation\": \"...\", \"why_subtle\": \"...\"}]}")}])
 ```
+
+**Checklist:**
+- [ ] Implement `heretic.ai.mutations/generate-mutations`
+- [ ] Implement `heretic.ai.mutations/augment-survivors` (tiered strategy)
+- [ ] Create prompt templates in `heretic.ai.prompts`
+- [ ] JSON response parsing with validation
+- [ ] Filter out mutations that don't compile
+- [ ] Integration with existing mutation pipeline
 
 #### 4.2 Hybrid Equivalent Detection (from Meta ACH)
 
-Combine static patterns with LLM for high-precision equivalent detection:
-
-- [ ] Use static patterns first (cheap, fast) - already in `equivalent.clj`
-- [ ] Fall back to LLM for uncertain/complex cases
-- [ ] Preprocessing: normalize code before LLM analysis
-- [ ] Target: 0.95+ precision to avoid false positives (ACH achieved this)
-- [ ] Cache LLM decisions for similar patterns
+Combine static patterns with LLM for high-precision equivalent detection.
 
 **Two-Stage Pipeline:**
 ```
@@ -1607,8 +1686,37 @@ Mutation → Static Pattern Check → [equivalent? skip]
                 ↓ (not equivalent)
            Run Tests
 ```
-- [ ] Batch prompting: group multiple mutation sites per API call
-- [ ] Local models: support Ollama for cost-sensitive environments
+
+**Implementation** (uses same minimal protocol):
+
+```clojure
+(ns heretic.ai.equivalent
+  (:require [heretic.ai.protocol :as ai]
+            [heretic.ai.prompts :as prompts]
+            [heretic.equivalent :as static]))  ; Phase 3 static detection
+
+(defn detect-equivalent
+  "Two-stage equivalent detection.
+   1. Try static patterns (fast, free)
+   2. Fall back to AI for uncertain cases"
+  [provider mutation]
+  (let [static-result (static/detect-equivalent mutation)]
+    (if (= :high (:confidence static-result))
+      ;; High confidence from static - trust it
+      (assoc static-result :method :static)
+      ;; Uncertain - use AI
+      (let [messages (prompts/equivalent-messages mutation)
+            response (ai/completion provider messages {:temperature 0.0})]
+        (-> (parse-equivalent-response (:content response))
+            (assoc :method :ai :usage (:usage response)))))))
+```
+
+**Checklist:**
+- [ ] Implement `heretic.ai.equivalent/detect-equivalent`
+- [ ] Create equivalent detection prompts
+- [ ] Target 0.95+ precision (ACH achieved this)
+- [ ] Batch prompting: group multiple mutations per API call
+- [ ] Cache LLM decisions for similar patterns
 
 #### 4.3 CI/CD Integration
 
@@ -1632,24 +1740,37 @@ High practical value for adoption:
 
 #### 4.4 LLM-based Test Generation (from Meta ACH)
 
-Based on Meta's ACH paper (2025) showing 73% acceptance rate for LLM-generated tests:
+Based on Meta's ACH paper (2025) showing 73% acceptance rate for LLM-generated tests.
 
-- [ ] For each surviving mutant, generate a test that would kill it
-- [ ] Use function context (docstring, schemas, examples) as prompt
-- [ ] Present generated tests for human review before commit
-- [ ] Track acceptance rate for feedback loop
+**Implementation** (uses same minimal protocol):
+
+```clojure
+(ns heretic.ai.test-gen
+  (:require [heretic.ai.protocol :as ai]
+            [heretic.ai.prompts :as prompts]))
+
+(defn generate-test
+  "Generate a test that would kill a surviving mutation."
+  [provider context]
+  (let [messages (prompts/test-gen-messages context)
+        response (ai/completion provider messages {:temperature 0.3})]
+    (-> (parse-test-response (:content response))
+        (assoc :usage (:usage response)))))
+
+(defn suggest-tests-for-survivors
+  "Generate test suggestions for all surviving mutations."
+  [provider survivors]
+  (->> survivors
+       (map #(generate-test provider %))
+       (filter :test-code)))  ; Only include successful generations
+```
+
+**Checklist:**
+- [ ] Implement `heretic.ai.test-gen/generate-test`
+- [ ] Create test generation prompts (Clojure-specific)
+- [ ] Present tests for human review (don't auto-add)
+- [ ] Track acceptance rate for feedback
 - [ ] Integration with PR workflow (suggest tests in comments)
-
-**Prompt Strategy:**
-```
-Given this Clojure function and a mutation that survived testing:
-- Function: {source-code}
-- Docstring: {docstring}
-- Schema: {malli-schema}
-- Mutation: Changed {original} to {mutated} at line {line}
-
-Generate a test that would detect this mutation.
-```
 
 #### 4.5 ClojureScript Support
 

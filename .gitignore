@@ -29,3 +29,6 @@ Thumbs.db
 
 # Local configuration (not committed)
 local.edn
+
+# Private documentation (not committed)
+docs/babel-adapter.md
