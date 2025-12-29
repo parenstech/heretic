@@ -6,6 +6,8 @@ contributions:
   - "Needs: Phase 4 process-level worker pool with pre-forked JVMs"
   - "Needs: Phase 4 ClojureScript/shadow-cljs integration"
   - "Needs: Phase 4 AI-powered semantic mutation generation"
+  - "Needs: Phase 4 LLM test generation for survivors (from Meta ACH)"
+  - "Needs: Phase 4 Hybrid equivalent detection with LLM fallback"
 ---
 
 # Heretic: Mutation Testing for Clojure
@@ -1520,6 +1522,46 @@ add LLM-powered semantic mutations:
 **Cost/Quality Tradeoffs:**
 - [ ] Tiered approach: deterministic first, AI for survivors
 - [ ] Caching: reuse AI mutations for similar code patterns
+
+#### 4.7 LLM-based Test Generation (from Meta ACH)
+
+Based on Meta's ACH paper (2025) showing 73% acceptance rate for LLM-generated tests:
+
+- [ ] For each surviving mutant, generate a test that would kill it
+- [ ] Use function context (docstring, schemas, examples) as prompt
+- [ ] Present generated tests for human review before commit
+- [ ] Track acceptance rate for feedback loop
+- [ ] Integration with PR workflow (suggest tests in comments)
+
+**Prompt Strategy:**
+```
+Given this Clojure function and a mutation that survived testing:
+- Function: {source-code}
+- Docstring: {docstring}
+- Schema: {malli-schema}
+- Mutation: Changed {original} to {mutated} at line {line}
+
+Generate a test that would detect this mutation.
+```
+
+#### 4.8 Hybrid Equivalent Detection (from Meta ACH)
+
+Combine static patterns with LLM for high-precision equivalent detection:
+
+- [ ] Use static patterns first (cheap, fast) - already in `equivalent.clj`
+- [ ] Fall back to LLM for uncertain/complex cases
+- [ ] Preprocessing: normalize code before LLM analysis
+- [ ] Target: 0.95+ precision to avoid false positives (ACH achieved this)
+- [ ] Cache LLM decisions for similar patterns
+
+**Two-Stage Pipeline:**
+```
+Mutation → Static Pattern Check → [equivalent? skip]
+                ↓ (uncertain)
+           LLM Analysis → [equivalent? skip]
+                ↓ (not equivalent)
+           Run Tests
+```
 - [ ] Batch prompting: group multiple mutation sites per API call
 - [ ] Local models: support Ollama for cost-sensitive environments
 

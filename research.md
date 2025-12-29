@@ -322,6 +322,7 @@ Traditional mutation operators miss almost half of real-world bugs.
 ### 2.4 Industrial AI Mutation Testing
 
 #### Meta ACH (Automated Compliance Hardening) - 2025
+- **Paper:** https://arxiv.org/abs/2501.12862
 - **Blog:** https://engineering.fb.com/2025/02/05/security/revolutionizing-software-testing-llm-powered-bug-catchers-meta-ach/
 
 **Key Innovation:**
@@ -329,6 +330,23 @@ Traditional mutation operators miss almost half of real-world bugs.
 - Combines LLM-based mutant generation with LLM-based test generation
 - Generates mutants representing realistic concerns (vs rule-based approaches)
 - Automatically generates tests to catch the injected faults
+
+**Scale & Results (from arxiv paper):**
+- Applied to 10,795 Android Kotlin classes across 7 Meta platforms
+- Generated 9,095 mutants and 571 privacy-focused test cases
+- **73% acceptance rate** for generated tests at Messenger and WhatsApp
+- 36% of accepted tests judged as directly privacy-relevant
+
+**LLM Equivalent Mutant Detection:**
+- Achieved 0.79 precision and 0.47 recall baseline
+- With preprocessing: **0.95 precision and 0.96 recall**
+- Preprocessing normalizes code before LLM analysis
+
+**Key Techniques for Heretic (Phase 4):**
+1. **Hybrid equivalent detection**: Static patterns (cheap) + LLM fallback (accurate)
+2. **LLM test generation**: Generate tests to kill survivors (close the loop)
+3. **Domain-specific mutations**: Target specific concerns (privacy, security, nil-safety)
+4. **Human-in-the-loop**: Present generated tests for review before commit
 
 #### DeepMind CodeMender (2025)
 - **Blog:** https://deepmind.google/blog/introducing-codemender-an-ai-agent-for-code-security/
