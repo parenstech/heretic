@@ -115,7 +115,31 @@
                      (when (and grandparent (= :list (z/tag grandparent)))
                        (let [gp-children (z/child-sexprs grandparent)]
                          (= 'some (first gp-children))))))))
-    :reason "rest/next equivalent when passed to some (both return nil for empty)"}])
+    :reason "rest/next equivalent when passed to some (both return nil for empty)"}
+
+   ;; (not (nil? x)) ≡ (some? x) when one is swapped for the other
+   ;; These patterns detect when nil?/some? swaps happen in a negation context
+   {:operator :swap-nil-some
+    :context (fn [zloc]
+               ;; Check if we're inside (not ...)
+               (let [parent (z/up zloc)]
+                 (when (and parent (= :list (z/tag parent)))
+                   (let [grandparent (z/up parent)]
+                     (when (and grandparent (= :list (z/tag grandparent)))
+                       (let [gp-children (z/child-sexprs grandparent)]
+                         (= 'not (first gp-children))))))))
+    :reason "(not (nil? x)) is equivalent to (some? x)"}
+
+   {:operator :swap-some-nil
+    :context (fn [zloc]
+               ;; Check if we're inside (not ...)
+               (let [parent (z/up zloc)]
+                 (when (and parent (= :list (z/tag parent)))
+                   (let [grandparent (z/up parent)]
+                     (when (and grandparent (= :list (z/tag grandparent)))
+                       (let [gp-children (z/child-sexprs grandparent)]
+                         (= 'not (first gp-children))))))))
+    :reason "(not (some? x)) is not equivalent to (nil? x), but the swap pattern is suspicious"}])
 
 ;; =============================================================================
 ;; Detection Functions

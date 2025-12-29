@@ -8,7 +8,7 @@
    - `mutation-score` - Calculate killed/(killed+survived) ratio
    - `print-summary` - Print summary stats to terminal
    - `print-survivors` - List surviving mutations with details
-   - `generate-html-report` - Generate HTML report with heatmap
+   - `generate-html-report` - Generate HTML report with heatmap and trend charts
    - `generate-json-report` - Generate JSON report for programmatic access
 
    No dependencies on other heretic modules."
@@ -653,6 +653,61 @@
     border-bottom: 1px solid var(--color-border);
   }
   .no-data { color: #6c757d; font-style: italic; padding: 10px 0; }
+  .trend-section { margin-bottom: 30px; }
+  .trend-chart {
+    display: flex;
+    align-items: flex-end;
+    height: 100px;
+    gap: 4px;
+    padding: 10px 0;
+    border-bottom: 2px solid var(--color-border);
+  }
+  .trend-bar {
+    flex: 1;
+    min-width: 20px;
+    max-width: 40px;
+    border-radius: 3px 3px 0 0;
+    transition: height 0.3s;
+    cursor: pointer;
+    position: relative;
+  }
+  .trend-bar:hover::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #333;
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.75em;
+    white-space: nowrap;
+  }
+  .trend-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8em;
+    color: #6c757d;
+    margin-top: 5px;
+  }
+  .trend-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 15px;
+    margin-top: 15px;
+  }
+  .trend-stat {
+    text-align: center;
+    padding: 10px;
+    background: #f8f9fa;
+    border-radius: 4px;
+  }
+  .trend-stat-value { font-size: 1.5em; font-weight: bold; }
+  .trend-stat-label { font-size: 0.85em; color: #6c757d; }
+  .trend-improving { color: #28a745; }
+  .trend-declining { color: #dc3545; }
+  .trend-stable { color: #6c757d; }
   ")
 
 (defn- results-by-file
@@ -786,36 +841,93 @@
                [:span.test-kills "0 kills"]])]
            [:div.no-data "All tests killed at least one mutation"])]]])))
 
+(defn- html-trend-section
+  "Generate HTML for the score trend section.
+
+   Shows a bar chart of historical mutation scores with trend indicators.
+   Arguments:
+   - trend-data: Map with :runs, :score-trend, :avg-score, :best-score, :worst-score"
+  [trend-data]
+  (when (and trend-data (seq (:runs trend-data)))
+    (let [runs (reverse (:runs trend-data))  ; Oldest first for left-to-right
+          trend (:score-trend trend-data)
+          trend-class (case trend
+                        :improving "trend-improving"
+                        :declining "trend-declining"
+                        "trend-stable")
+          trend-icon (case trend
+                       :improving "↑"
+                       :declining "↓"
+                       "→")]
+      [:div.card.trend-section
+       [:h2 "Score Trend"]
+       [:div.trend-chart
+        (for [run runs]
+          (let [score (:score run)
+                height-pct (max 5 (* score 100))
+                color (cond
+                        (>= score 0.8) "#28a745"
+                        (>= score 0.6) "#ffc107"
+                        :else "#dc3545")
+                tooltip (format "%.1f%% (%d/%d)"
+                                (* score 100)
+                                (:killed run)
+                                (:total run))]
+            [:div.trend-bar
+             {:style (format "height: %.0f%%; background: %s;" height-pct color)
+              :data-tooltip tooltip}]))]
+       [:div.trend-labels
+        [:span "Oldest"]
+        [:span "Most Recent"]]
+       [:div.trend-stats
+        [:div.trend-stat
+         [:div.trend-stat-value {:class trend-class} (str trend-icon " " (name trend))]
+         [:div.trend-stat-label "Trend"]]
+        [:div.trend-stat
+         [:div.trend-stat-value (format "%.1f%%" (* 100 (:avg-score trend-data)))]
+         [:div.trend-stat-label "Average"]]
+        [:div.trend-stat
+         [:div.trend-stat-value.trend-improving (format "%.1f%%" (* 100 (:best-score trend-data)))]
+         [:div.trend-stat-label "Best"]]
+        [:div.trend-stat
+         [:div.trend-stat-value.trend-declining (format "%.1f%%" (* 100 (:worst-score trend-data)))]
+         [:div.trend-stat-label "Worst"]]]])))
+
 (defn generate-html-report
   "Generate HTML mutation testing report.
 
    Arguments:
    - results: Mutation testing results
    - output-path: Path to write HTML file (e.g., 'target/heretic-report/index.html')
+   - opts: Optional map with:
+     - :trend-data - Historical trend data from heretic.trends/trend-data
 
    Returns the output path."
-  [results output-path]
-  (let [html-content
-        (str
-         "<!DOCTYPE html>\n"
-         (h/html
-          [:html {:lang "en"}
-           [:head
-            [:meta {:charset "UTF-8"}]
-            [:meta {:name "viewport" :content "width=device-width, initial-scale=1.0"}]
-            [:title "Heretic Mutation Testing Report"]
-            [:style html-css]]
-           [:body
-            [:div.dashboard
-             [:h1 "🧬 Heretic Mutation Testing Report"]
-             (html-summary-section results)
-             (html-heatmap-section results)
-             (html-test-effectiveness-section results)
-             (html-survivors-section results)]]]))]
-    ;; Ensure output directory exists
-    (io/make-parents output-path)
-    (spit output-path html-content)
-    output-path))
+  ([results output-path] (generate-html-report results output-path {}))
+  ([results output-path opts]
+   (let [trend-data (:trend-data opts)
+         html-content
+         (str
+          "<!DOCTYPE html>\n"
+          (h/html
+           [:html {:lang "en"}
+            [:head
+             [:meta {:charset "UTF-8"}]
+             [:meta {:name "viewport" :content "width=device-width, initial-scale=1.0"}]
+             [:title "Heretic Mutation Testing Report"]
+             [:style html-css]]
+            [:body
+             [:div.dashboard
+              [:h1 "🧬 Heretic Mutation Testing Report"]
+              (html-summary-section results)
+              (html-trend-section trend-data)
+              (html-heatmap-section results)
+              (html-test-effectiveness-section results)
+              (html-survivors-section results)]]]))]
+     ;; Ensure output directory exists
+     (io/make-parents output-path)
+     (spit output-path html-content)
+     output-path)))
 
 (defn write-report!
   "Write mutation report in the specified format.

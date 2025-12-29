@@ -7,11 +7,13 @@
    - Determining if the mutation was killed or survived
    - Handling errors gracefully
    - Tracking per-test execution times for ordering optimization
+   - Prioritizing 'proven killer' tests that have killed mutations in this run
 
    Main API:
    - `tests-for-mutation` - Look up tests via coverage map
    - `run-tests` - Execute tests with timeout, return results
    - `evaluate-mutation` - Full mutation evaluation lifecycle
+   - `evaluate-mutations-with-subsumption` - Batch evaluation with killer tracking
 
    Mutation result statuses:
    - :killed - At least one test failed/errored (mutation detected)
@@ -401,3 +403,159 @@
                        (double (/ killed testable))
                        1.0)  ; No testable mutations = perfect score
      :total-duration-ms (reduce + 0 (map :duration-ms results))}))
+
+;; =============================================================================
+;; Subsumption-Aware Test Ordering
+;; =============================================================================
+
+(defn order-tests-with-killers
+  "Order tests with proven killers first, then by historical timing.
+
+   This optimization gives priority to tests that have already killed
+   a mutation in the current run, since they're proven to be effective.
+
+   Arguments:
+   - test-syms: Collection of test symbols
+   - proven-killers: Set of test symbols that have killed mutations
+   - timing-data: Historical timing data (optional)
+
+   Returns vector of test symbols ordered for maximum early termination."
+  [test-syms proven-killers timing-data]
+  (if (empty? proven-killers)
+    ;; No killers yet, just use timing
+    (timing/order-tests-by-speed test-syms timing-data)
+    ;; Separate killers and non-killers
+    (let [test-set (set test-syms)
+          killer-set (clojure.set/intersection test-set proven-killers)
+          non-killers (clojure.set/difference test-set killer-set)
+          ;; Order each group by timing (fastest first)
+          ordered-killers (timing/order-tests-by-speed killer-set timing-data)
+          ordered-others (timing/order-tests-by-speed non-killers timing-data)]
+      ;; Killers first, then others
+      (vec (concat ordered-killers ordered-others)))))
+
+(defn evaluate-mutation-with-killers
+  "Evaluate mutation using proven-killer prioritization.
+
+   Like evaluate-mutation but accepts and uses proven-killer information
+   to prioritize test ordering for faster kills.
+
+   Arguments:
+   - index: Coverage index
+   - mutation: Mutation record
+   - config: Config with :timeout-ms, :timing-data
+   - proven-killers: Set of test symbols that have killed mutations
+
+   Returns MutationResult with same structure as evaluate-mutation."
+  [index mutation config proven-killers]
+  (let [timeout-ms (or (:timeout-ms config) 5000)
+        budget-ms (:budget-ms config)
+        timing-data (:timing-data config)
+        tests (tests-for-mutation index mutation)]
+    (if (empty? tests)
+      {:mutation mutation
+       :status :no-coverage
+       :tests-run #{}
+       :timed-out #{}
+       :killed-by nil
+       :test-durations {}
+       :duration-ms 0}
+      ;; Order tests with killers first
+      (let [ordered-tests (order-tests-with-killers tests proven-killers timing-data)
+            ;; Run with explicit ordering (bypass run-tests' internal ordering)
+            start-time (System/currentTimeMillis)]
+        ;; Run tests in our specified order
+        (loop [remaining (seq ordered-tests)
+               aggregate {:pass 0 :fail 0 :error 0}
+               ran #{}
+               timed-out #{}
+               failed #{}
+               errored #{}
+               test-durations {}]
+          (let [elapsed (- (System/currentTimeMillis) start-time)]
+            (cond
+              ;; Budget exhausted
+              (and budget-ms (>= elapsed budget-ms))
+              {:mutation mutation
+               :status (if (or (pos? (:fail aggregate)) (pos? (:error aggregate)))
+                         :killed :timeout)
+               :tests-run ran
+               :timed-out timed-out
+               :killed-by (or (first failed) (first errored))
+               :test-durations test-durations
+               :duration-ms elapsed}
+
+              ;; No more tests
+              (not remaining)
+              {:mutation mutation
+               :status (if (or (pos? (:fail aggregate)) (pos? (:error aggregate)))
+                         :killed :survived)
+               :tests-run ran
+               :timed-out timed-out
+               :killed-by (or (first failed) (first errored))
+               :test-durations test-durations
+               :duration-ms elapsed}
+
+              :else
+              (let [test-sym (first remaining)
+                    test-var (resolve-test-var test-sym)]
+                (if-not test-var
+                  (recur (next remaining) aggregate ran timed-out failed errored test-durations)
+                  (let [result (run-test-with-timeout test-var timeout-ms)
+                        test-duration (:duration-ms result)]
+                    (case (:status result)
+                      :timeout
+                      (recur (next remaining)
+                             aggregate
+                             (conj ran test-sym)
+                             (conj timed-out test-sym)
+                             failed
+                             errored
+                             (assoc test-durations test-sym test-duration))
+
+                      :completed
+                      (let [{:keys [fail error]} (:results result)
+                            new-aggregate (merge-with + aggregate (:results result))
+                            any-failed (or (pos? fail) (pos? error))]
+                        (if any-failed
+                          ;; Early exit on kill
+                          {:mutation mutation
+                           :status :killed
+                           :tests-run (conj ran test-sym)
+                           :timed-out timed-out
+                           :killed-by test-sym
+                           :test-durations (assoc test-durations test-sym test-duration)
+                           :duration-ms (- (System/currentTimeMillis) start-time)}
+                          (recur (next remaining)
+                                 new-aggregate
+                                 (conj ran test-sym)
+                                 timed-out
+                                 failed
+                                 errored
+                                 (assoc test-durations test-sym test-duration))))
+
+                      ;; Error case
+                      {:mutation mutation
+                       :status :killed
+                       :tests-run (conj ran test-sym)
+                       :timed-out timed-out
+                       :killed-by test-sym
+                       :test-durations (assoc test-durations test-sym test-duration)
+                       :duration-ms (- (System/currentTimeMillis) start-time)})))))))))))
+
+(defn create-killer-tracker
+  "Create an atom to track proven killer tests during a mutation run.
+
+   Returns an atom containing a set of test symbols."
+  []
+  (atom #{}))
+
+(defn record-killer!
+  "Record a test that killed a mutation.
+
+   Arguments:
+   - tracker: Atom from create-killer-tracker
+   - test-sym: Test symbol that killed a mutation"
+  [tracker test-sym]
+  (when test-sym
+    (swap! tracker conj test-sym)))

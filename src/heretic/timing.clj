@@ -134,3 +134,53 @@
    Returns duration in milliseconds or nil."
   [timing-data test-sym]
   (get-in timing-data [test-sym :duration-ms]))
+
+;; =============================================================================
+;; Dynamic Timeout Calculation
+;; =============================================================================
+
+(defn calculate-dynamic-timeout
+  "Calculate dynamic timeout based on historical test duration.
+
+   Uses the formula: timeout = max(base-timeout, duration * multiplier)
+
+   Arguments:
+   - timing-data: Timing data map (or nil)
+   - test-sym: Test symbol
+   - opts: Options map:
+     - :base-timeout-ms - Minimum timeout (default 1000ms)
+     - :multiplier - Multiplier for historical duration (default 3.0)
+     - :max-timeout-ms - Maximum timeout cap (default 30000ms)
+
+   Returns timeout in milliseconds."
+  [timing-data test-sym opts]
+  (let [{:keys [base-timeout-ms multiplier max-timeout-ms]
+         :or {base-timeout-ms 1000
+              multiplier 3.0
+              max-timeout-ms 30000}} opts
+        estimated (get-estimated-duration timing-data test-sym)]
+    (if estimated
+      ;; Use historical data: timeout = duration * multiplier, clamped
+      (-> (* estimated multiplier)
+          (max base-timeout-ms)
+          (min max-timeout-ms)
+          long)
+      ;; No data, use max timeout (conservative)
+      max-timeout-ms)))
+
+(defn estimate-total-duration
+  "Estimate total duration for running a set of tests.
+
+   Arguments:
+   - timing-data: Timing data map (or nil)
+   - test-syms: Collection of test symbols
+   - default-per-test: Default duration for tests without timing data (default 1000ms)
+
+   Returns estimated total milliseconds."
+  [timing-data test-syms default-per-test]
+  (let [default (or default-per-test 1000)]
+    (reduce
+     (fn [total test-sym]
+       (+ total (or (get-estimated-duration timing-data test-sym) default)))
+     0
+     test-syms)))
