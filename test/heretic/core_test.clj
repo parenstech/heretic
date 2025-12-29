@@ -8,6 +8,7 @@
   (:require [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [heretic.core :as core]
+            [heretic.operators :as ops]
             [heretic.persistence :as persist]))
 
 ;; =============================================================================
@@ -302,3 +303,66 @@
         (is (= true (:parallel-mutate config)))
         (is (= 4 (:parallel-workers config)))
         (is (= 30000 (:budget-ms config)))))))
+
+;; =============================================================================
+;; resolve-operators Tests
+;; =============================================================================
+
+(deftest resolve-operators-with-override-test
+  (testing "explicit operators argument takes highest priority"
+    (let [config {:preset :fast}
+          custom-ops [ops/swap-plus-minus ops/swap-minus-plus]
+          result (core/resolve-operators config :operators custom-ops)]
+      (is (= custom-ops result)
+          "Should return the explicit operators argument"))))
+
+(deftest resolve-operators-with-config-operators-test
+  (testing "config :operators key (as operator ids) takes priority over preset"
+    (let [config {:preset :fast
+                  :operators [:swap-plus-minus :swap-minus-plus]}
+          result (core/resolve-operators config)]
+      (is (= 2 (count result)))
+      (is (= #{:swap-plus-minus :swap-minus-plus} (set (map :id result))))))
+
+  (testing "config :operators key works with full operator definitions"
+    (let [config {:operators [ops/swap-plus-minus]}
+          result (core/resolve-operators config)]
+      (is (= [ops/swap-plus-minus] result)))))
+
+(deftest resolve-operators-with-preset-test
+  (testing "config :preset :fast returns fast operators"
+    (let [config {:preset :fast}
+          result (core/resolve-operators config)]
+      (is (seq result))
+      (is (= (count (:fast ops/presets)) (count result)))))
+
+  (testing "config :preset :standard returns standard operators"
+    (let [config {:preset :standard}
+          result (core/resolve-operators config)]
+      (is (seq result))
+      (is (= (count (:standard ops/presets)) (count result)))))
+
+  (testing "config :preset :comprehensive returns all operators"
+    (let [config {:preset :comprehensive}
+          result (core/resolve-operators config)]
+      (is (= (count ops/all-operators) (count result))))))
+
+(deftest resolve-operators-default-test
+  (testing "defaults to :standard preset when no config specified"
+    (let [config {}
+          result (core/resolve-operators config)]
+      (is (= (count (:standard ops/presets)) (count result))))))
+
+(deftest load-config-preset-default-test
+  (testing "default config uses :standard preset"
+    (let [config-path (str *test-dir* "/heretic.edn")]
+      (spit config-path "{}")
+      (let [config (core/load-config config-path)]
+        (is (= :standard (:preset config))
+            "Default preset should be :standard"))))
+
+  (testing "user can override preset"
+    (let [config-path (str *test-dir* "/heretic.edn")]
+      (spit config-path "{:preset :fast}")
+      (let [config (core/load-config config-path)]
+        (is (= :fast (:preset config)))))))

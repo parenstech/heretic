@@ -811,6 +811,110 @@
   (into {} (map (juxt :id identity) all-operators)))
 
 ;; =============================================================================
+;; Operator Presets
+;; =============================================================================
+
+(def presets
+  "Predefined operator sets for different mutation testing strategies.
+
+   :fast - ~15 high-impact operators that research shows catch ~99% of bugs.
+           Includes core arithmetic, comparison, and boolean operators.
+           Best for quick feedback during development.
+
+   :standard - A balanced set of operators for regular mutation testing.
+               Includes all :fast operators plus collection, nil-handling,
+               and threading operators. Good default for CI.
+
+   :comprehensive - All available operators for thorough mutation testing.
+                    Use when you want maximum coverage and have time budget."
+  {:fast
+   ;; Core arithmetic (catches off-by-one, sign errors)
+   #{:swap-plus-minus
+     :swap-minus-plus
+     :swap-mult-div
+     :swap-div-mult
+     :swap-inc-dec
+     :swap-dec-inc
+     ;; Comparison operators (catches boundary errors)
+     :swap-lt-gt
+     :swap-gt-lt
+     :swap-eq-neq
+     :swap-neq-eq
+     ;; Boolean operators (catches logic errors)
+     :swap-and-or
+     :swap-or-and
+     :swap-true-false
+     :swap-false-true
+     ;; Nil handling (catches null safety issues)
+     :swap-nil-some
+     :swap-some-nil}
+
+   :standard
+   ;; All :fast operators plus...
+   #{;; Fast core operators
+     :swap-plus-minus
+     :swap-minus-plus
+     :swap-mult-div
+     :swap-div-mult
+     :swap-inc-dec
+     :swap-dec-inc
+     :swap-lt-gt
+     :swap-gt-lt
+     :swap-eq-neq
+     :swap-neq-eq
+     :swap-and-or
+     :swap-or-and
+     :swap-true-false
+     :swap-false-true
+     :swap-nil-some
+     :swap-some-nil
+     ;; Boundary mutations
+     :swap-lt-lte
+     :swap-gt-gte
+     :swap-lte-lt
+     :swap-gte-gt
+     :swap-lte-gte
+     :swap-gte-lte
+     ;; Collection operators
+     :swap-first-last
+     :swap-last-first
+     :swap-rest-next
+     :swap-next-rest
+     :swap-take-drop
+     :swap-drop-take
+     :swap-conj-disj
+     :swap-disj-conj
+     ;; Nil handling extended
+     :swap-seq-empty
+     :swap-empty-seq
+     ;; HOF operators
+     :swap-filter-remove
+     :swap-remove-filter
+     ;; Threading operators
+     :swap-thread-first-last
+     :swap-thread-last-first}
+
+   :comprehensive
+   ;; All operators
+   (set (map :id all-operators))})
+
+(defn operators-for-preset
+  "Return the operator definitions for a given preset name.
+
+   Arguments:
+   - preset: Keyword preset name (:fast, :standard, :comprehensive)
+
+   Returns sequence of operator maps.
+
+   Throws if preset is unknown."
+  [preset]
+  (if-let [op-ids (get presets preset)]
+    (keep operators-by-id op-ids)
+    (throw (ex-info "Unknown operator preset"
+                    {:preset preset
+                     :available (keys presets)}))))
+
+;; =============================================================================
 ;; Main API
 ;; =============================================================================
 

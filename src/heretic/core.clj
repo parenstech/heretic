@@ -19,11 +19,13 @@
             [heretic.coverage-map :as coverage]
             [heretic.equivalent :as equiv]
             [heretic.mutation-engine :as engine]
+            [heretic.operators :as ops]
             [heretic.parser :as parser]
             [heretic.persistence :as persist]
             [heretic.reloader :as reloader]
             [heretic.reporter :as reporter]
             [heretic.runner :as runner]
+            [heretic.subsumption :as subsumption]
             [heretic.timing :as timing])
   (:import [java.util.concurrent Executors ExecutorService]))
 
@@ -40,7 +42,10 @@
    :instrument-prefixes []
    :instrument-skip-prefixes []
    :parallel-collect false
-   :mutation-operators [:arithmetic :comparison :boolean :return-values]
+   ;; Operator selection - use :preset OR :operators (operators takes precedence)
+   ;; :preset can be :fast, :standard, or :comprehensive
+   ;; :operators is a sequence of operator definitions or ids
+   :preset :standard
    :skip-forms #{'comment}
    ;; Timeout configuration
    :timeout-ms 5000           ; Per-test timeout in milliseconds
@@ -53,6 +58,42 @@
    ;; Report output
    :report-format :terminal
    :output-path "target/heretic-report"})
+
+(defn resolve-operators
+  "Resolve operators from config.
+
+   Priority:
+   1. If :operators is specified in config, use those
+   2. If :preset is specified, use operators for that preset
+   3. Default to :standard preset
+
+   Arguments:
+   - config: Configuration map
+   - override-operators: Optional operators to use (takes highest priority)
+
+   Returns sequence of operator definitions."
+  [config & {:keys [operators]}]
+  (cond
+    ;; Explicit operators passed as argument take highest priority
+    operators
+    operators
+
+    ;; Config :operators key (sequence of operator defs or ids)
+    (:operators config)
+    (let [ops-cfg (:operators config)]
+      (if (every? keyword? ops-cfg)
+        ;; Sequence of operator ids
+        (keep ops/operators-by-id ops-cfg)
+        ;; Already operator definitions
+        ops-cfg))
+
+    ;; Config :preset key
+    (:preset config)
+    (ops/operators-for-preset (:preset config))
+
+    ;; Default to :standard preset
+    :else
+    (ops/operators-for-preset :standard)))
 
 (defn load-config
   "Load configuration from heretic.edn, merged with defaults.
@@ -305,9 +346,13 @@
     (println)
     (println "Scanning for mutation sites...")
     (let [source-paths (:source-paths config)
+          ;; Resolve operators from config or override
+          resolved-ops (resolve-operators config :operators operators)
+          _ (when verbose
+              (println (format "Using %d operators" (count resolved-ops))))
           all-mutations (if files
-                          (mapcat engine/mutations-for-file files)
-                          (engine/generate-mutations source-paths))
+                          (mapcat #(engine/mutations-for-file % resolved-ops) files)
+                          (engine/generate-mutations source-paths resolved-ops))
           all-mutations-vec (vec all-mutations)
           total-found (count all-mutations-vec)
 
@@ -387,12 +432,15 @@
               (when (seq all-test-durations)
                 (timing/record-timing! heretic-dir all-test-durations)))
 
-            ;; Step 6: Generate summary
+            ;; Step 6: Generate summary with subsumption analysis
             (let [summary (runner/summarize-results all-results)
                   survivor-list (filter #(= :survived (:status %)) all-results)
+                  ;; Compute subsumption statistics for potential optimization insights
+                  sub-stats (subsumption/subsumption-stats all-results)
                   final-result (assoc summary
                                       :survivors (mapv :mutation survivor-list)
                                       :equivalent-filtered filtered-count
+                                      :subsumption-stats sub-stats
                                       :total-duration-ms (- (System/currentTimeMillis) start-time))]
 
               ;; Step 7: Print terminal report
@@ -402,6 +450,9 @@
               (when (seq survivor-list)
                 (println)
                 (reporter/print-survivors all-results))
+
+              ;; Step 7b: Print test effectiveness report
+              (reporter/print-test-effectiveness all-results)
 
               ;; Step 8: Generate HTML report if configured
               (when (= :html (:report-format config))

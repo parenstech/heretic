@@ -2,17 +2,19 @@
   "Mutation testing result reporting.
 
    This module provides functions to calculate mutation scores and
-   display mutation testing results in terminal and HTML formats.
+   display mutation testing results in terminal, HTML, and JSON formats.
 
    Key functions:
    - `mutation-score` - Calculate killed/(killed+survived) ratio
    - `print-summary` - Print summary stats to terminal
    - `print-survivors` - List surviving mutations with details
    - `generate-html-report` - Generate HTML report with heatmap
+   - `generate-json-report` - Generate JSON report for programmatic access
 
    No dependencies on other heretic modules."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
+            [heretic.subsumption :as subsumption]
             [hiccup2.core :as h]))
 
 ;; =============================================================================
@@ -252,14 +254,57 @@
                            (format-mutation-change mutation)))))
       (println))))
 
+(defn print-test-effectiveness
+  "Print test effectiveness report showing which tests are most effective at killing mutants.
+
+   Displays:
+   - Dominant tests with their kill counts
+   - Potential optimization savings (what % could be skipped)
+   - Tests that ran but never killed any mutants
+
+   Only prints if there are killed mutants to analyze."
+  [results]
+  (let [stats (subsumption/subsumption-stats results)
+        report (subsumption/test-effectiveness-report results)]
+    (when (pos? (:total-killed stats))
+      (println)
+      (println (bold "Test Effectiveness"))
+      (println "==================")
+      (println)
+
+      ;; Show dominant tests
+      (println (cyan "Top Tests by Kill Count:"))
+      (doseq [[test-sym kills] (:dominant-tests stats)]
+        (println (format "  %s: %d kills"
+                         (str test-sym)
+                         kills)))
+      (println)
+
+      ;; Show potential savings
+      (println (format "Potential optimization: %.0f%% of kills from top 5 tests"
+                       (* 100 (:potential-savings stats))))
+      (println (format "Unique killer tests: %d" (:unique-killers stats)))
+
+      ;; Show ineffective tests if any
+      (when (seq (:ineffective-tests report))
+        (println)
+        (println (yellow "Tests that ran but never killed mutants:"))
+        (doseq [test-sym (take 10 (:ineffective-tests report))]
+          (println (format "  %s" (str test-sym))))
+        (when (> (count (:ineffective-tests report)) 10)
+          (println (format "  ... and %d more" (- (count (:ineffective-tests report)) 10)))))
+
+      (println))))
+
 (defn print-report
   "Print full mutation testing report.
 
-   Combines summary, survivors, and no-coverage sections."
+   Combines summary, survivors, no-coverage, and test effectiveness sections."
   [results]
   (print-summary results)
   (print-survivors results)
-  (print-no-coverage results))
+  (print-no-coverage results)
+  (print-test-effectiveness results))
 
 ;; =============================================================================
 ;; Data Export Functions
@@ -277,6 +322,185 @@
      :counts counts
      :score score
      :score-percentage (when score (* score 100))}))
+
+;; =============================================================================
+;; JSON Report Generation
+;; =============================================================================
+
+(defn- escape-json-string
+  "Escape a string for JSON output."
+  [s]
+  (when s
+    (-> (str s)
+        (str/replace "\\" "\\\\")
+        (str/replace "\"" "\\\"")
+        (str/replace "\n" "\\n")
+        (str/replace "\r" "\\r")
+        (str/replace "\t" "\\t"))))
+
+(defn- to-json-value
+  "Convert a Clojure value to JSON string representation."
+  [v]
+  (cond
+    (nil? v) "null"
+    (boolean? v) (str v)
+    (number? v) (str v)
+    (string? v) (str "\"" (escape-json-string v) "\"")
+    (keyword? v) (str "\"" (name v) "\"")
+    (symbol? v) (str "\"" (str v) "\"")
+    (map? v) (str "{"
+                  (->> v
+                       (map (fn [[k val]]
+                              (str (to-json-value k) ": " (to-json-value val))))
+                       (str/join ", "))
+                  "}")
+    (sequential? v) (str "["
+                         (->> v
+                              (map to-json-value)
+                              (str/join ", "))
+                         "]")
+    (set? v) (to-json-value (vec v))
+    :else (str "\"" (escape-json-string (str v)) "\"")))
+
+(defn- format-json
+  "Pretty-print JSON with indentation."
+  [json-str]
+  (let [indent-level (atom 0)
+        in-string (atom false)
+        escape-next (atom false)
+        result (StringBuilder.)]
+    (doseq [c json-str]
+      (cond
+        ;; If previous char was escape, just append and reset
+        @escape-next
+        (do (.append result c)
+            (reset! escape-next false))
+
+        ;; Escape character - mark next char as escaped
+        (and (= c \\) @in-string)
+        (do (.append result c)
+            (reset! escape-next true))
+
+        ;; Toggle string state on unescaped quotes
+        (= c \")
+        (do (.append result c)
+            (swap! in-string not))
+
+        ;; Inside string, just append
+        @in-string
+        (.append result c)
+
+        ;; Opening brace/bracket
+        (or (= c \{) (= c \[))
+        (do (.append result c)
+            (swap! indent-level inc)
+            (.append result \newline)
+            (dotimes [_ (* 2 @indent-level)]
+              (.append result \space)))
+
+        ;; Closing brace/bracket
+        (or (= c \}) (= c \]))
+        (do (swap! indent-level dec)
+            (.append result \newline)
+            (dotimes [_ (* 2 @indent-level)]
+              (.append result \space))
+            (.append result c))
+
+        ;; Comma
+        (= c \,)
+        (do (.append result c)
+            (.append result \newline)
+            (dotimes [_ (* 2 @indent-level)]
+              (.append result \space)))
+
+        ;; Colon after key
+        (= c \:)
+        (do (.append result c)
+            (.append result \space))
+
+        ;; Skip whitespace (we handle our own)
+        (Character/isWhitespace c)
+        nil
+
+        ;; Everything else
+        :else
+        (.append result c)))
+    (str result)))
+
+(defn- json-stats-by-file
+  "Calculate stats for each file for JSON report."
+  [results]
+  (->> results
+       (group-by #(get-in % [:mutation :file]))
+       (reduce-kv
+        (fn [acc file rs]
+          (let [killed-count (count (filter #(= :killed (:status %)) rs))
+                survived-count (count (filter #(= :survived (:status %)) rs))
+                no-coverage-count (count (filter #(= :no-coverage (:status %)) rs))
+                testable (+ killed-count survived-count)
+                score (if (pos? testable) (double (/ killed-count testable)) nil)]
+            (assoc acc (or file "(unknown)")
+                   {:killed killed-count
+                    :survived survived-count
+                    :noCoverage no-coverage-count
+                    :total (count rs)
+                    :score score})))
+        {})))
+
+(defn- survivor-to-json-map
+  "Convert a survivor result to a JSON-friendly map."
+  [{:keys [mutation tests-run]}]
+  (let [{:keys [file line operator original replacement column]} mutation]
+    {:file file
+     :line line
+     :column column
+     :operator (name operator)
+     :original (str original)
+     :replacement (str replacement)
+     :testsRun (vec (map str tests-run))}))
+
+(defn json-report-data
+  "Generate JSON report data structure.
+
+   Returns a map suitable for JSON serialization with:
+   - :summary - Overall statistics
+   - :survivors - List of surviving mutations
+   - :byFile - Per-file breakdown"
+  [results]
+  (let [counts (count-by-status results)
+        total (count results)
+        score (mutation-score results)
+        survivor-list (survivors results)]
+    {:summary {:total total
+               :killed (:killed counts)
+               :survived (:survived counts)
+               :noCoverage (:no-coverage counts)
+               :timeout (:timeout counts)
+               :error (:error counts)
+               :score score}
+     :survivors (mapv survivor-to-json-map survivor-list)
+     :byFile (json-stats-by-file results)}))
+
+(defn generate-json-report
+  "Generate JSON mutation testing report.
+
+   Arguments:
+   - results: Mutation testing results
+   - output-path: Path to write JSON file (e.g., 'target/heretic-report/report.json')
+
+   Returns the output path.
+
+   The JSON structure includes:
+   - summary: Overall statistics (total, killed, survived, score, etc.)
+   - survivors: List of surviving mutations with file, line, operator details
+   - byFile: Results grouped by source file"
+  [results output-path]
+  (let [report-data (json-report-data results)
+        json-str (format-json (to-json-value report-data))]
+    ;; Ensure output directory exists
+    (io/make-parents output-path)
+    (spit output-path json-str)
+    output-path))
 
 ;; =============================================================================
 ;; HTML Report Generation
@@ -387,6 +611,48 @@
     padding: 3px 6px;
     border-radius: 3px;
   }
+  .test-effectiveness { margin-bottom: 30px; }
+  .test-effectiveness-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  .test-list { list-style: none; padding: 0; margin: 0; }
+  .test-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    margin-bottom: 6px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.9em;
+  }
+  .test-item.effective {
+    background: #d4edda;
+    border-left: 4px solid var(--color-killed);
+  }
+  .test-item.ineffective {
+    background: #f8d7da;
+    border-left: 4px solid var(--color-survived);
+  }
+  .test-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .test-kills {
+    font-weight: bold;
+    margin-left: 10px;
+    padding: 2px 8px;
+    background: rgba(0,0,0,0.1);
+    border-radius: 3px;
+  }
+  .subsection-title {
+    font-size: 1.1em;
+    font-weight: 600;
+    color: #495057;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .no-data { color: #6c757d; font-style: italic; padding: 10px 0; }
   ")
 
 (defn- results-by-file
@@ -485,6 +751,41 @@
                 "(none)"
                 (str/join ", " (map str tests-run)))]]))]])))
 
+(defn- html-test-effectiveness-section
+  "Generate HTML for the test effectiveness ranking section.
+
+   Shows:
+   - Top tests ranked by mutation kill count
+   - Ineffective tests (ran but never killed anything)"
+  [results]
+  (let [report (subsumption/test-effectiveness-report results)
+        effective-tests (:effective-tests report)
+        ineffective-tests (:ineffective-tests report)]
+    (when (or (seq effective-tests) (seq ineffective-tests))
+      [:div.card.test-effectiveness
+       [:h2 "Test Effectiveness"]
+       [:div.test-effectiveness-grid
+        ;; Effective tests (left column)
+        [:div
+         [:div.subsection-title "Top Tests by Kill Count"]
+         (if (seq effective-tests)
+           [:ul.test-list
+            (for [{:keys [test kills]} effective-tests]
+              [:li.test-item.effective
+               [:span.test-name (str test)]
+               [:span.test-kills (str kills " kills")]])]
+           [:div.no-data "No tests killed any mutations"])]
+        ;; Ineffective tests (right column)
+        [:div
+         [:div.subsection-title "Ineffective Tests"]
+         (if (seq ineffective-tests)
+           [:ul.test-list
+            (for [test ineffective-tests]
+              [:li.test-item.ineffective
+               [:span.test-name (str test)]
+               [:span.test-kills "0 kills"]])]
+           [:div.no-data "All tests killed at least one mutation"])]]])))
+
 (defn generate-html-report
   "Generate HTML mutation testing report.
 
@@ -509,6 +810,7 @@
              [:h1 "🧬 Heretic Mutation Testing Report"]
              (html-summary-section results)
              (html-heatmap-section results)
+             (html-test-effectiveness-section results)
              (html-survivors-section results)]]]))]
     ;; Ensure output directory exists
     (io/make-parents output-path)
@@ -520,12 +822,13 @@
 
    Arguments:
    - results: Mutation testing results
-   - format: :terminal or :html
-   - output-path: Path for HTML output (ignored for terminal)
+   - format: :terminal, :html, or :json
+   - output-path: Path for file output (ignored for terminal)
 
-   Returns nil for terminal, output path for HTML."
+   Returns nil for terminal, output path for HTML/JSON."
   [results format output-path]
   (case format
     :terminal (do (print-report results) nil)
     :html (generate-html-report results (str output-path "/index.html"))
+    :json (generate-json-report results (str output-path "/report.json"))
     (throw (ex-info "Unknown report format" {:format format}))))

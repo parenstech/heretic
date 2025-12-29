@@ -312,3 +312,270 @@
     (is (thrown-with-msg? clojure.lang.ExceptionInfo
                           #"Unknown report format"
                           (reporter/write-report! mixed-results :unknown nil)))))
+
+;; =============================================================================
+;; Test Effectiveness Reporting Tests
+;; =============================================================================
+
+(defn make-killed-result
+  "Create a killed mutation result with the specified killer test."
+  [killer-test tests-run mutation]
+  {:mutation mutation
+   :status :killed
+   :killed-by killer-test
+   :tests-run tests-run
+   :duration-ms 100})
+
+(def effectiveness-test-results
+  "Results for testing test effectiveness features.
+   - test-a kills 3 mutations
+   - test-b kills 2 mutations
+   - test-c kills 1 mutation
+   - test-d runs but never kills anything (ineffective)"
+  (let [test-a 'my.app-test/test-a
+        test-b 'my.app-test/test-b
+        test-c 'my.app-test/test-c
+        test-d 'my.app-test/test-d
+        all-tests #{test-a test-b test-c test-d}
+        m1 (assoc sample-mutation :line 1)
+        m2 (assoc sample-mutation :line 2)
+        m3 (assoc sample-mutation :line 3)
+        m4 (assoc sample-mutation :line 4)
+        m5 (assoc sample-mutation :line 5)
+        m6 (assoc sample-mutation :line 6)
+        m7 (assoc sample-mutation :line 7)]
+    [(make-killed-result test-a all-tests m1)   ; test-a kill 1
+     (make-killed-result test-a all-tests m2)   ; test-a kill 2
+     (make-killed-result test-a all-tests m3)   ; test-a kill 3
+     (make-killed-result test-b all-tests m4)   ; test-b kill 1
+     (make-killed-result test-b all-tests m5)   ; test-b kill 2
+     (make-killed-result test-c all-tests m6)   ; test-c kill 1
+     {:mutation m7                               ; survived - all tests ran but none killed
+      :status :survived
+      :tests-run all-tests
+      :duration-ms 100}]))
+
+(deftest generate-html-report-contains-test-effectiveness-test
+  (testing "generated HTML contains test effectiveness section"
+    (let [tmp-file (java.io.File/createTempFile "heretic-test" ".html")
+          path (.getPath tmp-file)]
+      (try
+        (reporter/generate-html-report effectiveness-test-results path)
+        (let [content (slurp path)]
+          (is (.contains content "Test Effectiveness")
+              "HTML should contain Test Effectiveness section")
+          (is (.contains content "Top Tests by Kill Count")
+              "HTML should contain top tests subsection")
+          (is (.contains content "Ineffective Tests")
+              "HTML should contain ineffective tests subsection"))
+        (finally
+          (.delete tmp-file))))))
+
+(deftest generate-html-report-shows-kill-counts-test
+  (testing "generated HTML shows correct kill counts for tests"
+    (let [tmp-file (java.io.File/createTempFile "heretic-test" ".html")
+          path (.getPath tmp-file)]
+      (try
+        (reporter/generate-html-report effectiveness-test-results path)
+        (let [content (slurp path)]
+          (is (.contains content "3 kills")
+              "HTML should show test-a with 3 kills")
+          (is (.contains content "2 kills")
+              "HTML should show test-b with 2 kills")
+          (is (.contains content "1 kills")
+              "HTML should show test-c with 1 kill"))
+        (finally
+          (.delete tmp-file))))))
+
+(deftest generate-html-report-shows-ineffective-tests-test
+  (testing "generated HTML shows tests that ran but never killed"
+    (let [tmp-file (java.io.File/createTempFile "heretic-test" ".html")
+          path (.getPath tmp-file)]
+      (try
+        (reporter/generate-html-report effectiveness-test-results path)
+        (let [content (slurp path)]
+          (is (.contains content "test-d")
+              "HTML should show test-d as ineffective")
+          (is (.contains content "0 kills")
+              "HTML should show 0 kills for ineffective test"))
+        (finally
+          (.delete tmp-file))))))
+
+(deftest print-test-effectiveness-outputs-top-tests-test
+  (testing "print-test-effectiveness outputs top tests by kill count"
+    (let [output (with-out-str (reporter/print-test-effectiveness effectiveness-test-results))]
+      (is (.contains output "Test Effectiveness")
+          "Output should contain Test Effectiveness header")
+      (is (.contains output "Top Tests by Kill Count")
+          "Output should contain top tests section")
+      (is (.contains output "test-a")
+          "Output should contain test-a (top killer)")
+      (is (.contains output "3 kills")
+          "Output should show test-a with 3 kills"))))
+
+(deftest print-test-effectiveness-outputs-ineffective-tests-test
+  (testing "print-test-effectiveness outputs ineffective tests"
+    (let [output (with-out-str (reporter/print-test-effectiveness effectiveness-test-results))]
+      (is (.contains output "never killed")
+          "Output should mention tests that never killed")
+      (is (.contains output "test-d")
+          "Output should show test-d as ineffective"))))
+
+(deftest print-test-effectiveness-empty-results-test
+  (testing "print-test-effectiveness with no killed mutations produces no output"
+    (let [output (with-out-str (reporter/print-test-effectiveness all-survived-results))]
+      (is (= "" output)
+          "No output when there are no killed mutations"))))
+
+(deftest print-report-includes-test-effectiveness-test
+  (testing "print-report includes test effectiveness section"
+    (let [output (with-out-str (reporter/print-report effectiveness-test-results))]
+      (is (.contains output "Test Effectiveness")
+          "Full report should include test effectiveness section"))))
+
+;; =============================================================================
+;; JSON Report Generation Tests
+;; =============================================================================
+
+(deftest json-report-data-structure-test
+  (testing "json-report-data returns correct structure"
+    (let [data (reporter/json-report-data mixed-results)]
+      (is (map? data) "Should return a map")
+      (is (contains? data :summary) "Should contain :summary")
+      (is (contains? data :survivors) "Should contain :survivors")
+      (is (contains? data :byFile) "Should contain :byFile"))))
+
+(deftest json-report-data-summary-test
+  (testing "json-report-data summary contains correct values"
+    (let [data (reporter/json-report-data mixed-results)
+          summary (:summary data)]
+      (is (= 8 (:total summary)) "Total should be 8")
+      (is (= 3 (:killed summary)) "Killed should be 3")
+      (is (= 2 (:survived summary)) "Survived should be 2")
+      (is (= 1 (:noCoverage summary)) "noCoverage should be 1")
+      (is (= 1 (:timeout summary)) "timeout should be 1")
+      (is (= 1 (:error summary)) "error should be 1")
+      (is (= 0.6 (:score summary)) "Score should be 0.6"))))
+
+(deftest json-report-data-survivors-test
+  (testing "json-report-data survivors list is correct"
+    (let [data (reporter/json-report-data mixed-results)
+          survivors (:survivors data)]
+      (is (= 2 (count survivors)) "Should have 2 survivors")
+      (let [survivor (first survivors)]
+        (is (string? (:file survivor)) "Survivor file should be a string")
+        (is (number? (:line survivor)) "Survivor line should be a number")
+        (is (string? (:operator survivor)) "Survivor operator should be a string")
+        (is (string? (:original survivor)) "Survivor original should be a string")
+        (is (string? (:replacement survivor)) "Survivor replacement should be a string")
+        (is (vector? (:testsRun survivor)) "Survivor testsRun should be a vector")))))
+
+(deftest json-report-data-by-file-test
+  (testing "json-report-data byFile contains correct stats"
+    (let [data (reporter/json-report-data mixed-results)
+          by-file (:byFile data)]
+      (is (map? by-file) "byFile should be a map")
+      (is (contains? by-file "src/my/app.clj") "Should contain the file path"))))
+
+(deftest generate-json-report-creates-file-test
+  (testing "generate-json-report creates a JSON file"
+    (let [tmp-file (java.io.File/createTempFile "heretic-test" ".json")
+          path (.getPath tmp-file)]
+      (try
+        (reporter/generate-json-report mixed-results path)
+        (is (.exists tmp-file)
+            "JSON file should be created")
+        (is (pos? (.length tmp-file))
+            "JSON file should not be empty")
+        (finally
+          (.delete tmp-file))))))
+
+(deftest generate-json-report-valid-json-test
+  (testing "generated JSON is valid and parseable"
+    (let [tmp-file (java.io.File/createTempFile "heretic-test" ".json")
+          path (.getPath tmp-file)]
+      (try
+        (reporter/generate-json-report mixed-results path)
+        (let [content (slurp path)]
+          ;; Check it starts with { and ends with }
+          (is (.startsWith (.trim content) "{")
+              "JSON should start with {")
+          (is (.endsWith (.trim content) "}")
+              "JSON should end with }")
+          ;; Check it contains expected keys
+          (is (.contains content "\"summary\"")
+              "JSON should contain summary key")
+          (is (.contains content "\"survivors\"")
+              "JSON should contain survivors key")
+          (is (.contains content "\"byFile\"")
+              "JSON should contain byFile key"))
+        (finally
+          (.delete tmp-file))))))
+
+(deftest generate-json-report-contains-summary-values-test
+  (testing "generated JSON contains correct summary values"
+    (let [tmp-file (java.io.File/createTempFile "heretic-test" ".json")
+          path (.getPath tmp-file)]
+      (try
+        (reporter/generate-json-report mixed-results path)
+        (let [content (slurp path)]
+          (is (.contains content "\"total\": 8")
+              "JSON should contain total: 8")
+          (is (.contains content "\"killed\": 3")
+              "JSON should contain killed: 3")
+          (is (.contains content "\"survived\": 2")
+              "JSON should contain survived: 2")
+          (is (.contains content "\"score\": 0.6")
+              "JSON should contain score: 0.6"))
+        (finally
+          (.delete tmp-file))))))
+
+(deftest generate-json-report-contains-survivor-details-test
+  (testing "generated JSON contains survivor mutation details"
+    (let [tmp-file (java.io.File/createTempFile "heretic-test" ".json")
+          path (.getPath tmp-file)]
+      (try
+        (reporter/generate-json-report mixed-results path)
+        (let [content (slurp path)]
+          (is (.contains content "src/my/app.clj")
+              "JSON should contain file path")
+          (is (.contains content "\"line\": 42")
+              "JSON should contain line number")
+          (is (.contains content "\"operator\": \"swap-plus-minus\"")
+              "JSON should contain operator name"))
+        (finally
+          (.delete tmp-file))))))
+
+(deftest write-report-json-test
+  (testing "write-report! with :json format creates file"
+    (let [tmp-dir (java.io.File/createTempFile "heretic-report" "")
+          dir-path (.getPath tmp-dir)]
+      (.delete tmp-dir)  ; Remove file so we can create dir
+      (try
+        (let [result (reporter/write-report! mixed-results :json dir-path)]
+          (is (.endsWith result "report.json")
+              "Result should be path to report.json")
+          (is (.exists (java.io.File. result))
+              "JSON file should exist"))
+        (finally
+          ;; Clean up
+          (doseq [f (reverse (file-seq (java.io.File. dir-path)))]
+            (.delete f)))))))
+
+(deftest json-report-empty-results-test
+  (testing "json-report-data handles empty results"
+    (let [data (reporter/json-report-data empty-results)
+          summary (:summary data)]
+      (is (= 0 (:total summary)) "Total should be 0")
+      (is (= 0 (:killed summary)) "Killed should be 0")
+      (is (nil? (:score summary)) "Score should be nil")
+      (is (empty? (:survivors data)) "Survivors should be empty"))))
+
+(deftest json-report-all-killed-test
+  (testing "json-report-data with all killed mutations"
+    (let [data (reporter/json-report-data all-killed-results)
+          summary (:summary data)]
+      (is (= 3 (:total summary)) "Total should be 3")
+      (is (= 3 (:killed summary)) "Killed should be 3")
+      (is (= 1.0 (:score summary)) "Score should be 1.0")
+      (is (empty? (:survivors data)) "Survivors should be empty"))))

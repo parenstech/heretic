@@ -1082,3 +1082,101 @@
       (is (contains? ids :mutate-camel-to-kebab))
       (is (contains? ids :mutate-ns-typo))
       (is (contains? ids :mutate-qualified-to-unqualified)))))
+
+;; =============================================================================
+;; Operator Preset Tests
+;; =============================================================================
+
+(deftest test-presets-exist
+  (testing "All preset keys are defined"
+    (is (contains? ops/presets :fast))
+    (is (contains? ops/presets :standard))
+    (is (contains? ops/presets :comprehensive))))
+
+(deftest test-fast-preset-operators
+  (testing ":fast preset contains expected high-impact operators"
+    (let [fast-ids (:fast ops/presets)]
+      ;; Arithmetic operators
+      (is (contains? fast-ids :swap-plus-minus))
+      (is (contains? fast-ids :swap-minus-plus))
+      (is (contains? fast-ids :swap-mult-div))
+      (is (contains? fast-ids :swap-div-mult))
+      (is (contains? fast-ids :swap-inc-dec))
+      (is (contains? fast-ids :swap-dec-inc))
+      ;; Comparison operators
+      (is (contains? fast-ids :swap-lt-gt))
+      (is (contains? fast-ids :swap-gt-lt))
+      (is (contains? fast-ids :swap-eq-neq))
+      (is (contains? fast-ids :swap-neq-eq))
+      ;; Boolean operators
+      (is (contains? fast-ids :swap-and-or))
+      (is (contains? fast-ids :swap-or-and))
+      (is (contains? fast-ids :swap-true-false))
+      (is (contains? fast-ids :swap-false-true))
+      ;; Nil handling
+      (is (contains? fast-ids :swap-nil-some))
+      (is (contains? fast-ids :swap-some-nil))))
+
+  (testing ":fast preset has reasonable size (10-20 operators)"
+    (let [fast-count (count (:fast ops/presets))]
+      (is (>= fast-count 10))
+      (is (<= fast-count 20)))))
+
+(deftest test-standard-preset-operators
+  (testing ":standard preset contains all :fast operators"
+    (let [fast-ids (:fast ops/presets)
+          standard-ids (:standard ops/presets)]
+      (is (every? #(contains? standard-ids %) fast-ids))))
+
+  (testing ":standard preset includes additional operators beyond :fast"
+    (let [fast-ids (:fast ops/presets)
+          standard-ids (:standard ops/presets)]
+      (is (> (count standard-ids) (count fast-ids)))
+      ;; Check for some standard-only operators
+      (is (contains? standard-ids :swap-first-last))
+      (is (contains? standard-ids :swap-thread-first-last)))))
+
+(deftest test-comprehensive-preset-operators
+  (testing ":comprehensive preset contains all operators"
+    (let [comprehensive-ids (:comprehensive ops/presets)
+          all-ids (set (map :id ops/all-operators))]
+      (is (= comprehensive-ids all-ids)))))
+
+(deftest test-preset-hierarchy
+  (testing "preset sizes are correctly ordered: fast < standard < comprehensive"
+    (let [fast-count (count (:fast ops/presets))
+          standard-count (count (:standard ops/presets))
+          comprehensive-count (count (:comprehensive ops/presets))]
+      (is (< fast-count standard-count))
+      (is (< standard-count comprehensive-count)))))
+
+(deftest test-operators-for-preset
+  (testing "operators-for-preset returns operators for :fast"
+    (let [fast-ops (ops/operators-for-preset :fast)]
+      (is (seq fast-ops))
+      (is (= (count fast-ops) (count (:fast ops/presets))))
+      ;; Each returned item should be an operator map with :id
+      (is (every? :id fast-ops))
+      (is (every? :matcher fast-ops))))
+
+  (testing "operators-for-preset returns operators for :standard"
+    (let [standard-ops (ops/operators-for-preset :standard)]
+      (is (seq standard-ops))
+      (is (= (count standard-ops) (count (:standard ops/presets))))))
+
+  (testing "operators-for-preset returns operators for :comprehensive"
+    (let [comprehensive-ops (ops/operators-for-preset :comprehensive)]
+      (is (seq comprehensive-ops))
+      (is (= (count comprehensive-ops) (count ops/all-operators)))))
+
+  (testing "operators-for-preset throws for unknown preset"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Unknown operator preset"
+                          (ops/operators-for-preset :unknown)))))
+
+(deftest test-preset-operators-are-valid
+  (testing "All operator ids in presets exist in operators-by-id"
+    (doseq [[preset-name op-ids] ops/presets]
+      (testing (str "Preset " preset-name)
+        (doseq [op-id op-ids]
+          (is (contains? ops/operators-by-id op-id)
+              (str "Operator " op-id " not found in operators-by-id")))))))
