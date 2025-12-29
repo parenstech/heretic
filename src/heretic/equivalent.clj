@@ -284,12 +284,13 @@
    ;; =========================================================================
 
    ;; (empty? []) is always true
+   ;; Note: [] and '() are equal in Clojure, so only include [] to avoid duplicate key error
    {:operator :swap-seq-empty
     :context (fn [zloc]
                (let [parent (z/up zloc)]
                  (when (and parent (= :list (z/tag parent)))
                    (let [arg (second (z/child-sexprs parent))]
-                     (contains? #{[] {} #{} '()} arg)))))
+                     (contains? #{[] {} #{}} arg)))))
     :reason "empty? on literal empty collection is always true"}
 
    ;; (seq []) is always nil
@@ -298,7 +299,7 @@
                (let [parent (z/up zloc)]
                  (when (and parent (= :list (z/tag parent)))
                    (let [arg (second (z/child-sexprs parent))]
-                     (contains? #{[] {} #{} '()} arg)))))
+                     (contains? #{[] {} #{}} arg)))))
     :reason "seq on literal empty collection is always nil"}
 
    ;; (first [x]) == (last [x]) for single element

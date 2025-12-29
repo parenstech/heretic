@@ -479,3 +479,282 @@
           mutation (make-mutation :swap-next-rest)]
       (is (some? (equiv/likely-equivalent? mutation zloc))
           "next->rest in some context should be detected as equivalent"))))
+
+;; =============================================================================
+;; Boundary Comparison Pattern Tests
+;; =============================================================================
+
+(deftest lt-count-zero-always-false-test
+  (testing "(< (count x) 0) is always false - detected as equivalent"
+    (let [zloc (-> (parser/parse-string "(< (count coll) 0)")
+                   z/down)  ; at '<
+          mutation (make-mutation :swap-lt-lte)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))
+          "< with count and 0 should be equivalent"))))
+
+(deftest lte-count-zero-test
+  (testing "(<= (count x) 0) is equivalent to (= (count x) 0)"
+    (let [zloc (-> (parser/parse-string "(<= (count coll) 0)")
+                   z/down)
+          mutation (make-mutation :swap-lte-lt)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest lt-non-count-not-equivalent-test
+  (testing "(< x 0) without count is not equivalent"
+    (let [zloc (-> (parser/parse-string "(< x 0)")
+                   z/down)
+          mutation (make-mutation :swap-lt-lte)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest lt-count-non-zero-not-equivalent-test
+  (testing "(< (count x) 5) is not equivalent"
+    (let [zloc (-> (parser/parse-string "(< (count coll) 5)")
+                   z/down)
+          mutation (make-mutation :swap-lt-lte)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+;; =============================================================================
+;; Multiply by Zero Pattern Tests
+;; =============================================================================
+
+(deftest mult-by-zero-equivalent-test
+  (testing "(* x 0) is always 0 - mutation equivalent"
+    (let [zloc (-> (parser/parse-string "(* x 0)")
+                   z/down)
+          mutation (make-mutation :swap-mult-div)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest div-zero-numerator-equivalent-test
+  (testing "(/ 0 x) is always 0"
+    (let [zloc (-> (parser/parse-string "(/ 0 x)")
+                   z/down)
+          mutation (make-mutation :swap-div-mult)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest div-non-zero-numerator-not-equivalent-test
+  (testing "(/ 5 x) is not equivalent to (* 5 x)"
+    (let [zloc (-> (parser/parse-string "(/ 5 x)")
+                   z/down)
+          mutation (make-mutation :swap-div-mult)]
+      ;; May or may not match depending on pattern - check for divide by 1
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+;; =============================================================================
+;; Function Contract Pattern Tests
+;; =============================================================================
+
+(deftest nil-check-on-str-always-false-test
+  (testing "(nil? (str x)) is always false - str never returns nil"
+    (let [zloc (-> (parser/parse-string "(nil? (str x))")
+                   z/down)  ; at 'nil?
+          mutation (make-mutation :swap-nil-some)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest some-check-on-str-always-true-test
+  (testing "(some? (str x)) is always true"
+    (let [zloc (-> (parser/parse-string "(some? (str x))")
+                   z/down)
+          mutation (make-mutation :swap-some-nil)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest nil-check-on-vec-always-false-test
+  (testing "(nil? (vec x)) is always false"
+    (let [zloc (-> (parser/parse-string "(nil? (vec x))")
+                   z/down)
+          mutation (make-mutation :swap-nil-some)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest nil-check-on-count-always-false-test
+  (testing "(nil? (count x)) is always false"
+    (let [zloc (-> (parser/parse-string "(nil? (count x))")
+                   z/down)
+          mutation (make-mutation :swap-nil-some)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest nil-check-on-regular-fn-not-equivalent-test
+  (testing "(nil? (foo x)) is not equivalent - foo might return nil"
+    (let [zloc (-> (parser/parse-string "(nil? (foo x))")
+                   z/down)
+          mutation (make-mutation :swap-nil-some)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+;; =============================================================================
+;; Lazy/Eager Equivalence Pattern Tests
+;; =============================================================================
+
+(deftest map-mapv-in-vec-context-test
+  (testing "(vec (map f coll)) ≡ (vec (mapv f coll))"
+    ;; map inside vec - swapping to mapv is equivalent
+    (let [zloc (-> (parser/parse-string "(vec (map inc coll))")
+                   z/down    ; at 'vec
+                   z/right   ; at (map inc coll)
+                   z/down)   ; at 'map
+          mutation (make-mutation :swap-map-mapv)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest mapv-map-in-count-context-test
+  (testing "(count (mapv f coll)) ≡ (count (map f coll))"
+    (let [zloc (-> (parser/parse-string "(count (mapv inc coll))")
+                   z/down z/right z/down)
+          mutation (make-mutation :swap-mapv-map)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest filter-filterv-in-into-context-test
+  (testing "(into [] (filter pred coll)) ≡ with filterv"
+    (let [zloc (-> (parser/parse-string "(into [] (filter even? coll))")
+                   z/down z/right z/right z/down)
+          mutation (make-mutation :swap-filter-filterv)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest map-outside-realizing-context-not-equivalent-test
+  (testing "(map f coll) alone is not equivalent to mapv"
+    (let [zloc (-> (parser/parse-string "(map inc coll)")
+                   z/down)
+          mutation (make-mutation :swap-map-mapv)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+;; =============================================================================
+;; Collection Literal Pattern Tests
+;; =============================================================================
+
+(deftest empty-check-on-empty-vec-test
+  (testing "(empty? []) is always true"
+    (let [zloc (-> (parser/parse-string "(empty? [])")
+                   z/down)
+          mutation (make-mutation :swap-seq-empty)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest empty-check-on-empty-map-test
+  (testing "(empty? {}) is always true"
+    (let [zloc (-> (parser/parse-string "(empty? {})")
+                   z/down)
+          mutation (make-mutation :swap-seq-empty)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest seq-on-empty-vec-test
+  (testing "(seq []) is always nil"
+    (let [zloc (-> (parser/parse-string "(seq [])")
+                   z/down)
+          mutation (make-mutation :swap-empty-seq)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest empty-check-on-non-empty-vec-not-equivalent-test
+  (testing "(empty? [1 2]) is not equivalent"
+    (let [zloc (-> (parser/parse-string "(empty? [1 2])")
+                   z/down)
+          mutation (make-mutation :swap-seq-empty)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest first-last-single-element-test
+  (testing "(first [x]) ≡ (last [x]) for single element"
+    (let [zloc (-> (parser/parse-string "(first [42])")
+                   z/down)
+          mutation (make-mutation :swap-first-last)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest last-first-single-element-test
+  (testing "(last [x]) ≡ (first [x]) for single element"
+    (let [zloc (-> (parser/parse-string "(last [42])")
+                   z/down)
+          mutation (make-mutation :swap-last-first)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest first-last-multiple-elements-not-equivalent-test
+  (testing "(first [1 2]) is NOT equivalent to (last [1 2])"
+    (let [zloc (-> (parser/parse-string "(first [1 2])")
+                   z/down)
+          mutation (make-mutation :swap-first-last)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+;; =============================================================================
+;; Threading Macro Pattern Tests
+;; =============================================================================
+
+(deftest thread-first-single-value-test
+  (testing "(-> x) is identity - swapping to ->> is equivalent"
+    (let [zloc (-> (parser/parse-string "(-> x)")
+                   z/down)
+          mutation (make-mutation :swap-thread-first-last)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest thread-first-with-forms-not-equivalent-test
+  (testing "(-> x f g) is not equivalent to (->> x f g)"
+    (let [zloc (-> (parser/parse-string "(-> x f g)")
+                   z/down)
+          mutation (make-mutation :swap-thread-first-last)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest some-thread-with-literal-test
+  (testing "(some-> 42 f) ≡ (-> 42 f) when initial is non-nil"
+    (let [zloc (-> (parser/parse-string "(some-> 42 inc)")
+                   z/down)
+          mutation (make-mutation :swap-some-thread-first)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest some-thread-with-string-literal-test
+  (testing "(some-> \"hi\" f) ≡ (-> \"hi\" f)"
+    (let [zloc (-> (parser/parse-string "(some-> \"hi\" str/upper-case)")
+                   z/down)
+          mutation (make-mutation :swap-some-thread-first)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest some-thread-with-symbol-not-equivalent-test
+  (testing "(some-> x f) is NOT equivalent to (-> x f) - x might be nil"
+    (let [zloc (-> (parser/parse-string "(some-> x inc)")
+                   z/down)
+          mutation (make-mutation :swap-some-thread-first)]
+      (is (nil? (equiv/likely-equivalent? mutation zloc))))))
+
+;; =============================================================================
+;; Helper Function Coverage Tests
+;; =============================================================================
+
+(deftest non-negative-fn-count-test
+  (testing "non-negative-fn? recognizes count"
+    ;; Indirectly tested via boundary comparison patterns
+    (let [zloc (-> (parser/parse-string "(< (count x) 0)")
+                   z/down)
+          mutation (make-mutation :swap-lt-lte)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest non-negative-fn-length-test
+  (testing "non-negative-fn? recognizes .length"
+    (let [zloc (-> (parser/parse-string "(< (.length s) 0)")
+                   z/down)
+          mutation (make-mutation :swap-lt-lte)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest non-negative-fn-math-abs-test
+  (testing "non-negative-fn? recognizes Math/abs"
+    (let [zloc (-> (parser/parse-string "(< (Math/abs n) 0)")
+                   z/down)
+          mutation (make-mutation :swap-lt-lte)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest never-nil-fn-keyword-test
+  (testing "never-nil-fn? recognizes keyword"
+    (let [zloc (-> (parser/parse-string "(nil? (keyword s))")
+                   z/down)
+          mutation (make-mutation :swap-nil-some)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest never-nil-fn-name-test
+  (testing "never-nil-fn? recognizes name"
+    (let [zloc (-> (parser/parse-string "(nil? (name k))")
+                   z/down)
+          mutation (make-mutation :swap-nil-some)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest realizing-fn-doall-test
+  (testing "realizing-fn? recognizes doall"
+    (let [zloc (-> (parser/parse-string "(doall (map inc coll))")
+                   z/down z/right z/down)
+          mutation (make-mutation :swap-map-mapv)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
+
+(deftest realizing-fn-frequencies-test
+  (testing "realizing-fn? recognizes frequencies"
+    (let [zloc (-> (parser/parse-string "(frequencies (map inc coll))")
+                   z/down z/right z/down)
+          mutation (make-mutation :swap-map-mapv)]
+      (is (some? (equiv/likely-equivalent? mutation zloc))))))
