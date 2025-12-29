@@ -366,3 +366,45 @@
       (spit config-path "{:preset :fast}")
       (let [config (core/load-config config-path)]
         (is (= :fast (:preset config)))))))
+
+;; =============================================================================
+;; Executor Configuration Tests
+;; =============================================================================
+
+(deftest load-config-executor-defaults-test
+  (testing "default config includes executor settings"
+    (let [config-path (str *test-dir* "/heretic.edn")]
+      (spit config-path "{}")
+      (let [config (core/load-config config-path)]
+        (is (= :legacy (:executor config))
+            "executor should default to :legacy")
+        (is (= :skip (:supervision-policy config))
+            "supervision-policy should default to :skip")
+        (is (= 30000 (:mutation-timeout-ms config))
+            "mutation-timeout-ms should default to 30000")))))
+
+(deftest load-config-executor-override-test
+  (testing "user can override executor settings"
+    (let [config-path (str *test-dir* "/heretic.edn")]
+      (spit config-path (pr-str {:executor :missionary
+                                 :supervision-policy :retry
+                                 :mutation-timeout-ms 60000}))
+      (let [config (core/load-config config-path)]
+        (is (= :missionary (:executor config)))
+        (is (= :retry (:supervision-policy config)))
+        (is (= 60000 (:mutation-timeout-ms config)))))))
+
+(deftest load-config-missionary-executor-test
+  (testing "missionary executor can be configured with all options"
+    (let [config-path (str *test-dir* "/heretic.edn")]
+      (spit config-path (pr-str {:executor :missionary
+                                 :supervision-policy :abort
+                                 :mutation-timeout-ms 15000
+                                 :parallel-mutate true
+                                 :parallel-workers 4}))
+      (let [config (core/load-config config-path)]
+        (is (= :missionary (:executor config)))
+        (is (= :abort (:supervision-policy config)))
+        (is (= 15000 (:mutation-timeout-ms config)))
+        (is (= true (:parallel-mutate config)))
+        (is (= 4 (:parallel-workers config)))))))

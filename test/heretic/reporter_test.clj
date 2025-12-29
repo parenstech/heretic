@@ -5,8 +5,11 @@
    - count-by-status: counting mutations by status category
    - mutation-score: score calculation with various inputs
    - survivors/killed/etc: filtering functions
-   - summary-data: data export"
-  (:require [clojure.test :refer [deftest is testing]]
+   - summary-data: data export
+   - JSON report generation
+   - EDN report generation"
+  (:require [clojure.edn :as edn]
+            [clojure.test :refer [deftest is testing]]
             [heretic.reporter :as reporter]))
 
 ;; =============================================================================
@@ -579,3 +582,142 @@
       (is (= 3 (:killed summary)) "Killed should be 3")
       (is (= 1.0 (:score summary)) "Score should be 1.0")
       (is (empty? (:survivors data)) "Survivors should be empty"))))
+
+;; =============================================================================
+;; EDN Report Generation Tests
+;; =============================================================================
+
+(deftest edn-report-data-structure-test
+  (testing "edn-report-data returns correct structure"
+    (let [data (reporter/edn-report-data mixed-results)]
+      (is (map? data) "Should return a map")
+      (is (contains? data :summary) "Should contain :summary")
+      (is (contains? data :survivors) "Should contain :survivors")
+      (is (contains? data :by-file) "Should contain :by-file"))))
+
+(deftest edn-report-data-summary-test
+  (testing "edn-report-data summary contains correct values"
+    (let [data (reporter/edn-report-data mixed-results)
+          summary (:summary data)]
+      (is (= 8 (:total summary)) "Total should be 8")
+      (is (= 3 (:killed summary)) "Killed should be 3")
+      (is (= 2 (:survived summary)) "Survived should be 2")
+      (is (= 1 (:no-coverage summary)) "no-coverage should be 1")
+      (is (= 1 (:timeout summary)) "timeout should be 1")
+      (is (= 1 (:error summary)) "error should be 1")
+      (is (= 0.6 (:score summary)) "Score should be 0.6"))))
+
+(deftest edn-report-data-survivors-test
+  (testing "edn-report-data survivors list is correct"
+    (let [data (reporter/edn-report-data mixed-results)
+          survivors (:survivors data)]
+      (is (= 2 (count survivors)) "Should have 2 survivors")
+      (let [survivor (first survivors)]
+        (is (string? (:file survivor)) "Survivor file should be a string")
+        (is (number? (:line survivor)) "Survivor line should be a number")
+        (is (keyword? (:operator survivor)) "Survivor operator should be a keyword")
+        (is (string? (:original survivor)) "Survivor original should be a string")
+        (is (string? (:replacement survivor)) "Survivor replacement should be a string")
+        (is (vector? (:tests-run survivor)) "Survivor tests-run should be a vector")))))
+
+(deftest edn-report-data-by-file-test
+  (testing "edn-report-data by-file contains correct stats"
+    (let [data (reporter/edn-report-data mixed-results)
+          by-file (:by-file data)]
+      (is (map? by-file) "by-file should be a map")
+      (is (contains? by-file "src/my/app.clj") "Should contain the file path"))))
+
+(deftest generate-edn-report-creates-file-test
+  (testing "generate-edn-report creates an EDN file"
+    (let [tmp-file (java.io.File/createTempFile "heretic-test" ".edn")
+          path (.getPath tmp-file)]
+      (try
+        (reporter/generate-edn-report mixed-results path)
+        (is (.exists tmp-file)
+            "EDN file should be created")
+        (is (pos? (.length tmp-file))
+            "EDN file should not be empty")
+        (finally
+          (.delete tmp-file))))))
+
+(deftest generate-edn-report-valid-edn-test
+  (testing "generated EDN is valid and readable"
+    (let [tmp-file (java.io.File/createTempFile "heretic-test" ".edn")
+          path (.getPath tmp-file)]
+      (try
+        (reporter/generate-edn-report mixed-results path)
+        (let [content (slurp path)
+              parsed (edn/read-string content)]
+          ;; Check structure
+          (is (map? parsed) "Parsed EDN should be a map")
+          (is (contains? parsed :summary) "EDN should contain :summary")
+          (is (contains? parsed :survivors) "EDN should contain :survivors")
+          (is (contains? parsed :by-file) "EDN should contain :by-file")
+          ;; Check summary values
+          (is (= 8 (get-in parsed [:summary :total])) "Total should be 8")
+          (is (= 3 (get-in parsed [:summary :killed])) "Killed should be 3")
+          (is (= 0.6 (get-in parsed [:summary :score])) "Score should be 0.6"))
+        (finally
+          (.delete tmp-file))))))
+
+(deftest generate-edn-report-uses-kebab-case-test
+  (testing "generated EDN uses kebab-case keys (idiomatic Clojure)"
+    (let [tmp-file (java.io.File/createTempFile "heretic-test" ".edn")
+          path (.getPath tmp-file)]
+      (try
+        (reporter/generate-edn-report mixed-results path)
+        (let [content (slurp path)
+              parsed (edn/read-string content)]
+          ;; Check for kebab-case keys
+          (is (contains? (:summary parsed) :no-coverage)
+              "EDN should use :no-coverage (kebab-case)")
+          (is (contains? parsed :by-file)
+              "EDN should use :by-file (kebab-case)")
+          ;; Check survivor uses tests-run not testsRun
+          (when (seq (:survivors parsed))
+            (is (contains? (first (:survivors parsed)) :tests-run)
+                "Survivor should use :tests-run (kebab-case)")))
+        (finally
+          (.delete tmp-file))))))
+
+(deftest write-report-edn-test
+  (testing "write-report! with :edn format creates file"
+    (let [tmp-dir (java.io.File/createTempFile "heretic-report" "")
+          dir-path (.getPath tmp-dir)]
+      (.delete tmp-dir)  ; Remove file so we can create dir
+      (try
+        (let [result (reporter/write-report! mixed-results :edn dir-path)]
+          (is (.endsWith result "report.edn")
+              "Result should be path to report.edn")
+          (is (.exists (java.io.File. result))
+              "EDN file should exist"))
+        (finally
+          ;; Clean up
+          (doseq [f (reverse (file-seq (java.io.File. dir-path)))]
+            (.delete f)))))))
+
+(deftest edn-report-empty-results-test
+  (testing "edn-report-data handles empty results"
+    (let [data (reporter/edn-report-data empty-results)
+          summary (:summary data)]
+      (is (= 0 (:total summary)) "Total should be 0")
+      (is (= 0 (:killed summary)) "Killed should be 0")
+      (is (nil? (:score summary)) "Score should be nil")
+      (is (empty? (:survivors data)) "Survivors should be empty"))))
+
+(deftest edn-report-all-killed-test
+  (testing "edn-report-data with all killed mutations"
+    (let [data (reporter/edn-report-data all-killed-results)
+          summary (:summary data)]
+      (is (= 3 (:total summary)) "Total should be 3")
+      (is (= 3 (:killed summary)) "Killed should be 3")
+      (is (= 1.0 (:score summary)) "Score should be 1.0")
+      (is (empty? (:survivors data)) "Survivors should be empty"))))
+
+(deftest edn-report-preserves-operator-keyword-test
+  (testing "EDN report preserves operator as keyword (unlike JSON which uses string)"
+    (let [data (reporter/edn-report-data mixed-results)]
+      (when (seq (:survivors data))
+        (let [survivor-operator (:operator (first (:survivors data)))]
+          (is (keyword? survivor-operator)
+              "Operator should be a keyword in EDN format"))))))

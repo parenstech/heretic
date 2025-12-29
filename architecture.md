@@ -1,14 +1,13 @@
 ---
-status: wip
+status: stable
 contributions:
-  - "Missing: controller/worker implementation details"
-  - "Missing: mutant schemata implementation guide"
-  - "Example: custom operator implementation"
+  - "Could use: more operator examples for edge cases"
+  - "Could use: benchmarks comparing schemata vs traditional approach"
 ---
 
 # Heretic Architecture & Design
 
-**Last Updated:** 2025-12-28
+**Last Updated:** 2025-12-29
 
 This document describes the architectural design of Heretic, informed by the research in `research.md`.
 
@@ -601,65 +600,235 @@ Operators can be:
 
 ### 5.5 Mutant Schemata (Compile-Once Optimization)
 
-For maximum efficiency, use **mutant schemata**: compile all mutations once, select at runtime.
+For maximum efficiency, use **mutant schemata**: compile all mutations once, select at runtime. This technique is implemented in `heretic.schemata`.
 
-**Key Insight:** Clojure's dynamic vars enable elegant schemata without bytecode manipulation:
+**Key Insight:** Clojure's dynamic vars enable elegant schemata without bytecode manipulation.
+
+#### 5.5.1 The `*active-mutant*` Dynamic Var
+
+The `heretic.schemata/*active-mutant*` dynamic var controls which mutation is active:
 
 ```clojure
-;; Original function
-(defn calculate-total [items]
-  (reduce + (map :price items)))
-
-;; Schematized version (all mutations embedded)
-(def ^:dynamic *mutation-id* nil)
-
-(defn calculate-total [items]
-  (reduce
-    (case *mutation-id*
-      :m1 -        ; Mutant 1: + → -
-      :m2 *        ; Mutant 2: + → *
-      +)           ; Original
-    (map
-      (case *mutation-id*
-        :m3 :cost  ; Mutant 3: :price → :cost
-        :price)
-      items)))
-
-;; Test runner selects mutation
-(binding [*mutation-id* :m1]
-  (run-tests 'myapp.core-test))
+(def ^:dynamic *active-mutant*
+  "Dynamic var controlling which mutation is active.
+   When nil (default), the original code path is executed.
+   When set to a mutation id (keyword), that mutation is active."
+  nil)
 ```
+
+When `*active-mutant*` is `nil` (the default), all schematized code executes the original behavior. When bound to a mutation id (e.g., `:mut-42-5-plus-minus`), the corresponding mutant code path is executed.
+
+**Thread Safety:** Dynamic vars in Clojure are thread-local, so different threads can test different mutations simultaneously without interference.
+
+#### 5.5.2 How `build-schemata` Transforms Source Code
+
+The `build-schemata` function transforms original source into schematized source:
+
+```clojure
+;; Original source
+(defn calculate [x] (+ x 1))
+
+;; After build-schemata with 2 mutations at the + location
+(defn calculate [x]
+  (case heretic.schemata/*active-mutant*
+    :mut-1-5-plus-minus (- x 1)    ; swap-plus-minus operator
+    :mut-1-5-mult-div   (* x 1)    ; swap-mult-div operator
+    (+ x 1)))                      ; original (default case)
+```
+
+**Transformation Process:**
+
+1. **Group mutations by location** - Multiple operators may target the same source location
+2. **Sort in reverse order** - Process from end of file to beginning so replacements don't shift positions
+3. **Build case nodes** - For each location, generate a `case` form with mutation id → replacement mappings
+4. **Preserve original as default** - The original code is always the default case
+
+```clojure
+(defn build-schemata
+  "Build schematized source from original source and mutations.
+
+   Returns:
+   {:schemata-source \"...\"       ; The schematized source code
+    :mutation-map {id mutation}    ; Map from mutation id to mutation record
+    :location-count n}             ; Number of locations schematized"
+  [source mutations]
+  ;; Implementation groups by location, processes in reverse order,
+  ;; and builds case forms for each mutation point
+  ...)
+```
+
+#### 5.5.3 The `case` Form Generation
+
+When multiple mutations target the same location, they're combined into a single `case`:
+
+```clojure
+;; Original: (if (< x 10) a b)
+;; With 3 mutations at the < location:
+
+(if (case heretic.schemata/*active-mutant*
+      :mut-1-5-lt-gt     (> x 10)   ; swap-lt-gt
+      :mut-1-5-lt-lte    (<= x 10)  ; swap-lt-lte
+      :mut-1-5-lt-neq    (not= x 10) ; swap-lt-neq
+      (< x 10))                     ; original
+    a b)
+```
+
+**Mutation ID Format:** `:mut-<line>-<col>-<operator-suffix>`
+
+Example: `:mut-42-5-plus-minus` means line 42, column 5, swap-plus-minus operator.
+
+#### 5.5.4 When to Use Schemata vs Traditional File Modification
+
+| Approach | Best For | Trade-offs |
+|----------|----------|------------|
+| **Schemata** | Multiple mutations per file (>2), CI pipelines, parallel testing | Larger compiled code, dynamic var overhead |
+| **Traditional** | Single mutation, debugging specific mutants, AOT compilation | File I/O per mutant, recompilation overhead |
+
+The `should-use-schemata?` heuristic checks if any file has more than 2 mutations:
+
+```clojure
+(defn should-use-schemata?
+  "Heuristic: Use schemata when there are multiple mutations per file."
+  [mutations]
+  (let [by-file (group-by :file mutations)]
+    (boolean
+     (some (fn [[_file file-mutations]]
+             (> (count file-mutations) 2))
+           by-file))))
+```
+
+#### 5.5.5 Performance Characteristics
+
+**Compile-Once Benefit:**
+
+```
+Traditional approach (N mutations in 1 file):
+  N × (modify file + reload namespace + run tests + revert file)
+
+Schemata approach (N mutations in 1 file):
+  1 × (build schemata + write file + reload namespace)
+  + N × (bind *active-mutant* + run tests)
+```
+
+For a file with 50 mutations where namespace reload takes 200ms:
+- Traditional: 50 × 200ms = 10 seconds of compilation
+- Schemata: 1 × 200ms = 200ms of compilation
+
+**Runtime Overhead:**
+
+The `case` dispatch adds nanosecond-level overhead per mutation point. This is negligible compared to test execution time.
+
+#### 5.5.6 Example Walkthrough
+
+Given this source file:
+
+```clojure
+;; src/myapp/math.clj
+(ns myapp.math)
+
+(defn add-positive [a b]
+  (if (and (> a 0) (> b 0))
+    (+ a b)
+    0))
+```
+
+With these mutations identified:
+1. Line 4, col 7: `and` → `or` (swap-and-or)
+2. Line 4, col 12: `>` → `<` (swap-gt-lt)
+3. Line 4, col 20: `>` → `<` (swap-gt-lt)
+4. Line 5, col 5: `+` → `-` (swap-plus-minus)
+5. Line 6, col 5: `0` → `1` (replace-0-to-1)
+
+**After schematization:**
+
+```clojure
+(ns myapp.math)
+
+(defn add-positive [a b]
+  (if (case heretic.schemata/*active-mutant*
+        :mut-4-7-and-or or
+        and)
+      (case heretic.schemata/*active-mutant*
+        :mut-4-12-gt-lt <
+        >)
+      a 0)
+      (case heretic.schemata/*active-mutant*
+        :mut-4-20-gt-lt <
+        >)
+      b 0))
+    (case heretic.schemata/*active-mutant*
+      :mut-5-5-plus-minus -
+      +)
+    a b)
+    (case heretic.schemata/*active-mutant*
+      :mut-6-5-0-to-1 1
+      0)))
+```
+
+**Testing with schemata:**
+
+```clojure
+(require '[heretic.schemata :as schemata])
+
+;; Test mutation 1 (and → or)
+(schemata/with-mutant :mut-4-7-and-or
+  (run-tests 'myapp.math-test))
+
+;; Or use run-mutation-batch for all mutations
+(schemata/run-mutation-batch
+  "src/myapp/math.clj"
+  mutations
+  (fn [mutation-id mutation]
+    (run-tests 'myapp.math-test))
+  :reload-fn #(require 'myapp.math :reload))
+```
+
+#### 5.5.7 Integration with Worker System
+
+The worker system (`heretic.worker`) uses schemata for efficient batch testing:
+
+```clojure
+;; In heretic.worker, the flow is:
+;; 1. Controller groups mutations by file
+;; 2. For each file with multiple mutations:
+;;    a. schematize-file! transforms the source
+;;    b. reload-fn reloads the namespace once
+;;    c. For each mutation-id in the file:
+;;       - bind *active-mutant*
+;;       - run relevant tests
+;;       - report result
+;;    d. restore-file! reverts to original
+;;    e. reload-fn restores original code
+
+;; The run-mutation-batch function handles this:
+(schemata/run-mutation-batch
+  file-path
+  mutations
+  (fn [mutation-id mutation]
+    ;; This runs with *active-mutant* bound
+    (runner/evaluate-mutation index mutation config))
+  :reload-fn #(reloader/reload!)
+  :on-progress progress-callback)
+```
+
+**Key Integration Points:**
+
+- `schematize-file!` - Writes schematized source, returns backup for restoration
+- `restore-file!` - Restores original source from backup
+- `with-mutant` - Macro for binding `*active-mutant*` around test execution
+- `with-schemata` - Macro for safe schematize/restore lifecycle
 
 **Benefits:**
-- Single recompilation covers all mutants
-- No file system I/O per mutant
+- Single recompilation covers all mutants in a file
+- No file system I/O between mutations
 - Fast mutation switching via dynamic binding
-- Natural thread isolation
-
-**Implementation Sketch:**
-
-```clojure
-(defn schematize-form [zloc operators]
-  (let [mutations (find-all-mutations zloc operators)]
-    (if (seq mutations)
-      (z/replace zloc
-        `(case ~'heretic/*mutation-id*
-           ~@(mapcat (fn [{:keys [id mutated]}]
-                       [id mutated])
-                     mutations)
-           ~(z/sexpr zloc)))  ; Default: original
-      zloc)))
-
-(defn run-with-mutation [mutation-id test-vars]
-  (binding [heretic/*mutation-id* mutation-id]
-    (run-tests test-vars)))
-```
+- Natural thread isolation (each worker can test different mutations)
 
 **Trade-offs:**
-- Increases code size (all mutations compiled)
-- Dynamic var lookup has small overhead
+- Increases code size (all mutations compiled into case forms)
+- Dynamic var lookup has small overhead (~nanoseconds)
 - Not compatible with AOT compilation
-- Best for: interactive development, CI pipelines
+- Best for: interactive development, CI pipelines with many mutations per file
 
 ### 5.6 Higher-Order Mutations
 
@@ -853,18 +1022,250 @@ Cache invalidation:
 
 ### 8.1 Custom Operators
 
-Users can define custom operators:
+Heretic's operator system is data-driven, making it easy to define custom operators. Each operator is a map with specific keys that define its behavior.
+
+#### 8.1.1 Operator Structure
+
+An operator is a map with these keys:
 
 ```clojure
-(defrecord MyCustomOperator []
-  heretic.operator/Operator
-  (id [_] :custom/my-mutation)
-  (category [_] :deterministic)
-  (find-targets [_ zloc] ...)
-  (mutate [_ zloc] ...))
+{:id          :keyword           ; Unique identifier for this operator
+ :original    value-or-:dynamic  ; What this operator matches (or :dynamic for computed)
+ :replacement value-or-fn        ; What to replace with (or fn for computed)
+ :description "string"           ; Human-readable description
+ :matcher     (fn [zloc] bool)}  ; Predicate that identifies targets
+```
 
-;; Register
-(heretic/register-operator (->MyCustomOperator))
+#### 8.1.2 Complete Example: `swap-assoc-dissoc`
+
+This example implements an operator that swaps `assoc` with `dissoc` to catch map manipulation bugs.
+
+**Step 1: Define the Matcher**
+
+The matcher is a predicate that returns true when the zipper is positioned at a valid mutation target:
+
+```clojure
+(ns myapp.custom-operators
+  (:require [heretic.operators :as ops]
+            [rewrite-clj.zip :as z]))
+
+(defn- symbol-matcher
+  "Create a matcher that checks if zloc is a specific symbol."
+  [sym]
+  (fn [zloc]
+    (and (= :token (z/tag zloc))
+         (symbol? (z/sexpr zloc))
+         (= sym (z/sexpr zloc)))))
+```
+
+**Step 2: Define the Operator**
+
+```clojure
+(def swap-assoc-dissoc
+  "Replace assoc with dissoc.
+   Catches bugs where map entries are added when they should be removed,
+   or where dissoc behavior differs from assoc (e.g., missing key handling)."
+  {:id :swap-assoc-dissoc
+   :original 'assoc
+   :replacement 'dissoc
+   :description "Replace assoc with dissoc"
+   :matcher (symbol-matcher 'assoc)})
+
+(def swap-dissoc-assoc
+  "Replace dissoc with assoc.
+   Catches bugs where map entries are removed when they should be added."
+  {:id :swap-dissoc-assoc
+   :original 'dissoc
+   :replacement 'assoc
+   :description "Replace dissoc with assoc"
+   :matcher (symbol-matcher 'dissoc)})
+```
+
+**Step 3: Register the Operators**
+
+Add your operators to the registry so they're included in mutation generation:
+
+```clojure
+;; Option 1: Extend all-operators (at load time)
+(def my-operators [swap-assoc-dissoc swap-dissoc-assoc])
+
+;; Add to your project's operator config
+(def extended-operators
+  (concat ops/all-operators my-operators))
+
+;; Option 2: Create a custom preset
+(def my-preset
+  (into (:standard ops/presets)
+        #{:swap-assoc-dissoc :swap-dissoc-assoc}))
+```
+
+**Step 4: Create a Custom Preset**
+
+For reuse across projects, define a named preset:
+
+```clojure
+(def custom-presets
+  {:map-ops
+   #{:swap-assoc-dissoc
+     :swap-dissoc-assoc}
+
+   :my-standard
+   (into (:standard ops/presets)
+         #{:swap-assoc-dissoc :swap-dissoc-assoc})})
+
+;; Usage in config
+{:preset :my-standard
+ :operators custom-presets}
+```
+
+**Step 5: Write Tests for the Operator**
+
+```clojure
+(ns myapp.custom-operators-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [myapp.custom-operators :as custom]
+            [heretic.operators :as ops]
+            [rewrite-clj.zip :as z]))
+
+(defn- zloc-at
+  "Parse source and navigate to the form at the given coord."
+  [source coord]
+  (let [zloc (z/of-string source)]
+    (reduce (fn [z idx]
+              (let [child (z/down z)]
+                (loop [c child i 0]
+                  (cond
+                    (= i idx) c
+                    (nil? c) nil
+                    :else (recur (z/right c) (inc i))))))
+            zloc
+            coord)))
+
+(deftest test-swap-assoc-dissoc-matcher
+  (testing "Matches assoc symbol"
+    (let [zloc (zloc-at "(assoc m :key val)" [0])]
+      (is ((:matcher custom/swap-assoc-dissoc) zloc))))
+
+  (testing "Does not match dissoc symbol"
+    (let [zloc (zloc-at "(dissoc m :key)" [0])]
+      (is (not ((:matcher custom/swap-assoc-dissoc) zloc)))))
+
+  (testing "Does not match assoc-in"
+    (let [zloc (zloc-at "(assoc-in m [:a :b] val)" [0])]
+      (is (not ((:matcher custom/swap-assoc-dissoc) zloc))))))
+
+(deftest test-swap-dissoc-assoc-matcher
+  (testing "Matches dissoc symbol"
+    (let [zloc (zloc-at "(dissoc m :key)" [0])]
+      (is ((:matcher custom/swap-dissoc-assoc) zloc))))
+
+  (testing "Does not match assoc symbol"
+    (let [zloc (zloc-at "(assoc m :key val)" [0])]
+      (is (not ((:matcher custom/swap-dissoc-assoc) zloc))))))
+
+(deftest test-apply-operator-assoc-dissoc
+  (testing "Returns correct replacement"
+    (let [zloc (zloc-at "(assoc m :k v)" [0])]
+      (is (= "dissoc" (ops/apply-operator custom/swap-assoc-dissoc zloc))))
+    (let [zloc (zloc-at "(dissoc m :k)" [0])]
+      (is (= "assoc" (ops/apply-operator custom/swap-dissoc-assoc zloc))))))
+
+(deftest test-integration-with-applicable-operators
+  (testing "Custom operators are found by applicable-operators"
+    ;; Temporarily extend operators for this test
+    (let [extended (concat ops/all-operators
+                           [custom/swap-assoc-dissoc
+                            custom/swap-dissoc-assoc])]
+      (with-redefs [ops/all-operators extended]
+        (let [zloc (zloc-at "(assoc m :key val)" [0])
+              applicable (ops/applicable-operators zloc)
+              ids (set (map :id applicable))]
+          (is (contains? ids :swap-assoc-dissoc)))))))
+```
+
+#### 8.1.3 Dynamic Operators (Computed Replacements)
+
+For operators where the replacement depends on the matched value, use a function:
+
+```clojure
+(def mutate-keyword-typo
+  "Add common typo to keyword names (double letter).
+   Example: :name -> :namee"
+  {:id :mutate-keyword-typo
+   :original :dynamic
+   :replacement (fn [zloc]
+                  (let [kw (z/sexpr zloc)
+                        name-str (name kw)
+                        ;; Double the last letter
+                        new-name (str name-str (last name-str))]
+                    (if-let [ns (namespace kw)]
+                      (keyword ns new-name)
+                      (keyword new-name))))
+   :description "Add typo to keyword (double last letter)"
+   :matcher (fn [zloc]
+              (and (= :token (z/tag zloc))
+                   (keyword? (z/sexpr zloc))
+                   (> (count (name (z/sexpr zloc))) 2)))})
+```
+
+**Usage:**
+```clojure
+;; Original
+(get user :email)
+
+;; Mutated
+(get user :emaill)  ; Tests should catch if :email is expected
+```
+
+#### 8.1.4 Context-Aware Matchers
+
+Some operators need to examine the surrounding context:
+
+```clojure
+(defn- in-threading-context?
+  "Check if zloc is inside a threading macro."
+  [zloc]
+  (loop [z (z/up zloc)]
+    (when z
+      (if (and (z/list? z)
+               (contains? #{'-> '->> 'some-> 'some->>}
+                          (some-> z z/down z/sexpr)))
+        true
+        (recur (z/up z))))))
+
+(def swap-get-in-get
+  "Replace get-in with get (drops nested access).
+   Only in non-threading context where arity matters."
+  {:id :swap-get-in-get
+   :original 'get-in
+   :replacement 'get
+   :description "Replace get-in with get"
+   :matcher (fn [zloc]
+              (and (= :token (z/tag zloc))
+                   (= 'get-in (z/sexpr zloc))
+                   (not (in-threading-context? zloc))))})
+```
+
+#### 8.1.5 Best Practices for Custom Operators
+
+1. **Make matchers precise** - Avoid false positives that waste testing time
+2. **Test edge cases** - Ensure matchers handle strings, comments, and unusual syntax
+3. **Document the mutation's purpose** - Explain what bug pattern this catches
+4. **Consider arity** - Some mutations only make sense for certain arities
+5. **Use existing helpers** - `symbol-matcher` and `value-matcher` cover common cases
+6. **Group related operators** - Create presets for domain-specific mutation sets
+
+```clojure
+;; Example: Domain-specific preset for web applications
+(def web-preset
+  #{:swap-assoc-dissoc      ; Map manipulation
+    :swap-dissoc-assoc
+    :mutate-kebab-to-camel  ; JS interop
+    :mutate-camel-to-kebab
+    :swap-nil-some          ; Null safety
+    :swap-some-nil
+    :swap-get-get-in        ; Nested access
+    :swap-get-in-get})
 ```
 
 ### 8.2 Test Runner Adapters
@@ -985,6 +1386,32 @@ Extension points for custom logic:
 ### 10.1 Test Execution Isolation
 
 **Decision:** Adopt PITest's proven architecture - **Controller + Worker processes**.
+
+**Implementation:** The codebase is organized in three main modules:
+
+- **`heretic.core`** - Entry point and CLI interface. Handles configuration loading,
+  coverage collection, and mutation testing orchestration. Uses ExecutorService for
+  file-level parallelism.
+
+- **`heretic.controller`** - Pure orchestration functions following functional core /
+  imperative shell pattern. Provides:
+  - `resolve-operators` - Operator resolution from config
+  - `prepare-mutations` - Mutation generation and filtering
+  - `aggregate-results` - Result aggregation with subsumption analysis
+  - `build-test-config` - Test configuration building
+  - Coverage and timing data management
+
+- **`heretic.worker`** - Missionary-based execution with proper timeout and supervision.
+  See `docs/worker-supervision-design.md` for the full design. Key features:
+  - Reliable timeout via Missionary task cancellation (not just future abandonment)
+  - File-level parallelism with proper coordination
+  - Supervision policies: `:skip`, `:retry`, `:abort`
+  - Progress callbacks for real-time reporting
+
+This separation ensures:
+- Pure functions are easily testable and composable
+- Side effects are isolated to core.clj entry points
+- Worker module provides alternative executor with better supervision
 
 ```
 ┌─────────────────────────────────────────────────────────────┐

@@ -177,16 +177,22 @@
 (deftest test-applicable-operators-and
   (testing "Returns swap-and-or for and symbol"
     (let [zloc (zloc-at "(and a b)" [0])
-          ops (ops/applicable-operators zloc)]
-      (is (= 1 (count ops)))
-      (is (= :swap-and-or (:id (first ops)))))))
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      ;; and now matches swap-and-or and replace-and-false
+      (is (= 2 (count applicable)))
+      (is (contains? ids :swap-and-or))
+      (is (contains? ids :replace-and-false)))))
 
 (deftest test-applicable-operators-or
   (testing "Returns swap-or-and for or symbol"
     (let [zloc (zloc-at "(or a b)" [0])
-          ops (ops/applicable-operators zloc)]
-      (is (= 1 (count ops)))
-      (is (= :swap-or-and (:id (first ops)))))))
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      ;; or now matches swap-or-and and replace-or-true
+      (is (= 2 (count applicable)))
+      (is (contains? ids :swap-or-and))
+      (is (contains? ids :replace-or-true)))))
 
 (deftest test-applicable-operators-true
   (testing "Returns swap-true-false for true literal"
@@ -227,11 +233,12 @@
 
 (deftest test-all-operators-count
   (testing "all-operators contains expected count"
-    (is (= 68 (count ops/all-operators)))))
+    ;; 68 original + 8 RORG relational + 2 comparison replacement + 2 boolean replacement + 1 remove-not = 81
+    (is (= 81 (count ops/all-operators)))))
 
 (deftest test-operators-by-id
   (testing "operators-by-id contains all operators"
-    (is (= 68 (count ops/operators-by-id))))
+    (is (= 81 (count ops/operators-by-id))))
 
   (testing "Can look up operators by id"
     (is (= ops/swap-plus-minus (get ops/operators-by-id :swap-plus-minus)))
@@ -1180,3 +1187,261 @@
         (doseq [op-id op-ids]
           (is (contains? ops/operators-by-id op-id)
               (str "Operator " op-id " not found in operators-by-id")))))))
+
+;; =============================================================================
+;; RORG Relational Operator Tests
+;; =============================================================================
+
+(deftest test-swap-lt-neq-matcher
+  (testing "Matches < symbol"
+    (let [zloc (zloc-at "(< 1 2)" [0])]
+      (is ((:matcher ops/swap-lt-neq) zloc))))
+
+  (testing "Does not match other symbols"
+    (let [zloc (zloc-at "(> 1 2)" [0])]
+      (is (not ((:matcher ops/swap-lt-neq) zloc))))))
+
+(deftest test-swap-gt-neq-matcher
+  (testing "Matches > symbol"
+    (let [zloc (zloc-at "(> 1 2)" [0])]
+      (is ((:matcher ops/swap-gt-neq) zloc))))
+
+  (testing "Does not match other symbols"
+    (let [zloc (zloc-at "(< 1 2)" [0])]
+      (is (not ((:matcher ops/swap-gt-neq) zloc))))))
+
+(deftest test-swap-lte-eq-matcher
+  (testing "Matches <= symbol"
+    (let [zloc (zloc-at "(<= 1 2)" [0])]
+      (is ((:matcher ops/swap-lte-eq) zloc))))
+
+  (testing "Does not match other symbols"
+    (let [zloc (zloc-at "(>= 1 2)" [0])]
+      (is (not ((:matcher ops/swap-lte-eq) zloc))))))
+
+(deftest test-swap-gte-eq-matcher
+  (testing "Matches >= symbol"
+    (let [zloc (zloc-at "(>= 1 2)" [0])]
+      (is ((:matcher ops/swap-gte-eq) zloc))))
+
+  (testing "Does not match other symbols"
+    (let [zloc (zloc-at "(<= 1 2)" [0])]
+      (is (not ((:matcher ops/swap-gte-eq) zloc))))))
+
+(deftest test-swap-eq-lte-matcher
+  (testing "Matches = symbol"
+    (let [zloc (zloc-at "(= 1 2)" [0])]
+      (is ((:matcher ops/swap-eq-lte) zloc))))
+
+  (testing "Does not match not= symbol"
+    (let [zloc (zloc-at "(not= 1 2)" [0])]
+      (is (not ((:matcher ops/swap-eq-lte) zloc))))))
+
+(deftest test-swap-eq-gte-matcher
+  (testing "Matches = symbol"
+    (let [zloc (zloc-at "(= 1 2)" [0])]
+      (is ((:matcher ops/swap-eq-gte) zloc))))
+
+  (testing "Does not match not= symbol"
+    (let [zloc (zloc-at "(not= 1 2)" [0])]
+      (is (not ((:matcher ops/swap-eq-gte) zloc))))))
+
+(deftest test-swap-neq-lt-matcher
+  (testing "Matches not= symbol"
+    (let [zloc (zloc-at "(not= 1 2)" [0])]
+      (is ((:matcher ops/swap-neq-lt) zloc))))
+
+  (testing "Does not match = symbol"
+    (let [zloc (zloc-at "(= 1 2)" [0])]
+      (is (not ((:matcher ops/swap-neq-lt) zloc))))))
+
+(deftest test-swap-neq-gt-matcher
+  (testing "Matches not= symbol"
+    (let [zloc (zloc-at "(not= 1 2)" [0])]
+      (is ((:matcher ops/swap-neq-gt) zloc))))
+
+  (testing "Does not match = symbol"
+    (let [zloc (zloc-at "(= 1 2)" [0])]
+      (is (not ((:matcher ops/swap-neq-gt) zloc))))))
+
+(deftest test-apply-operator-rorg-relational
+  (testing "Returns correct replacement for RORG relational operators"
+    (let [zloc (zloc-at "(< 1 2)" [0])]
+      (is (= "not=" (ops/apply-operator ops/swap-lt-neq zloc))))
+    (let [zloc (zloc-at "(> 1 2)" [0])]
+      (is (= "not=" (ops/apply-operator ops/swap-gt-neq zloc))))
+    (let [zloc (zloc-at "(<= 1 2)" [0])]
+      (is (= "=" (ops/apply-operator ops/swap-lte-eq zloc))))
+    (let [zloc (zloc-at "(>= 1 2)" [0])]
+      (is (= "=" (ops/apply-operator ops/swap-gte-eq zloc))))
+    (let [zloc (zloc-at "(= 1 2)" [0])]
+      (is (= "<=" (ops/apply-operator ops/swap-eq-lte zloc)))
+      (is (= ">=" (ops/apply-operator ops/swap-eq-gte zloc))))
+    (let [zloc (zloc-at "(not= 1 2)" [0])]
+      (is (= "<" (ops/apply-operator ops/swap-neq-lt zloc)))
+      (is (= ">" (ops/apply-operator ops/swap-neq-gt zloc))))))
+
+(deftest test-applicable-operators-lt-includes-rorg
+  (testing "Returns RORG operators for < symbol"
+    (let [zloc (zloc-at "(< 1 2)" [0])
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      (is (contains? ids :swap-lt-neq))
+      (is (contains? ids :replace-comparison-false))
+      (is (contains? ids :replace-comparison-true)))))
+
+(deftest test-applicable-operators-gt-includes-rorg
+  (testing "Returns RORG operators for > symbol"
+    (let [zloc (zloc-at "(> 1 2)" [0])
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      (is (contains? ids :swap-gt-neq))
+      (is (contains? ids :replace-comparison-false))
+      (is (contains? ids :replace-comparison-true)))))
+
+(deftest test-applicable-operators-eq-includes-rorg
+  (testing "Returns RORG operators for = symbol"
+    (let [zloc (zloc-at "(= 1 2)" [0])
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      (is (contains? ids :swap-eq-lte))
+      (is (contains? ids :swap-eq-gte))
+      (is (contains? ids :replace-comparison-false))
+      (is (contains? ids :replace-comparison-true)))))
+
+(deftest test-applicable-operators-neq-includes-rorg
+  (testing "Returns RORG operators for not= symbol"
+    (let [zloc (zloc-at "(not= 1 2)" [0])
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      (is (contains? ids :swap-neq-lt))
+      (is (contains? ids :swap-neq-gt))
+      (is (contains? ids :replace-comparison-false))
+      (is (contains? ids :replace-comparison-true)))))
+
+;; =============================================================================
+;; RORG Comparison Replacement Operator Tests
+;; =============================================================================
+
+(deftest test-replace-comparison-false-matcher
+  (testing "Matches all comparison operator symbols"
+    (doseq [op ['< '> '<= '>= '= 'not=]]
+      (let [zloc (zloc-at (str "(" op " 1 2)") [0])]
+        (is ((:matcher ops/replace-comparison-false) zloc)
+            (str "Should match " op)))))
+
+  (testing "Does not match non-comparison symbols"
+    (let [zloc (zloc-at "(+ 1 2)" [0])]
+      (is (not ((:matcher ops/replace-comparison-false) zloc))))))
+
+(deftest test-replace-comparison-true-matcher
+  (testing "Matches all comparison operator symbols"
+    (doseq [op ['< '> '<= '>= '= 'not=]]
+      (let [zloc (zloc-at (str "(" op " 1 2)") [0])]
+        (is ((:matcher ops/replace-comparison-true) zloc)
+            (str "Should match " op)))))
+
+  (testing "Does not match non-comparison symbols"
+    (let [zloc (zloc-at "(+ 1 2)" [0])]
+      (is (not ((:matcher ops/replace-comparison-true) zloc))))))
+
+(deftest test-apply-operator-comparison-replacement
+  (testing "Returns correct replacement for comparison replacement operators"
+    (let [zloc (zloc-at "(< 1 2)" [0])]
+      (is (= "false" (ops/apply-operator ops/replace-comparison-false zloc)))
+      (is (= "true" (ops/apply-operator ops/replace-comparison-true zloc))))))
+
+;; =============================================================================
+;; RORG Boolean Replacement Operator Tests
+;; =============================================================================
+
+(deftest test-replace-and-false-matcher
+  (testing "Matches and symbol"
+    (let [zloc (zloc-at "(and true false)" [0])]
+      (is ((:matcher ops/replace-and-false) zloc))))
+
+  (testing "Does not match or symbol"
+    (let [zloc (zloc-at "(or true false)" [0])]
+      (is (not ((:matcher ops/replace-and-false) zloc))))))
+
+(deftest test-replace-or-true-matcher
+  (testing "Matches or symbol"
+    (let [zloc (zloc-at "(or true false)" [0])]
+      (is ((:matcher ops/replace-or-true) zloc))))
+
+  (testing "Does not match and symbol"
+    (let [zloc (zloc-at "(and true false)" [0])]
+      (is (not ((:matcher ops/replace-or-true) zloc))))))
+
+(deftest test-apply-operator-boolean-replacement
+  (testing "Returns correct replacement for boolean replacement operators"
+    (let [and-zloc (zloc-at "(and true false)" [0])
+          or-zloc (zloc-at "(or true false)" [0])]
+      (is (= "false" (ops/apply-operator ops/replace-and-false and-zloc)))
+      (is (= "true" (ops/apply-operator ops/replace-or-true or-zloc))))))
+
+(deftest test-applicable-operators-and-includes-rorg
+  (testing "Returns RORG operators for and symbol"
+    (let [zloc (zloc-at "(and true false)" [0])
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      (is (contains? ids :swap-and-or))
+      (is (contains? ids :replace-and-false)))))
+
+(deftest test-applicable-operators-or-includes-rorg
+  (testing "Returns RORG operators for or symbol"
+    (let [zloc (zloc-at "(or true false)" [0])
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      (is (contains? ids :swap-or-and))
+      (is (contains? ids :replace-or-true)))))
+
+;; =============================================================================
+;; RORG Not Removal Operator Tests
+;; =============================================================================
+
+(deftest test-remove-not-matcher
+  (testing "Matches not symbol"
+    (let [zloc (zloc-at "(not true)" [0])]
+      (is ((:matcher ops/remove-not) zloc))))
+
+  (testing "Does not match other symbols"
+    (let [zloc (zloc-at "(and true false)" [0])]
+      (is (not ((:matcher ops/remove-not) zloc))))))
+
+(deftest test-apply-operator-remove-not
+  (testing "Returns identity as replacement for not"
+    (let [zloc (zloc-at "(not true)" [0])]
+      (is (= "identity" (ops/apply-operator ops/remove-not zloc))))))
+
+(deftest test-applicable-operators-not-includes-remove
+  (testing "Returns remove-not for not symbol"
+    (let [zloc (zloc-at "(not x)" [0])
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      (is (contains? ids :remove-not)))))
+
+;; =============================================================================
+;; RORG Operator Registry Tests
+;; =============================================================================
+
+(deftest test-all-operators-includes-rorg
+  (testing "all-operators contains all RORG operators"
+    (let [ids (set (map :id ops/all-operators))]
+      ;; RORG relational
+      (is (contains? ids :swap-lt-neq))
+      (is (contains? ids :swap-gt-neq))
+      (is (contains? ids :swap-lte-eq))
+      (is (contains? ids :swap-gte-eq))
+      (is (contains? ids :swap-eq-lte))
+      (is (contains? ids :swap-eq-gte))
+      (is (contains? ids :swap-neq-lt))
+      (is (contains? ids :swap-neq-gt))
+      ;; RORG comparison replacement
+      (is (contains? ids :replace-comparison-false))
+      (is (contains? ids :replace-comparison-true))
+      ;; RORG boolean replacement
+      (is (contains? ids :replace-and-false))
+      (is (contains? ids :replace-or-true))
+      ;; RORG not removal
+      (is (contains? ids :remove-not)))))

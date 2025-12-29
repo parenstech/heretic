@@ -406,3 +406,183 @@
       (is (true? (:skip result)))
       (is (= :killed (:inferred-status result)))
       (is (= :unchanged-killer (:reason result))))))
+
+;; =============================================================================
+;; Subsumption Graph Tests
+;; =============================================================================
+
+(deftest subsumption-graph-exists-test
+  (testing "Subsumption graph is defined and non-empty"
+    (is (map? sub/subsumption-graph))
+    (is (pos? (count sub/subsumption-graph)))))
+
+(deftest subsumption-graph-structure-test
+  (testing "Graph values are sets"
+    (doseq [[k v] sub/subsumption-graph]
+      (is (keyword? k) (str "Key " k " should be a keyword"))
+      (is (set? v) (str "Value for " k " should be a set")))))
+
+;; =============================================================================
+;; dominated-operators Tests
+;; =============================================================================
+
+(deftest dominated-operators-returns-set-test
+  (testing "Returns a set for known operators"
+    (is (set? (sub/dominated-operators :swap-lt-lte)))
+    (is (set? (sub/dominated-operators :swap-plus-minus)))))
+
+(deftest dominated-operators-unknown-returns-empty-test
+  (testing "Returns empty set for unknown operators"
+    (is (= #{} (sub/dominated-operators :unknown-operator)))))
+
+(deftest dominated-operators-relational-test
+  (testing "Relational operators have correct dominance"
+    ;; swap-lt-lte dominates swap-lt-gt (boundary catches simple swap)
+    (is (contains? (sub/dominated-operators :swap-lt-lte) :swap-lt-gt))
+    ;; swap-gt-gte dominates swap-gt-lt
+    (is (contains? (sub/dominated-operators :swap-gt-gte) :swap-gt-lt))))
+
+(deftest dominated-operators-boolean-test
+  (testing "Boolean operators have correct dominance"
+    ;; replace-and-false dominates swap-and-or
+    (is (contains? (sub/dominated-operators :replace-and-false) :swap-and-or))
+    ;; replace-or-true dominates swap-or-and
+    (is (contains? (sub/dominated-operators :replace-or-true) :swap-or-and))))
+
+;; =============================================================================
+;; dominating-operators Tests
+;; =============================================================================
+
+(deftest dominating-operators-returns-set-test
+  (testing "Returns a set"
+    (is (set? (sub/dominating-operators :swap-lt-gt)))))
+
+(deftest dominating-operators-relational-test
+  (testing "Relational operators have correct reverse dominance"
+    ;; swap-lt-gt is dominated by swap-lt-lte
+    (is (contains? (sub/dominating-operators :swap-lt-gt) :swap-lt-lte))
+    ;; swap-and-or is dominated by replace-and-false
+    (is (contains? (sub/dominating-operators :swap-and-or) :replace-and-false))))
+
+(deftest dominating-operators-minimal-have-none-test
+  (testing "Minimal operators have no dominators"
+    ;; Arithmetic operators are minimal - no dominators
+    (is (empty? (sub/dominating-operators :swap-plus-minus)))
+    (is (empty? (sub/dominating-operators :swap-mult-div)))))
+
+;; =============================================================================
+;; all-dominated-operators Tests
+;; =============================================================================
+
+(deftest all-dominated-operators-transitive-test
+  (testing "Returns transitive closure of dominated operators"
+    ;; If A dominates B and B dominates C, all-dominated(A) should include C
+    (let [dominated (sub/all-dominated-operators :replace-comparison-false)]
+      ;; replace-comparison-false should transitively dominate many operators
+      (is (set? dominated)))))
+
+(deftest all-dominated-operators-excludes-self-test
+  (testing "Does not include the operator itself"
+    (let [dominated (sub/all-dominated-operators :swap-lt-lte)]
+      (is (not (contains? dominated :swap-lt-lte))))))
+
+;; =============================================================================
+;; minimal-operator-set Tests
+;; =============================================================================
+
+(deftest minimal-operator-set-reduces-operators-test
+  (testing "Reduces operator set by removing dominated operators"
+    (let [input #{:swap-lt-lte :swap-lt-gt}  ; swap-lt-lte dominates swap-lt-gt
+          minimal (sub/minimal-operator-set input)]
+      ;; Should keep swap-lt-lte (dominator) and remove swap-lt-gt (dominated)
+      (is (contains? minimal :swap-lt-lte))
+      (is (not (contains? minimal :swap-lt-gt))))))
+
+(deftest minimal-operator-set-keeps-unrelated-test
+  (testing "Keeps unrelated operators"
+    (let [input #{:swap-plus-minus :swap-mult-div}  ; No dominance relationship
+          minimal (sub/minimal-operator-set input)]
+      ;; Both should be kept - neither dominates the other
+      (is (= input minimal)))))
+
+(deftest minimal-operator-set-boolean-example-test
+  (testing "Boolean subsumption works correctly"
+    (let [input #{:replace-and-false :swap-and-or}
+          minimal (sub/minimal-operator-set input)]
+      ;; replace-and-false dominates swap-and-or
+      (is (contains? minimal :replace-and-false))
+      (is (not (contains? minimal :swap-and-or))))))
+
+(deftest minimal-operator-set-empty-returns-empty-test
+  (testing "Empty input returns empty output"
+    (is (= #{} (sub/minimal-operator-set #{})))))
+
+(deftest minimal-operator-set-no-arg-returns-all-roots-test
+  (testing "No-arg version returns roots of full graph"
+    (let [minimal (sub/minimal-operator-set)]
+      (is (set? minimal))
+      (is (pos? (count minimal))))))
+
+;; =============================================================================
+;; operator-subsumption-chains Tests
+;; =============================================================================
+
+(deftest operator-subsumption-chains-returns-map-test
+  (testing "Returns a map of chains"
+    (let [chains (sub/operator-subsumption-chains)]
+      (is (map? chains)))))
+
+(deftest operator-subsumption-chains-values-are-vectors-test
+  (testing "Chain values are vectors starting with root"
+    (let [chains (sub/operator-subsumption-chains)]
+      (doseq [[root chain] chains]
+        (is (vector? chain))
+        (is (= root (first chain)))))))
+
+;; =============================================================================
+;; operator-categories Tests
+;; =============================================================================
+
+(deftest operator-categories-defined-test
+  (testing "All expected categories are defined"
+    (is (contains? sub/operator-categories :relational))
+    (is (contains? sub/operator-categories :arithmetic))
+    (is (contains? sub/operator-categories :boolean))
+    (is (contains? sub/operator-categories :collection))
+    (is (contains? sub/operator-categories :nil-handling))
+    (is (contains? sub/operator-categories :threading))))
+
+(deftest operator-categories-values-are-sets-test
+  (testing "Category values are sets of keywords"
+    (doseq [[_cat ops] sub/operator-categories]
+      (is (set? ops))
+      (is (every? keyword? ops)))))
+
+;; =============================================================================
+;; minimal-preset-operators Tests
+;; =============================================================================
+
+(deftest minimal-preset-operators-defined-test
+  (testing "Minimal preset operators is a non-empty set"
+    (is (set? sub/minimal-preset-operators))
+    (is (pos? (count sub/minimal-preset-operators)))))
+
+(deftest minimal-preset-includes-key-operators-test
+  (testing "Minimal preset includes essential operators"
+    ;; Arithmetic
+    (is (contains? sub/minimal-preset-operators :swap-plus-minus))
+    ;; Relational RORG
+    (is (contains? sub/minimal-preset-operators :swap-lt-lte))
+    (is (contains? sub/minimal-preset-operators :replace-comparison-false))
+    ;; Boolean
+    (is (contains? sub/minimal-preset-operators :swap-and-or))
+    (is (contains? sub/minimal-preset-operators :remove-not))
+    ;; Nil-handling
+    (is (contains? sub/minimal-preset-operators :swap-nil-some))))
+
+(deftest minimal-preset-excludes-dominated-test
+  (testing "Minimal preset excludes dominated operators"
+    ;; swap-lt-gt is dominated by swap-lt-lte, should not be in minimal
+    (is (not (contains? sub/minimal-preset-operators :swap-lt-gt)))
+    ;; swap-gt-lt is dominated by swap-gt-gte
+    (is (not (contains? sub/minimal-preset-operators :swap-gt-lt)))))

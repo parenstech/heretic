@@ -228,6 +228,76 @@
    :description "Replace not= with ="
    :matcher (symbol-matcher 'not=)})
 
+;; RORG relational operators (< to other comparisons)
+(def swap-lt-neq
+  "Replace < with not= (RORG mutation)"
+  {:id :swap-lt-neq
+   :original '<
+   :replacement 'not=
+   :description "Replace < with not="
+   :matcher (symbol-matcher '<)})
+
+;; RORG relational operators (> to other comparisons)
+(def swap-gt-neq
+  "Replace > with not= (RORG mutation)"
+  {:id :swap-gt-neq
+   :original '>
+   :replacement 'not=
+   :description "Replace > with not="
+   :matcher (symbol-matcher '>)})
+
+;; RORG relational operators (<= to other comparisons)
+(def swap-lte-eq
+  "Replace <= with = (RORG mutation)"
+  {:id :swap-lte-eq
+   :original '<=
+   :replacement '=
+   :description "Replace <= with ="
+   :matcher (symbol-matcher '<=)})
+
+;; RORG relational operators (>= to other comparisons)
+(def swap-gte-eq
+  "Replace >= with = (RORG mutation)"
+  {:id :swap-gte-eq
+   :original '>=
+   :replacement '=
+   :description "Replace >= with ="
+   :matcher (symbol-matcher '>=)})
+
+;; RORG relational operators (= to other comparisons)
+(def swap-eq-lte
+  "Replace = with <= (RORG mutation)"
+  {:id :swap-eq-lte
+   :original '=
+   :replacement '<=
+   :description "Replace = with <="
+   :matcher (symbol-matcher '=)})
+
+(def swap-eq-gte
+  "Replace = with >= (RORG mutation)"
+  {:id :swap-eq-gte
+   :original '=
+   :replacement '>=
+   :description "Replace = with >="
+   :matcher (symbol-matcher '=)})
+
+;; RORG relational operators (not= to other comparisons)
+(def swap-neq-lt
+  "Replace not= with < (RORG mutation)"
+  {:id :swap-neq-lt
+   :original 'not=
+   :replacement '<
+   :description "Replace not= with <"
+   :matcher (symbol-matcher 'not=)})
+
+(def swap-neq-gt
+  "Replace not= with > (RORG mutation)"
+  {:id :swap-neq-gt
+   :original 'not=
+   :replacement '>
+   :description "Replace not= with >"
+   :matcher (symbol-matcher 'not=)})
+
 ;; Boundary mutations (off-by-one errors)
 (def swap-lt-lte
   "Replace < with <= (boundary mutation)"
@@ -260,6 +330,78 @@
    :replacement '>
    :description "Replace >= with >"
    :matcher (symbol-matcher '>=)})
+
+;; =============================================================================
+;; RORG Comparison Replacement Operators
+;; =============================================================================
+;; These replace comparison operators with boolean constants (true/false)
+
+(def comparison-symbols
+  "Set of comparison operator symbols."
+  #{'< '> '<= '>= '= 'not=})
+
+(defn- comparison-matcher
+  "Create a matcher that matches any comparison operator symbol."
+  []
+  (fn [zloc]
+    (and (= :token (z/tag zloc))
+         (symbol? (z/sexpr zloc))
+         (contains? comparison-symbols (z/sexpr zloc)))))
+
+(def replace-comparison-false
+  "Replace comparison operator with false (RORG mutation).
+   Used in subsumption: if (< x y) -> false is killed, tests are thorough."
+  {:id :replace-comparison-false
+   :original :dynamic
+   :replacement false
+   :description "Replace comparison with false"
+   :matcher (comparison-matcher)})
+
+(def replace-comparison-true
+  "Replace comparison operator with true (RORG mutation).
+   Used in subsumption: if (<= x y) -> true is killed, tests are thorough."
+  {:id :replace-comparison-true
+   :original :dynamic
+   :replacement true
+   :description "Replace comparison with true"
+   :matcher (comparison-matcher)})
+
+;; =============================================================================
+;; RORG Boolean Replacement Operators
+;; =============================================================================
+
+(def replace-and-false
+  "Replace and with false (RORG mutation).
+   Subsumption: if (and a b) -> false is killed, the 'and' is tested."
+  {:id :replace-and-false
+   :original 'and
+   :replacement false
+   :description "Replace and with false"
+   :matcher (symbol-matcher 'and)})
+
+(def replace-or-true
+  "Replace or with true (RORG mutation).
+   Subsumption: if (or a b) -> true is killed, the 'or' is tested."
+  {:id :replace-or-true
+   :original 'or
+   :replacement true
+   :description "Replace or with true"
+   :matcher (symbol-matcher 'or)})
+
+;; =============================================================================
+;; RORG Not Removal Operator
+;; =============================================================================
+
+(def remove-not
+  "Remove not by replacing with identity-like behavior.
+   This replaces the 'not' symbol, causing (not x) to become (identity x).
+   Note: The mutation infrastructure replaces just the symbol, so (not x)
+   becomes (identity x) which returns x unchanged."
+  {:id :remove-not
+   :original 'not
+   :replacement 'identity
+   :description "Replace not with identity (removes negation)"
+   :matcher (symbol-matcher 'not)})
 
 ;; =============================================================================
 ;; Phase 3.3: Threading Operators
@@ -735,6 +877,10 @@
    swap-or-and
    swap-true-false
    swap-false-true
+   ;; RORG Boolean (subsumption operators)
+   replace-and-false
+   replace-or-true
+   remove-not
    ;; Comparison
    swap-lt-gt
    swap-gt-lt
@@ -742,11 +888,23 @@
    swap-gte-lte
    swap-eq-neq
    swap-neq-eq
+   ;; RORG Relational (subsumption operators)
+   swap-lt-neq
+   swap-gt-neq
+   swap-lte-eq
+   swap-gte-eq
+   swap-eq-lte
+   swap-eq-gte
+   swap-neq-lt
+   swap-neq-gt
    ;; Boundary
    swap-lt-lte
    swap-gt-gte
    swap-lte-lt
    swap-gte-gt
+   ;; RORG Comparison Replacement
+   replace-comparison-false
+   replace-comparison-true
    ;; Threading
    swap-thread-first-last
    swap-thread-last-first
@@ -817,6 +975,11 @@
 (def presets
   "Predefined operator sets for different mutation testing strategies.
 
+   :minimal - Uses subsumption analysis to select only dominating operators.
+              Based on RORG research, achieves ~99% fault detection with ~40%
+              fewer mutations. Best when you want efficiency without sacrificing
+              quality. See heretic.subsumption/minimal-preset-operators.
+
    :fast - ~15 high-impact operators that research shows catch ~99% of bugs.
            Includes core arithmetic, comparison, and boolean operators.
            Best for quick feedback during development.
@@ -827,7 +990,46 @@
 
    :comprehensive - All available operators for thorough mutation testing.
                     Use when you want maximum coverage and have time budget."
-  {:fast
+  {:minimal
+   ;; Subsumption-aware minimal set - see heretic.subsumption for details
+   ;; Arithmetic - inverse operations only
+   #{:swap-plus-minus
+     :swap-minus-plus
+     :swap-mult-div
+     :swap-div-mult
+     ;; Relational - RORG minimal set
+     :swap-lt-lte
+     :swap-lt-neq
+     :swap-gt-gte
+     :swap-gt-neq
+     :swap-lte-lt
+     :swap-lte-eq
+     :swap-gte-gt
+     :swap-gte-eq
+     :swap-eq-lte
+     :swap-eq-gte
+     :swap-neq-lt
+     :swap-neq-gt
+     :replace-comparison-false
+     :replace-comparison-true
+     ;; Boolean - logic + extreme
+     :swap-and-or
+     :swap-or-and
+     :replace-and-false
+     :replace-or-true
+     :remove-not
+     ;; Collection - essential operations
+     :swap-first-last
+     :swap-last-first
+     :swap-rest-next
+     :swap-next-rest
+     ;; Nil-handling
+     :swap-nil-some
+     :swap-some-nil
+     :swap-seq-empty
+     :swap-empty-seq}
+
+   :fast
    ;; Core arithmetic (catches off-by-one, sign errors)
    #{:swap-plus-minus
      :swap-minus-plus

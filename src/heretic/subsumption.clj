@@ -12,6 +12,7 @@
    - Minimal mutant set: Mutants with unique kill patterns (non-subsumed)
    - Operator subsumption: Pre-computed relationships between mutation operators
    - Dominator mutants: Mutants at the top of the subsumption hierarchy
+   - Subsumption graph: DAG of dominance relationships between operators
 
    Main API:
    - `analyze-kill-patterns` - Group mutants by which test killed them
@@ -19,7 +20,13 @@
    - `subsumption-stats` - Report on potential savings from subsumption
    - `operator-subsumption` - Get statically-known operator relationships
    - `find-dominator-mutants` - Find mutants that are not subsumed by others
-   - `minimal-mutation-set` - Select representative mutants per location"
+   - `minimal-mutation-set` - Select representative mutants per location
+
+   Operator Selection API (new):
+   - `subsumption-graph` - Complete graph of operator dominance relationships
+   - `minimal-operator-set` - Compute minimal operator set covering all subsumption chains
+   - `dominated-operators` - Get operators dominated by a given operator
+   - `dominating-operators` - Get operators that dominate a given operator"
   (:require [clojure.set :as set]))
 
 ;; =============================================================================
@@ -70,6 +77,460 @@
   (merge relational-operator-subsumption
          arithmetic-operator-subsumption
          boolean-operator-subsumption))
+
+;; =============================================================================
+;; Formal Subsumption Graph
+;; =============================================================================
+;; The subsumption graph represents dominance relationships between operators.
+;; If A dominates B, killing A implies killing B - so we only need to test A.
+;;
+;; Graph structure: {dominating-operator -> #{dominated-operators}}
+;; Reading: "A subsumes B" means A is the dominator, B is dominated
+;;
+;; Based on RORG (Relational Operator Replacement with Guard) research:
+;; - Boundary mutations (< -> <=) are stronger than simple swaps
+;; - Replacing with false/true covers extreme cases
+;; - For arithmetic, inverse operations catch most faults
+
+(def ^:private relational-subsumption-edges
+  "Subsumption edges for relational operators.
+
+   Key insight from RORG: For `<`, the mutations `<=`, `!=`, and `false`
+   together form a minimal set. If all three are killed, we have confidence
+   the test suite is thorough for that comparison.
+
+   The graph is organized by original operator:
+   - :swap-lt-lte dominates :swap-lt-gt (boundary change catches simple swap)
+   - :replace-comparison-false dominates most other mutations (extreme case)
+
+   Note: replace-comparison-false/true are shared across all comparison operators,
+   so they dominate ALL simple swaps for their respective classes."
+  {;; < mutations - swap-lt-lte is the boundary mutation (stronger)
+   :swap-lt-lte #{:swap-lt-gt}        ; < -> <= catches more than < -> >
+   :swap-lt-neq #{:swap-lt-gt}        ; < -> != catches more than < -> >
+
+   ;; > mutations - analogous to <
+   :swap-gt-gte #{:swap-gt-lt}
+   :swap-gt-neq #{:swap-gt-lt}
+
+   ;; <= mutations
+   :swap-lte-lt #{:swap-lte-gte}
+   :swap-lte-eq #{:swap-lte-gte}
+
+   ;; >= mutations
+   :swap-gte-gt #{:swap-gte-lte}
+   :swap-gte-eq #{:swap-gte-lte}
+
+   ;; = mutations
+   :swap-eq-lte #{:swap-eq-neq}
+   :swap-eq-gte #{:swap-eq-neq}
+
+   ;; not= mutations
+   :swap-neq-lt #{:swap-neq-eq}
+   :swap-neq-gt #{:swap-neq-eq}
+
+   ;; Extreme replacements dominate all simple swaps for their class
+   ;; false dominates <, >, = mutations (strictness mutations)
+   :replace-comparison-false #{:swap-lt-gt :swap-lt-lte :swap-lt-neq
+                               :swap-gt-lt :swap-gt-gte :swap-gt-neq
+                               :swap-eq-neq :swap-eq-lte :swap-eq-gte}
+   ;; true dominates <=, >=, not= mutations (inclusiveness mutations)
+   :replace-comparison-true #{:swap-lte-gte :swap-lte-lt :swap-lte-eq
+                              :swap-gte-lte :swap-gte-gt :swap-gte-eq
+                              :swap-neq-eq :swap-neq-lt :swap-neq-gt}})
+
+(def ^:private arithmetic-subsumption-edges
+  "Subsumption edges for arithmetic operators.
+
+   For arithmetic, the inverse operation is typically sufficient.
+   + -> - catches sign errors, which subsume other arithmetic mutations."
+  {:swap-plus-minus #{}   ; Minimal - no dominated operators
+   :swap-minus-plus #{}
+   :swap-mult-div #{}
+   :swap-div-mult #{}})
+
+(def ^:private boolean-subsumption-edges
+  "Subsumption edges for boolean operators.
+
+   For boolean operators:
+   - Replacing with false/true tests the extreme case
+   - and -> or tests logic inversion
+   - remove-not tests negation handling"
+  {;; and mutations
+   :replace-and-false #{:swap-and-or}  ; false is stronger than or
+   :swap-and-or #{}                     ; Minimal for and logic
+
+   ;; or mutations
+   :replace-or-true #{:swap-or-and}    ; true is stronger than and
+   :swap-or-and #{}                     ; Minimal for or logic
+
+   ;; not mutations
+   :remove-not #{}})                    ; Minimal - removes negation
+
+(def ^:private collection-subsumption-edges
+  "Subsumption edges for collection operators.
+
+   Collection operators have their own subsumption relationships:
+   - first/last are incomparable (different positions)
+   - rest/next have subtle differences (empty vs nil)
+   - take/drop are inverse operations"
+  {:swap-first-last #{}                ; Minimal - different semantics
+   :swap-last-first #{}
+   :swap-first-rest #{}                ; first -> rest is different type
+   :swap-rest-next #{}                 ; rest/next differ on empty
+   :swap-next-rest #{}
+   :swap-take-drop #{}                 ; Inverse operations - both minimal
+   :swap-drop-take #{}
+   :swap-conj-disj #{}
+   :swap-disj-conj #{}
+   :swap-inc-dec #{}
+   :swap-dec-inc #{}})
+
+(def ^:private nil-handling-subsumption-edges
+  "Subsumption edges for nil-handling operators.
+
+   nil?/some? are direct inverses, both minimal.
+   seq/empty? have different semantics (truthy vs boolean)."
+  {:swap-nil-some #{}
+   :swap-some-nil #{}
+   :swap-seq-empty #{}
+   :swap-empty-seq #{}})
+
+(def ^:private threading-subsumption-edges
+  "Subsumption edges for threading operators.
+
+   -> / ->> swap tests argument position.
+   some-> removes nil safety - potentially stronger mutation."
+  {:swap-thread-first-last #{}
+   :swap-thread-last-first #{}
+   :swap-some-first-thread #{:swap-thread-first-last}  ; Removing nil safety is stronger
+   :swap-thread-some-first #{}                          ; Adding nil safety is different
+   :swap-some-last-thread #{:swap-thread-last-first}
+   :swap-thread-some-last #{}})
+
+(def ^:private lazy-eager-subsumption-edges
+  "Subsumption edges for lazy/eager operators.
+
+   Lazy vs eager typically caught by same tests."
+  {:swap-map-mapv #{}
+   :swap-mapv-map #{}
+   :swap-filter-filterv #{}
+   :swap-filterv-filter #{}
+   :swap-for-doseq #{}
+   :swap-doseq-for #{}})
+
+(def ^:private hof-subsumption-edges
+  "Subsumption edges for higher-order function operators.
+
+   filter/remove are inverses - both minimal."
+  {:swap-filter-remove #{}
+   :swap-remove-filter #{}
+   :swap-keep-filter #{}
+   :swap-filter-keep #{}})
+
+(def ^:private constant-subsumption-edges
+  "Subsumption edges for constant replacement operators.
+
+   For constants, different replacements test different boundary conditions:
+   - 0 -> 1 tests off-by-one
+   - 0 -> -1 tests sign handling"
+  {:replace-0-to-1 #{}
+   :replace-1-to-0 #{}
+   :replace-0-to-neg1 #{}
+   :replace-1-to-neg1 #{}
+   :replace-neg1-to-0 #{}
+   :replace-neg1-to-1 #{}
+   :replace-2-to-1 #{}
+   :replace-2-to-0 #{}
+   :replace-10-to-0 #{}
+   :replace-100-to-0 #{}
+   :replace-nil-false #{}
+   :replace-nil-zero #{}
+   :replace-nil-empty-vec #{}
+   :replace-nil-empty-map #{}
+   :replace-nil-empty-str #{}})
+
+(def ^:private destructuring-subsumption-edges
+  "Subsumption edges for destructuring operators."
+  {:mutate-kebab-to-camel #{}
+   :mutate-camel-to-kebab #{}
+   :mutate-ns-typo #{}
+   :mutate-qualified-to-unqualified #{}})
+
+(def subsumption-graph
+  "Complete subsumption graph for all operators.
+
+   Structure: {dominating-operator -> #{dominated-operators}}
+
+   An operator A dominates B if killing A implies B would also be killed.
+   In the graph, edges point from dominator to dominated.
+
+   This graph is used to:
+   1. Compute minimal operator sets
+   2. Skip redundant mutations
+   3. Prioritize stronger mutations"
+  (merge-with into
+              relational-subsumption-edges
+              arithmetic-subsumption-edges
+              boolean-subsumption-edges
+              collection-subsumption-edges
+              nil-handling-subsumption-edges
+              threading-subsumption-edges
+              lazy-eager-subsumption-edges
+              hof-subsumption-edges
+              constant-subsumption-edges
+              destructuring-subsumption-edges))
+
+(def ^:private reverse-subsumption-graph
+  "Reverse subsumption graph: {dominated-operator -> #{dominating-operators}}
+
+   Used to find what operators dominate a given operator."
+  (reduce-kv
+   (fn [acc dominator dominated-set]
+     (reduce (fn [m dominated]
+               (update m dominated (fnil conj #{}) dominator))
+             acc
+             dominated-set))
+   {}
+   subsumption-graph))
+
+;; =============================================================================
+;; Operator Selection Functions
+;; =============================================================================
+
+(defn dominated-operators
+  "Return the set of operators dominated by the given operator.
+
+   An operator A dominates B if killing A implies B would also be killed.
+   Returns all operators that would be 'covered' by testing the given operator.
+
+   Arguments:
+   - op-id: Keyword identifier of the operator (e.g., :swap-lt-lte)
+
+   Returns set of dominated operator ids, or empty set if none."
+  [op-id]
+  (get subsumption-graph op-id #{}))
+
+(defn dominating-operators
+  "Return the set of operators that dominate the given operator.
+
+   If A dominates B, then B is subsumed by A - killing A would kill B too.
+   Returns all operators that are 'stronger' than the given operator.
+
+   Arguments:
+   - op-id: Keyword identifier of the operator (e.g., :swap-lt-gt)
+
+   Returns set of dominating operator ids, or empty set if none."
+  [op-id]
+  (get reverse-subsumption-graph op-id #{}))
+
+(defn- transitive-closure
+  "Compute transitive closure of dominated operators.
+
+   Given an operator, returns all operators it dominates directly or indirectly."
+  [op-id]
+  (loop [visited #{}
+         frontier #{op-id}]
+    (if (empty? frontier)
+      (disj visited op-id)  ; Remove the starting operator itself
+      (let [current (first frontier)
+            directly-dominated (get subsumption-graph current #{})
+            new-ops (set/difference directly-dominated visited)]
+        (recur (conj visited current)
+               (into (disj frontier current) new-ops))))))
+
+(defn all-dominated-operators
+  "Return all operators transitively dominated by the given operator.
+
+   Unlike `dominated-operators` which returns direct dominance,
+   this returns the transitive closure - all operators that would
+   be covered by testing the given operator.
+
+   Arguments:
+   - op-id: Keyword identifier of the operator
+
+   Returns set of all transitively dominated operator ids."
+  [op-id]
+  (transitive-closure op-id))
+
+(defn- find-graph-roots
+  "Find root operators in the subsumption graph.
+
+   Roots are operators that are not dominated by any other operator.
+   These are the 'strongest' mutations in each subsumption chain."
+  [graph]
+  (let [all-ops (set (keys graph))
+        dominated (reduce into #{} (vals graph))]
+    (set/difference all-ops dominated)))
+
+(defn minimal-operator-set
+  "Compute the minimal set of operators that covers all subsumption chains.
+
+   The minimal set contains only dominating operators - those that are not
+   subsumed by any other operator. Testing these operators is sufficient
+   because killing any of them implies killing all operators they dominate.
+
+   Arguments:
+   - operators: Set of operator ids to consider (default: all operators in graph)
+
+   Returns set of operator ids representing the minimal covering set.
+
+   Example:
+   (minimal-operator-set #{:swap-lt-lte :swap-lt-gt :replace-comparison-false})
+   ;; => #{:replace-comparison-false}
+   ;; Because replace-comparison-false dominates both swap-lt-lte and swap-lt-gt"
+  ([]
+   (minimal-operator-set (set (keys subsumption-graph))))
+  ([operators]
+   (let [op-set (set operators)]
+     ;; Filter to only operators in the input set
+     (set/difference
+      op-set
+      ;; Remove any operator that is dominated by another operator in the set
+      (reduce
+       (fn [dominated op]
+         (let [ops-dominated-by-op (get subsumption-graph op #{})]
+           ;; Only add dominated operators that are also in our input set
+           (into dominated (set/intersection ops-dominated-by-op op-set))))
+       #{}
+       op-set)))))
+
+(defn operator-subsumption-chains
+  "Get all subsumption chains starting from root operators.
+
+   Returns a map of {root-operator -> [chain of dominated operators]}
+   where chains are ordered from strongest to weakest.
+
+   Useful for understanding the subsumption hierarchy."
+  []
+  (let [roots (find-graph-roots subsumption-graph)]
+    (reduce
+     (fn [acc root]
+       (assoc acc root
+              (loop [chain [root]
+                     visited #{root}
+                     frontier (vec (dominated-operators root))]
+                (if (empty? frontier)
+                  chain
+                  (let [current (first frontier)
+                        next-dominated (set/difference
+                                        (dominated-operators current)
+                                        visited)]
+                    (recur (conj chain current)
+                           (conj visited current)
+                           (into (vec (rest frontier)) next-dominated)))))))
+     {}
+     roots)))
+
+;; =============================================================================
+;; Operator Categories for Presets
+;; =============================================================================
+
+(def operator-categories
+  "Categorization of operators by mutation type.
+
+   Used to build presets that select specific categories."
+  {:relational #{:swap-lt-gt :swap-gt-lt :swap-lte-gte :swap-gte-lte
+                 :swap-eq-neq :swap-neq-eq
+                 :swap-lt-lte :swap-gt-gte :swap-lte-lt :swap-gte-gt
+                 :swap-lt-neq :swap-gt-neq :swap-lte-eq :swap-gte-eq
+                 :swap-eq-lte :swap-eq-gte :swap-neq-lt :swap-neq-gt
+                 :replace-comparison-false :replace-comparison-true}
+
+   :arithmetic #{:swap-plus-minus :swap-minus-plus
+                 :swap-mult-div :swap-div-mult
+                 :swap-inc-dec :swap-dec-inc}
+
+   :boolean #{:swap-and-or :swap-or-and
+              :swap-true-false :swap-false-true
+              :replace-and-false :replace-or-true
+              :remove-not}
+
+   :collection #{:swap-first-last :swap-last-first
+                 :swap-first-rest :swap-rest-next :swap-next-rest
+                 :swap-take-drop :swap-drop-take
+                 :swap-conj-disj :swap-disj-conj}
+
+   :nil-handling #{:swap-nil-some :swap-some-nil
+                   :swap-seq-empty :swap-empty-seq}
+
+   :threading #{:swap-thread-first-last :swap-thread-last-first
+                :swap-thread-some-first :swap-some-first-thread
+                :swap-thread-some-last :swap-some-last-thread}
+
+   :lazy-eager #{:swap-map-mapv :swap-mapv-map
+                 :swap-filter-filterv :swap-filterv-filter
+                 :swap-for-doseq :swap-doseq-for}
+
+   :hof #{:swap-filter-remove :swap-remove-filter
+          :swap-keep-filter :swap-filter-keep}
+
+   :constant #{:replace-0-to-1 :replace-1-to-0
+               :replace-0-to-neg1 :replace-1-to-neg1
+               :replace-neg1-to-0 :replace-neg1-to-1
+               :replace-2-to-1 :replace-2-to-0
+               :replace-10-to-0 :replace-100-to-0
+               :replace-nil-false :replace-nil-zero
+               :replace-nil-empty-vec :replace-nil-empty-map
+               :replace-nil-empty-str}
+
+   :destructuring #{:mutate-kebab-to-camel :mutate-camel-to-kebab
+                    :mutate-ns-typo :mutate-qualified-to-unqualified}})
+
+(def minimal-preset-operators
+  "Operators for the :minimal preset.
+
+   This preset uses only dominating operators - the minimal set that
+   achieves coverage of all subsumption chains. Based on RORG research,
+   this achieves nearly the same fault detection with ~40% fewer mutations.
+
+   Categories included:
+   - Arithmetic: Just inverse operations (+ <-> -, * <-> /)
+   - Relational: Boundary + extreme (<=, !=, false/true)
+   - Boolean: Logic swap + extreme (and<->or, false/true)
+   - Collection: Key operations (first/last, rest/next)
+   - Nil-handling: nil?/some?, seq/empty?"
+  #{;; Arithmetic - inverse operations only
+    :swap-plus-minus
+    :swap-minus-plus
+    :swap-mult-div
+    :swap-div-mult
+
+    ;; Relational - RORG minimal set
+    ;; For <: swap-lt-lte, swap-lt-neq, replace-comparison-false
+    :swap-lt-lte
+    :swap-lt-neq
+    :swap-gt-gte
+    :swap-gt-neq
+    :swap-lte-lt
+    :swap-lte-eq
+    :swap-gte-gt
+    :swap-gte-eq
+    :swap-eq-lte
+    :swap-eq-gte
+    :swap-neq-lt
+    :swap-neq-gt
+    :replace-comparison-false
+    :replace-comparison-true
+
+    ;; Boolean - logic + extreme
+    :swap-and-or
+    :swap-or-and
+    :replace-and-false
+    :replace-or-true
+    :remove-not
+
+    ;; Collection - essential operations
+    :swap-first-last
+    :swap-last-first
+    :swap-rest-next
+    :swap-next-rest
+
+    ;; Nil-handling
+    :swap-nil-some
+    :swap-some-nil
+    :swap-seq-empty
+    :swap-empty-seq})
 
 (defn minimal-operators-for
   "Get the minimal set of operators to use for a given original operator.

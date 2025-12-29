@@ -40,6 +40,85 @@
 (defn- bold [text] (str ansi-bold text ansi-reset))
 
 ;; =============================================================================
+;; Phase Output Functions (Terminal)
+;; =============================================================================
+
+(defn print-header
+  "Print the mutation testing header banner."
+  []
+  (println "===================================================================")
+  (println "                    Heretic Mutation Testing")
+  (println "===================================================================")
+  (println))
+
+(defn print-phase
+  "Print a phase message."
+  [message]
+  (println message))
+
+(defn print-collection-result
+  "Print collection phase results."
+  [{:keys [total-ns stale-ns collected-ns forms duration-ms]}]
+  (println)
+  (println "Collection complete:")
+  (println (format "  Test namespaces: %d total, %d stale, %d collected"
+                   total-ns stale-ns collected-ns))
+  (println (format "  Forms registered: %d" forms))
+  (println (format "  Duration: %dms" duration-ms)))
+
+(defn print-mutation-scan-result
+  "Print mutation scan results."
+  [total-found filtered-count filter-enabled?]
+  (println (format "Found %d mutation sites." total-found))
+  (when (and filter-enabled? (pos? filtered-count))
+    (println (format "Filtered %d likely equivalent mutations." filtered-count))))
+
+(defn print-mutation-progress
+  "Print mutation testing progress indicator."
+  [current total status]
+  (let [pct (int (* 100.0 (/ current total)))
+        status-indicator (case status
+                           :killed "X"
+                           :survived "x"
+                           :no-coverage "o"
+                           :timeout "T"
+                           :error "!"
+                           "?")]
+    (print (format "\r[%3d%%] %d/%d mutations tested %s" pct current total status-indicator))
+    (flush)))
+
+(defn print-parallel-mode
+  "Print parallel mode information."
+  [parallel? worker-count]
+  (if parallel?
+    (println (format "Running mutation tests in parallel (%d workers)..." worker-count))
+    (println "Running mutation tests...")))
+
+(defn print-timing-loaded
+  "Print timing data loaded message."
+  [test-count]
+  (println (format "Loaded timing data for %d tests (ordering fastest first)."
+                   test-count)))
+
+(defn print-html-report-written
+  "Print HTML report path."
+  [html-path]
+  (println)
+  (println (format "HTML report written to: %s" html-path)))
+
+(defn print-edn-report-written
+  "Print EDN report path."
+  [edn-path]
+  (println)
+  (println (format "EDN report written to: %s" edn-path)))
+
+(defn print-json-report-written
+  "Print JSON report path."
+  [json-path]
+  (println)
+  (println (format "JSON report written to: %s" json-path)))
+
+;; =============================================================================
 ;; Statistics Calculation
 ;; =============================================================================
 
@@ -929,18 +1008,107 @@
      (spit output-path html-content)
      output-path)))
 
+;; =============================================================================
+;; EDN Report Generation
+;; =============================================================================
+
+(defn- survivor-to-edn-map
+  "Convert a survivor result to an EDN-friendly map."
+  [{:keys [mutation tests-run]}]
+  (let [{:keys [file line operator original replacement column]} mutation]
+    {:file file
+     :line line
+     :column column
+     :operator operator
+     :original (str original)
+     :replacement (str replacement)
+     :tests-run (vec (sort (map str tests-run)))}))
+
+(defn- edn-stats-by-file
+  "Calculate stats for each file for EDN report."
+  [results]
+  (->> results
+       (group-by #(get-in % [:mutation :file]))
+       (reduce-kv
+        (fn [acc file rs]
+          (let [killed-count (count (filter #(= :killed (:status %)) rs))
+                survived-count (count (filter #(= :survived (:status %)) rs))
+                no-coverage-count (count (filter #(= :no-coverage (:status %)) rs))
+                timeout-count (count (filter #(= :timeout (:status %)) rs))
+                error-count (count (filter #(= :error (:status %)) rs))
+                testable (+ killed-count survived-count)
+                score (when (pos? testable) (double (/ killed-count testable)))]
+            (assoc acc (or file "(unknown)")
+                   {:killed killed-count
+                    :survived survived-count
+                    :no-coverage no-coverage-count
+                    :timeout timeout-count
+                    :error error-count
+                    :total (count rs)
+                    :score score})))
+        {})))
+
+(defn edn-report-data
+  "Generate EDN report data structure.
+
+   Returns a map with:
+   - :summary - Overall statistics
+   - :survivors - List of surviving mutations
+   - :by-file - Per-file breakdown
+
+   Uses idiomatic Clojure naming (kebab-case) unlike JSON report."
+  [results]
+  (let [counts (count-by-status results)
+        total (count results)
+        score (mutation-score results)
+        survivor-list (survivors results)]
+    {:summary {:total total
+               :killed (:killed counts)
+               :survived (:survived counts)
+               :no-coverage (:no-coverage counts)
+               :timeout (:timeout counts)
+               :error (:error counts)
+               :score score}
+     :survivors (mapv survivor-to-edn-map survivor-list)
+     :by-file (edn-stats-by-file results)}))
+
+(defn generate-edn-report
+  "Generate EDN mutation testing report.
+
+   Arguments:
+   - results: Mutation testing results
+   - output-path: Path to write EDN file (e.g., 'target/heretic-report/report.edn')
+
+   Returns the output path.
+
+   The EDN structure includes:
+   - :summary - Overall statistics (total, killed, survived, score, etc.)
+   - :survivors - List of surviving mutations with file, line, operator details
+   - :by-file - Results grouped by source file"
+  [results output-path]
+  (let [report-data (edn-report-data results)]
+    ;; Ensure output directory exists
+    (io/make-parents output-path)
+    (spit output-path (pr-str report-data))
+    output-path))
+
+;; =============================================================================
+;; Unified Report Writer
+;; =============================================================================
+
 (defn write-report!
   "Write mutation report in the specified format.
 
    Arguments:
    - results: Mutation testing results
-   - format: :terminal, :html, or :json
+   - format: :terminal, :html, :json, or :edn
    - output-path: Path for file output (ignored for terminal)
 
-   Returns nil for terminal, output path for HTML/JSON."
+   Returns nil for terminal, output path for HTML/JSON/EDN."
   [results format output-path]
   (case format
     :terminal (do (print-report results) nil)
     :html (generate-html-report results (str output-path "/index.html"))
     :json (generate-json-report results (str output-path "/report.json"))
+    :edn (generate-edn-report results (str output-path "/report.edn"))
     (throw (ex-info "Unknown report format" {:format format}))))

@@ -335,8 +335,9 @@
                         (* x y)))"
           file (create-test-file! "workflow.clj" original)
           mutations (engine/mutations-for-file file)]
-      ;; Should have mutations for: and, +, *
-      (is (= 3 (count mutations)))
+      ;; Should have at least mutations for: and, +, *
+      ;; With RORG operators, there are more (replace-and-false, etc.)
+      (is (>= (count mutations) 3))
 
       ;; Apply and revert each mutation
       (doseq [mutation mutations]

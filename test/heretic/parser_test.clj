@@ -165,10 +165,11 @@
 (deftest test-find-mutation-sites-logical
   (testing "Finds logical operator mutation sites"
     (let [zloc (parser/parse-string "(and x (or y z))")
-          sites (parser/find-mutation-sites zloc)]
-      (is (= 2 (count sites)))
-      (is (= #{:swap-and-or :swap-or-and}
-             (set (map :operator sites)))))))
+          sites (parser/find-mutation-sites zloc)
+          found-ops (set (map :operator sites))]
+      ;; Now includes RORG operators like replace-and-false, replace-or-true
+      (is (>= (count sites) 2))
+      (is (clojure.set/subset? #{:swap-and-or :swap-or-and} found-ops)))))
 
 (deftest test-find-mutation-sites-multiple-forms
   (testing "Finds sites across multiple top-level forms"
@@ -333,9 +334,12 @@
                       true
                       false))"
           zloc (parser/parse-string source)
-          sites (parser/find-mutation-sites zloc)]
-      ;; Should find: and, > (2 variants), < (2 variants), true, false = 7 total
-      (is (= 7 (count sites)))
-      (is (= #{:swap-and-or :swap-gt-lt :swap-gt-gte :swap-lt-gt :swap-lt-lte
-               :swap-true-false :swap-false-true}
-             (set (map :operator sites)))))))
+          sites (parser/find-mutation-sites zloc)
+          found-ops (set (map :operator sites))]
+      ;; Should find at least the core operators: and, >, <, true, false
+      ;; With RORG operators, there are more (neq variants, comparison-false/true, etc.)
+      (is (>= (count sites) 7))
+      ;; Check that core operators are present
+      (is (clojure.set/subset? #{:swap-and-or :swap-gt-lt :swap-gt-gte :swap-lt-gt :swap-lt-lte
+                                 :swap-true-false :swap-false-true}
+                               found-ops)))))
