@@ -331,9 +331,12 @@
 
 (deftest run-tests-timeout-with-failing-tests-test
   (testing "Timeout with mix of passing and failing tests before slow test"
-    ;; Failing test completes, slow test times out
+    ;; Failing test completes, slow test times out (or is skipped due to early termination)
+    ;; With early termination: if failing test runs first, we exit immediately
+    ;; If slow test runs first and times out, we continue to failing test then exit
     (let [result (runner/run-tests [failing-test-sym slow-test-sym] 100)]
-      (is (= :partial (:status result)))
+      ;; Status is :completed with early termination, or :partial if slow test timed out first
+      (is (contains? #{:completed :partial} (:status result)))
       ;; Results should have been accumulated
       (is (map? (:results result)))
       ;; any-failed should be true since failing-test failed
@@ -342,7 +345,8 @@
 (deftest run-tests-timeout-with-erroring-tests-test
   (testing "Timeout with erroring tests in the batch"
     (let [result (runner/run-tests [erroring-test-sym slow-test-sym] 100)]
-      (is (= :partial (:status result)))
+      ;; Status is :completed with early termination, or :partial if slow test timed out first
+      (is (contains? #{:completed :partial} (:status result)))
       (is (map? (:results result)))
       ;; any-failed should be true since erroring-test errored
       (is (:any-failed result)))))
@@ -478,3 +482,70 @@
     (let [result (runner/run-tests [] 5000)]
       (is (= #{} (:timed-out result)))
       (is (= false (:any-timeout result))))))
+
+;; =============================================================================
+;; Early Termination Tests
+;; =============================================================================
+
+(deftest run-tests-early-termination-on-failure-test
+  (testing "Early termination stops running tests after first failure"
+    ;; With set ordering, we can't guarantee which test runs first.
+    ;; But we CAN verify that when a failure is detected, we stop.
+    ;; Key insight: if early termination works, we should complete in < 5 seconds
+    ;; because we stop after the failure (not waiting for slow-test to complete)
+    (let [start-time (System/currentTimeMillis)
+          result (runner/run-tests [failing-test-sym slow-test-sym] 5000)
+          elapsed (- (System/currentTimeMillis) start-time)]
+      ;; Status should be completed (or partial if slow ran first and timed out)
+      (is (contains? #{:completed :partial} (:status result)))
+      (is (:any-failed result) "Should detect failure")
+      ;; Key assertion: if failing test ran first, we skip slow test entirely
+      ;; If slow test ran first (and timed out), then we run failing test
+      ;; Either way, we don't run slow test to completion (5000ms)
+      ;; With 5000ms timeout, slow test would take 5000ms if it ran
+      ;; Early termination means we exit as soon as we see failure
+      (when (not (contains? (:timed-out result) slow-test-sym))
+        ;; If slow test didn't time out, it means failing test ran first
+        ;; and we exited early - should be very fast
+        (is (< elapsed 1000) "Should terminate early when failure detected first")))))
+
+(deftest run-tests-early-termination-on-error-test
+  (testing "Early termination stops running tests after first error"
+    (let [start-time (System/currentTimeMillis)
+          result (runner/run-tests [erroring-test-sym slow-test-sym] 5000)
+          elapsed (- (System/currentTimeMillis) start-time)]
+      (is (contains? #{:completed :partial} (:status result)))
+      (is (:any-failed result) "Should detect error as failure")
+      ;; Same logic as failure test
+      (when (not (contains? (:timed-out result) slow-test-sym))
+        (is (< elapsed 1000) "Should terminate early when error detected first")))))
+
+(deftest run-tests-no-early-termination-on-pass-test
+  (testing "No early termination when tests pass - all tests run"
+    (let [result (runner/run-tests [passing-test-sym fast-test-sym] 5000)]
+      (is (= :completed (:status result)))
+      (is (not (:any-failed result)) "No failures")
+      ;; Both tests should have run
+      (is (= #{passing-test-sym fast-test-sym} (:tests-run result))
+          "All passing tests should run"))))
+
+(deftest run-tests-early-termination-single-failure-test
+  (testing "Single failing test runs and terminates immediately"
+    ;; This test is order-independent since there's only one test
+    (let [start-time (System/currentTimeMillis)
+          result (runner/run-tests [failing-test-sym] 5000)
+          elapsed (- (System/currentTimeMillis) start-time)]
+      (is (= :completed (:status result)))
+      (is (:any-failed result))
+      (is (= #{failing-test-sym} (:tests-run result)))
+      (is (< elapsed 100) "Single failing test should complete quickly"))))
+
+(deftest run-tests-early-termination-single-error-test
+  (testing "Single erroring test runs and terminates immediately"
+    (let [start-time (System/currentTimeMillis)
+          result (runner/run-tests [erroring-test-sym] 5000)
+          elapsed (- (System/currentTimeMillis) start-time)]
+      (is (= :completed (:status result)))
+      (is (:any-failed result))
+      (is (= #{erroring-test-sym} (:tests-run result)))
+      (is (< elapsed 100) "Single erroring test should complete quickly"))))

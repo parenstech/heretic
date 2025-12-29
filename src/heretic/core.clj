@@ -23,7 +23,8 @@
             [heretic.persistence :as persist]
             [heretic.reloader :as reloader]
             [heretic.reporter :as reporter]
-            [heretic.runner :as runner])
+            [heretic.runner :as runner]
+            [heretic.timing :as timing])
   (:import [java.util.concurrent Executors ExecutorService]))
 
 ;; =============================================================================
@@ -354,9 +355,16 @@
               (println (format "Running mutation tests in parallel (%d workers)..." worker-count))
               (println "Running mutation tests...")))
 
-          (let [timeout-ms (or (:timeout-ms config) 5000)
+          (let [heretic-dir (:heretic-dir config)
+                timeout-ms (or (:timeout-ms config) 5000)
                 budget-ms (:budget-ms config)
-                test-config (cond-> {:timeout-ms timeout-ms}
+                ;; Load historical timing data for test ordering (fastest first)
+                timing-data (timing/load-timing heretic-dir)
+                _ (when timing-data
+                    (println (format "Loaded timing data for %d tests (ordering fastest first)."
+                                     (count timing-data))))
+                test-config (cond-> {:timeout-ms timeout-ms
+                                     :timing-data timing-data}
                               budget-ms (assoc :budget-ms budget-ms))
                 parallel? (:parallel-mutate config)
                 worker-count (or (:parallel-workers config)
@@ -371,16 +379,23 @@
 
             (println)  ; Newline after progress
 
-            ;; Step 5: Generate summary
-            (let [all-results all-results
-                  summary (runner/summarize-results all-results)
+            ;; Step 5: Collect and save timing data from this run
+            (let [all-test-durations (reduce (fn [acc result]
+                                               (merge acc (:test-durations result {})))
+                                             {}
+                                             all-results)]
+              (when (seq all-test-durations)
+                (timing/record-timing! heretic-dir all-test-durations)))
+
+            ;; Step 6: Generate summary
+            (let [summary (runner/summarize-results all-results)
                   survivor-list (filter #(= :survived (:status %)) all-results)
                   final-result (assoc summary
                                       :survivors (mapv :mutation survivor-list)
                                       :equivalent-filtered filtered-count
                                       :total-duration-ms (- (System/currentTimeMillis) start-time))]
 
-              ;; Step 6: Print terminal report
+              ;; Step 7: Print terminal report
               (println)
               (reporter/print-summary all-results)
 
@@ -388,7 +403,7 @@
                 (println)
                 (reporter/print-survivors all-results))
 
-              ;; Step 7: Generate HTML report if configured
+              ;; Step 8: Generate HTML report if configured
               (when (= :html (:report-format config))
                 (let [output-path (:output-path config "target/heretic-report")
                       html-path (reporter/generate-html-report

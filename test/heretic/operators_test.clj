@@ -227,11 +227,11 @@
 
 (deftest test-all-operators-count
   (testing "all-operators contains expected count"
-    (is (= 64 (count ops/all-operators)))))
+    (is (= 68 (count ops/all-operators)))))
 
 (deftest test-operators-by-id
   (testing "operators-by-id contains all operators"
-    (is (= 64 (count ops/operators-by-id))))
+    (is (= 68 (count ops/operators-by-id))))
 
   (testing "Can look up operators by id"
     (is (= ops/swap-plus-minus (get ops/operators-by-id :swap-plus-minus)))
@@ -908,3 +908,177 @@
           applicable (ops/applicable-operators zloc)]
       (is (= 1 (count applicable)))
       (is (= :replace-100-to-0 (:id (first applicable)))))))
+
+;; =============================================================================
+;; Phase 3.1: Destructuring Operator Tests
+;; =============================================================================
+
+;; -----------------------------------------------------------------------------
+;; Helper for navigating to keywords in destructuring
+;; -----------------------------------------------------------------------------
+
+(defn- locate-keyword
+  "Find the first occurrence of a keyword in the source.
+   Navigates through the zipper to find the keyword."
+  [source kw]
+  (loop [zloc (z/of-string source)]
+    (cond
+      (or (nil? zloc) (z/end? zloc)) nil
+      (and (= :token (z/tag zloc))
+           (= kw (try (z/sexpr zloc) (catch Exception _ nil))))
+      zloc
+      :else (recur (z/next zloc)))))
+
+;; -----------------------------------------------------------------------------
+;; Kebab-to-Camel Operator Tests
+;; -----------------------------------------------------------------------------
+
+(deftest test-mutate-kebab-to-camel-matcher
+  (testing "Matches kebab-case keyword in map destructuring"
+    (let [zloc (locate-keyword "{:user-id id}" :user-id)]
+      (is ((:matcher ops/mutate-kebab-to-camel) zloc))))
+
+  (testing "Matches kebab-case keyword with local binding"
+    (let [zloc (locate-keyword "{:first-name name}" :first-name)]
+      (is ((:matcher ops/mutate-kebab-to-camel) zloc))))
+
+  (testing "Does not match camelCase keyword"
+    (let [zloc (locate-keyword "{:userId id}" :userId)]
+      (is (not ((:matcher ops/mutate-kebab-to-camel) zloc)))))
+
+  (testing "Does not match simple keywords (no hyphen between words)"
+    (let [zloc (locate-keyword "{:id val}" :id)]
+      (is (not ((:matcher ops/mutate-kebab-to-camel) zloc))))))
+
+(deftest test-apply-operator-kebab-to-camel
+  (testing "Converts kebab-case to camelCase"
+    (let [zloc (locate-keyword "{:user-id id}" :user-id)]
+      (is (= ":userId" (ops/apply-operator ops/mutate-kebab-to-camel zloc)))))
+
+  (testing "Converts multi-part kebab-case"
+    (let [zloc (locate-keyword "{:first-name-initial val}" :first-name-initial)]
+      (is (= ":firstNameInitial" (ops/apply-operator ops/mutate-kebab-to-camel zloc)))))
+
+  (testing "Preserves namespace in qualified keywords"
+    (let [zloc (locate-keyword "{:user/first-name name}" :user/first-name)]
+      (is (= ":user/firstName" (ops/apply-operator ops/mutate-kebab-to-camel zloc))))))
+
+;; -----------------------------------------------------------------------------
+;; Camel-to-Kebab Operator Tests
+;; -----------------------------------------------------------------------------
+
+(deftest test-mutate-camel-to-kebab-matcher
+  (testing "Matches camelCase keyword in map destructuring"
+    (let [zloc (locate-keyword "{:userId id}" :userId)]
+      (is ((:matcher ops/mutate-camel-to-kebab) zloc))))
+
+  (testing "Matches camelCase keyword with local binding"
+    (let [zloc (locate-keyword "{:firstName name}" :firstName)]
+      (is ((:matcher ops/mutate-camel-to-kebab) zloc))))
+
+  (testing "Does not match kebab-case keyword"
+    (let [zloc (locate-keyword "{:user-id id}" :user-id)]
+      (is (not ((:matcher ops/mutate-camel-to-kebab) zloc)))))
+
+  (testing "Does not match simple keywords (no camelCase)"
+    (let [zloc (locate-keyword "{:id val}" :id)]
+      (is (not ((:matcher ops/mutate-camel-to-kebab) zloc))))))
+
+(deftest test-apply-operator-camel-to-kebab
+  (testing "Converts camelCase to kebab-case"
+    (let [zloc (locate-keyword "{:userId id}" :userId)]
+      (is (= ":user-id" (ops/apply-operator ops/mutate-camel-to-kebab zloc)))))
+
+  (testing "Converts multi-part camelCase"
+    (let [zloc (locate-keyword "{:firstNameInitial val}" :firstNameInitial)]
+      (is (= ":first-name-initial" (ops/apply-operator ops/mutate-camel-to-kebab zloc)))))
+
+  (testing "Preserves namespace in qualified keywords"
+    (let [zloc (locate-keyword "{:user/firstName name}" :user/firstName)]
+      (is (= ":user/first-name" (ops/apply-operator ops/mutate-camel-to-kebab zloc))))))
+
+;; -----------------------------------------------------------------------------
+;; Namespace Typo Operator Tests
+;; -----------------------------------------------------------------------------
+
+(deftest test-mutate-ns-typo-matcher
+  (testing "Matches qualified keyword without 's' suffix"
+    (let [zloc (locate-keyword "{:user/id uid}" :user/id)]
+      (is ((:matcher ops/mutate-ns-typo) zloc))))
+
+  (testing "Does not match keyword already ending in 's'"
+    (let [zloc (locate-keyword "{:users/id uid}" :users/id)]
+      (is (not ((:matcher ops/mutate-ns-typo) zloc)))))
+
+  (testing "Does not match unqualified keyword"
+    (let [zloc (locate-keyword "{:id val}" :id)]
+      (is (not ((:matcher ops/mutate-ns-typo) zloc))))))
+
+(deftest test-apply-operator-ns-typo
+  (testing "Adds 's' to namespace"
+    (let [zloc (locate-keyword "{:user/id uid}" :user/id)]
+      (is (= ":users/id" (ops/apply-operator ops/mutate-ns-typo zloc)))))
+
+  (testing "Works with longer namespace names"
+    (let [zloc (locate-keyword "{:account/balance bal}" :account/balance)]
+      (is (= ":accounts/balance" (ops/apply-operator ops/mutate-ns-typo zloc))))))
+
+;; -----------------------------------------------------------------------------
+;; Qualified-to-Unqualified Operator Tests
+;; -----------------------------------------------------------------------------
+
+(deftest test-mutate-qualified-to-unqualified-matcher
+  (testing "Matches qualified keyword"
+    (let [zloc (locate-keyword "{:user/id uid}" :user/id)]
+      (is ((:matcher ops/mutate-qualified-to-unqualified) zloc))))
+
+  (testing "Does not match unqualified keyword"
+    (let [zloc (locate-keyword "{:id val}" :id)]
+      (is (not ((:matcher ops/mutate-qualified-to-unqualified) zloc))))))
+
+(deftest test-apply-operator-qualified-to-unqualified
+  (testing "Removes namespace from keyword"
+    (let [zloc (locate-keyword "{:user/id uid}" :user/id)]
+      (is (= ":id" (ops/apply-operator ops/mutate-qualified-to-unqualified zloc)))))
+
+  (testing "Works with longer names"
+    (let [zloc (locate-keyword "{:account/current-balance bal}" :account/current-balance)]
+      (is (= ":current-balance" (ops/apply-operator ops/mutate-qualified-to-unqualified zloc))))))
+
+;; -----------------------------------------------------------------------------
+;; applicable-operators Tests for Destructuring
+;; -----------------------------------------------------------------------------
+
+(deftest test-applicable-operators-kebab-keyword
+  (testing "Returns kebab-to-camel for kebab-case keyword in destructuring"
+    (let [zloc (locate-keyword "{:user-id id}" :user-id)
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      (is (contains? ids :mutate-kebab-to-camel)))))
+
+(deftest test-applicable-operators-camel-keyword
+  (testing "Returns camel-to-kebab for camelCase keyword in destructuring"
+    (let [zloc (locate-keyword "{:userId id}" :userId)
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      (is (contains? ids :mutate-camel-to-kebab)))))
+
+(deftest test-applicable-operators-qualified-keyword
+  (testing "Returns ns-typo and qualified-to-unqualified for qualified keyword"
+    (let [zloc (locate-keyword "{:user/id uid}" :user/id)
+          applicable (ops/applicable-operators zloc)
+          ids (set (map :id applicable))]
+      (is (contains? ids :mutate-ns-typo))
+      (is (contains? ids :mutate-qualified-to-unqualified)))))
+
+;; -----------------------------------------------------------------------------
+;; Operator Registry Tests (updated count)
+;; -----------------------------------------------------------------------------
+
+(deftest test-all-operators-includes-destructuring
+  (testing "all-operators contains destructuring operators"
+    (let [ids (set (map :id ops/all-operators))]
+      (is (contains? ids :mutate-kebab-to-camel))
+      (is (contains? ids :mutate-camel-to-kebab))
+      (is (contains? ids :mutate-ns-typo))
+      (is (contains? ids :mutate-qualified-to-unqualified)))))

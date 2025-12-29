@@ -4,15 +4,16 @@
    Mutation operators define transformations to apply to source code.
    Each operator is a data map with:
    - :id          - Keyword identifier like :swap-plus-minus
-   - :original    - The symbol/value being replaced
-   - :replacement - What it becomes
+   - :original    - The symbol/value being replaced (or :dynamic for computed replacements)
+   - :replacement - What it becomes (or a function for computed replacements)
    - :description - Human readable description
    - :matcher     - Predicate that checks if a zloc matches
 
    Main API:
    - `applicable-operators` - Return operators that match a zipper location
    - `apply-operator`       - Return the replacement string for an operator"
-  (:require [rewrite-clj.zip :as z]))
+  (:require [clojure.string :as str]
+            [rewrite-clj.zip :as z]))
 
 ;; =============================================================================
 ;; Matcher Predicates
@@ -32,6 +33,83 @@
   (fn [zloc]
     (and (= :token (z/tag zloc))
          (= v (z/sexpr zloc)))))
+
+;; =============================================================================
+;; Keyword Transformation Helpers
+;; =============================================================================
+
+(defn- kebab->camel
+  "Convert kebab-case to camelCase.
+   user-id -> userId
+   first-name -> firstName"
+  [s]
+  (let [parts (str/split s #"-")]
+    (if (> (count parts) 1)
+      (str (first parts)
+           (apply str (map str/capitalize (rest parts))))
+      s)))
+
+(defn- camel->kebab
+  "Convert camelCase to kebab-case.
+   userId -> user-id
+   firstName -> first-name"
+  [s]
+  (-> s
+      (str/replace #"([a-z])([A-Z])" "$1-$2")
+      str/lower-case))
+
+(defn- has-kebab-case?
+  "Check if string contains kebab-case (has hyphen between word chars)."
+  [s]
+  (boolean (re-find #"\w-\w" s)))
+
+(defn- has-camel-case?
+  "Check if string contains camelCase (lowercase followed by uppercase)."
+  [s]
+  (boolean (re-find #"[a-z][A-Z]" s)))
+
+(defn- add-s-to-namespace
+  "Add 's' suffix to namespace part of a qualified keyword.
+   :user/id -> :users/id"
+  [kw]
+  (when-let [ns (namespace kw)]
+    (keyword (str ns "s") (name kw))))
+
+(defn- in-destructuring-context?
+  "Check if zloc is in a destructuring context.
+   Returns true if the keyword is inside:
+   - {:keys [...]} vector
+   - map literal used in destructuring (let, fn, defn bindings)"
+  [zloc]
+  (when-let [parent (z/up zloc)]
+    (or
+     ;; Inside a :keys vector
+     (and (= :vector (z/tag parent))
+          (when-let [grandparent (z/up parent)]
+            (and (= :map (z/tag grandparent))
+                 ;; Check if this vector follows a :keys, :strs, or :syms key
+                 (when-let [prev (z/left (z/down grandparent))]
+                   (let [prev-sexpr (try (z/sexpr prev) (catch Exception _ nil))]
+                     (contains? #{:keys :strs :syms} prev-sexpr))))))
+     ;; In a map literal (could be map destructuring)
+     (= :map (z/tag parent)))))
+
+(defn- keyword-matcher
+  "Create a matcher for keywords with a predicate on the keyword name."
+  [pred]
+  (fn [zloc]
+    (and (= :token (z/tag zloc))
+         (keyword? (z/sexpr zloc))
+         (pred (z/sexpr zloc)))))
+
+(defn- destructuring-keyword-matcher
+  "Create a matcher for keywords in destructuring contexts with a predicate."
+  [pred]
+  (fn [zloc]
+    (and (= :token (z/tag zloc))
+         (keyword? (z/sexpr zloc))
+         (pred (z/sexpr zloc))
+         (in-destructuring-context? zloc))))
 
 ;; =============================================================================
 ;; Operator Definitions
@@ -580,6 +658,68 @@
    :matcher (symbol-matcher 'empty?)})
 
 ;; =============================================================================
+;; Phase 3.1: Destructuring Operators
+;; =============================================================================
+
+(def mutate-kebab-to-camel
+  "Replace kebab-case keyword with camelCase in destructuring.
+   Catches bugs where JS interop expects camelCase but Clojure uses kebab."
+  {:id :mutate-kebab-to-camel
+   :original :dynamic
+   :replacement (fn [zloc]
+                  (let [kw (z/sexpr zloc)
+                        ns (namespace kw)
+                        new-name (kebab->camel (name kw))]
+                    (if ns
+                      (keyword ns new-name)
+                      (keyword new-name))))
+   :description "Replace kebab-case keyword with camelCase"
+   :matcher (destructuring-keyword-matcher
+             (fn [kw] (has-kebab-case? (name kw))))})
+
+(def mutate-camel-to-kebab
+  "Replace camelCase keyword with kebab-case in destructuring.
+   Catches bugs where Clojure code expects kebab-case but data uses camelCase."
+  {:id :mutate-camel-to-kebab
+   :original :dynamic
+   :replacement (fn [zloc]
+                  (let [kw (z/sexpr zloc)
+                        ns (namespace kw)
+                        new-name (camel->kebab (name kw))]
+                    (if ns
+                      (keyword ns new-name)
+                      (keyword new-name))))
+   :description "Replace camelCase keyword with kebab-case"
+   :matcher (destructuring-keyword-matcher
+             (fn [kw] (has-camel-case? (name kw))))})
+
+(def mutate-ns-typo
+  "Add 's' suffix to namespace (common typo: :user/id -> :users/id).
+   Catches bugs where namespace singular/plural is incorrect."
+  {:id :mutate-ns-typo
+   :original :dynamic
+   :replacement (fn [zloc]
+                  (let [kw (z/sexpr zloc)]
+                    (add-s-to-namespace kw)))
+   :description "Add 's' suffix to keyword namespace"
+   :matcher (keyword-matcher
+             (fn [kw]
+               ;; Only match qualified keywords that don't already end in 's'
+               (and (namespace kw)
+                    (not (str/ends-with? (namespace kw) "s")))))})
+
+(def mutate-qualified-to-unqualified
+  "Remove namespace from qualified keyword.
+   Catches bugs where unqualified key is used but data has qualified keys."
+  {:id :mutate-qualified-to-unqualified
+   :original :dynamic
+   :replacement (fn [zloc]
+                  (let [kw (z/sexpr zloc)]
+                    (keyword (name kw))))
+   :description "Remove namespace from qualified keyword"
+   :matcher (keyword-matcher namespace)})
+
+;; =============================================================================
 ;; Operator Registry
 ;; =============================================================================
 
@@ -659,7 +799,12 @@
    swap-nil-some
    swap-some-nil
    swap-seq-empty
-   swap-empty-seq])
+   swap-empty-seq
+   ;; Destructuring
+   mutate-kebab-to-camel
+   mutate-camel-to-kebab
+   mutate-ns-typo
+   mutate-qualified-to-unqualified])
 
 (def operators-by-id
   "Map from operator id to operator definition."
@@ -688,10 +833,18 @@
    The operator's :replacement value is converted to a string suitable
    for use with rewrite-clj's z/replace or z/edit functions.
 
+   For dynamic operators (where :replacement is a function), the function
+   is called with the zloc and the result is converted to a string.
+
    Returns the replacement as a string."
-  [op _zloc]
-  (let [replacement (:replacement op)]
+  [op zloc]
+  (let [replacement (:replacement op)
+        ;; For dynamic operators, call the replacement function
+        resolved (if (fn? replacement)
+                   (replacement zloc)
+                   replacement)]
     (cond
-      (symbol? replacement) (name replacement)
-      (boolean? replacement) (str replacement)
-      :else (str replacement))))
+      (keyword? resolved) (str resolved)
+      (symbol? resolved) (name resolved)
+      (boolean? resolved) (str resolved)
+      :else (str resolved))))

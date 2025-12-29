@@ -105,6 +105,15 @@
                    "    (println \"No surviving mutations.\")))")]
      (run-with-clojurestorm config code))}
 
+  heretic:watch
+  {:doc "Watch source and test files for changes, run mutations on change"
+   :task
+   (let [config (load-config)
+         code (str "(require '[heretic.watch :as watch])"
+                   "(require '[heretic.core :as heretic])"
+                   "(watch/watch! (heretic/load-config))")]
+     (run-with-clojurestorm config code))}
+
   ;; Development tasks
   dev:repl
   {:doc "Start a development REPL with ClojureStorm"
@@ -116,6 +125,31 @@
               "clj" "-M:dev:clojurestorm" "-m" "nrepl.cmdline" "--interactive"))}
 
   test
-  {:doc "Run tests"
+  {:doc "Run tests with kaocha (slow, may hang with ClojureStorm)"
    :task
-   (p/shell "clj" "-M:test")}}}
+   (p/shell "clj" "-M:test")}
+
+  test:fast
+  {:doc "Run tests that don't require ClojureStorm (faster startup)"
+   :task
+   (let [;; Tests that work without ClojureStorm
+         namespaces ["heretic.operators-test"
+                     "heretic.parser-test"
+                     "heretic.mutation-engine-test"
+                     "heretic.equivalent-test"
+                     "heretic.timing-test"
+                     "heretic.subsumption-test"
+                     "heretic.reporter-test"
+                     "heretic.persistence-test"
+                     "heretic.coord-mapper-test"
+                     "heretic.form-bridge-test"
+                     "heretic.reloader-test"]
+         quote-ns (fn [ns] (str "(quote " ns ")"))
+         require-forms (str/join " " (map quote-ns namespaces))
+         run-forms (str/join " " (map quote-ns namespaces))
+         code (str "(require 'clojure.test " require-forms ")"
+                   "(let [summary (clojure.test/run-tests " run-forms ")]"
+                   "  (println)"
+                   "  (println \"Note: Tests requiring ClojureStorm skipped. Use 'bb test' for full suite.\")"
+                   "  (System/exit (if (and (zero? (:fail summary)) (zero? (:error summary))) 0 1)))")]
+     (p/shell "clj" "-Sdeps" "{:paths [\"src\" \"test\"]}" "-M" "-e" code))}}}

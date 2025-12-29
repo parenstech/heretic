@@ -99,6 +99,9 @@ bb heretic:mutate
 # Show surviving mutations
 bb heretic:survivors
 
+# Watch mode - continuous mutation testing on file changes
+bb heretic:watch
+
 # Clean coverage data
 bb heretic:clean
 ```
