@@ -3,6 +3,8 @@ status: stable
 contributions:
   - "Needs: benchmarks comparing equivalent detection effectiveness"
   - "Needs: real-world subsumption reduction measurements"
+  - "Needs: clustering strategy validation on real codebases"
+  - "Needs: LLM mutation generation quality/cost benchmarks"
 ---
 
 # Heretic: AI-Powered Mutation Testing for Clojure
@@ -25,7 +27,9 @@ contributions:
 5. [Performance Strategies](#5-performance-strategies)
    - 5.6 [Subsumption Analysis (Implemented)](#56-subsumption-analysis-implemented)
 6. [Heretic Architecture](#6-heretic-architecture)
-7. [References](#7-references)
+7. [Appendices A-C](#appendix-a-mutation-operator-quick-reference)
+8. [Phase 3 Implementation Learnings](#8-phase-3-implementation-learnings)
+9. [References](#9-references)
 
 ---
 
@@ -1283,9 +1287,120 @@ Survived Mutants (weak test coverage):
 
 ---
 
-## 7. References
+## 8. Phase 3 Implementation Learnings
 
-### 7.1 Foundational Papers
+This section captures practical insights from implementing Phase 3 that inform future development.
+
+### 8.1 Concurrency Model
+
+Missionary's structured concurrency proved superior to ExecutorService for mutation testing:
+
+| Aspect | ExecutorService | Missionary |
+|--------|-----------------|------------|
+| Cancellation | Manual, error-prone | First-class, propagates |
+| Supervision | Must implement | Built-in policies |
+| Composition | Callback hell | Clean `m/sp`, `m/ap` |
+| File parallelism | Thread pools | `m/ap` + `m/amb=` |
+
+**Key pattern:** File-level parallelism uses `m/ap` with `m/amb=` to create N parallel lanes pulling from a shared flow of file groups. Each lane processes files sequentially within, avoiding mutation conflicts.
+
+```clojure
+;; Simplified pattern
+(m/ap
+  (let [file-group (m/?> (m/seed (m/amb= file-groups)))]
+    (process-file-mutations file-group)))
+```
+
+### 8.2 Operator Reduction Findings
+
+Starting with 81 operators, empirical analysis revealed:
+
+| Preset | Operators | Use Case |
+|--------|-----------|----------|
+| `:minimal` | 30 | Recommended default (~99% fault detection) |
+| `:fast` | 15 | Quick feedback during development |
+| `:standard` | 50 | Balanced coverage |
+| `:comprehensive` | 81 | Calibration runs only |
+
+**Subsumption impact:** The formal dominance graph eliminates ~40% redundancy. For relational operators, only 2-3 mutations per operator are needed instead of all 5 replacements.
+
+### 8.3 Functional Core / Imperative Shell Effectiveness
+
+The pattern proved exceptionally effective:
+
+| Module | Pure Functions | Side Effects |
+|--------|---------------|--------------|
+| `controller.clj` | ~95% | Config loading only |
+| `clustering.clj` | 100% | None |
+| `subsumption.clj` | 100% | None |
+| `schemata.clj` | ~80% | File I/O for schematization |
+| `worker.clj` | ~60% | Execution, timeout handling |
+| `core.clj` | ~20% | Entry point, orchestration |
+
+**Benefit:** Pure modules are trivially testable. `controller.clj` has 18 tests covering all orchestration logic without mocking.
+
+### 8.4 Mutant Schemata Trade-offs
+
+The compile-once optimization using dynamic vars is elegant but has trade-offs:
+
+**Advantages:**
+- Single recompilation covers all mutations per file
+- O(1) mutation switching via `binding`
+- Natural thread isolation
+- No file I/O between mutation tests
+
+**Limitations:**
+- Increases compiled code size (all mutations embedded)
+- Not compatible with AOT compilation
+- Best when mutations/file ratio ≥ 3
+- Dynamic var lookup has small overhead
+
+**Heuristic:** Use schemata when `(/ mutation-count file-count) >= 3`.
+
+### 8.5 Clustering Strategies (Needs Validation)
+
+Four strategies implemented but require real-world validation:
+
+| Strategy | Grouping | Expected Reduction |
+|----------|----------|-------------------|
+| `:none` | No clustering | 0% |
+| `:operator` | Same operator type | 20-40% |
+| `:location` | Same code location | 30-50% |
+| `:similarity` | Operator category + context | 40-60% |
+
+**Open question:** Does representative selection actually work? If a representative is killed, are all cluster members truly killed? Needs empirical study.
+
+### 8.6 Equivalent Mutant Detection Limits
+
+Static pattern detection catches obvious cases but has limits:
+
+| Pattern Category | Detection Rate | Examples |
+|-----------------|----------------|----------|
+| Boundary comparisons | High | `(>= (count x) 0)` |
+| Multiply-by-zero | High | `(* x 0)` |
+| Function contracts | Medium | `(nil? (str x))` |
+| Lazy/eager in context | Medium | `(vec (map f xs))` vs `(vec (mapv f xs))` |
+| Threading equivalence | Low | Complex pipelines |
+| Semantic equivalence | None | Requires LLM |
+
+**Phase 4 implication:** Hybrid detection (static + LLM) is essential for reducing false survivors.
+
+### 8.7 Test Timing Variability
+
+Real-world test execution times vary significantly:
+
+- Same test can vary 2-5x between runs
+- JIT warmup affects early tests
+- GC pauses cause outliers
+- Parallel execution adds contention
+
+**Recommendation:** Use adaptive timeout (median × 3 + buffer) rather than fixed multiplier. Track timing trends across runs.
+
+---
+
+## 9. References
+
+### 9.1 Foundational Papers
 
 - Jia & Harman (2010). "An Analysis and Survey of the Development of Mutation Testing"
   - http://crest.cs.ucl.ac.uk/fileadmin/crest/sebasepaper/JiaH10.pdf
@@ -1293,7 +1408,7 @@ Survived Mutants (weak test coverage):
 - "Mutation Testing Advances: An Analysis and Survey" (2018)
   - https://www.sciencedirect.com/science/article/abs/pii/S0065245818300305
 
-### 7.2 Operator Effectiveness
+### 9.2 Operator Effectiveness
 
 - "Are Mutants a Valid Substitute for Real Faults?" (FSE 2014)
   - https://homes.cs.washington.edu/~mernst/pubs/mutation-effectiveness-fse2014.pdf
@@ -1301,33 +1416,33 @@ Survived Mutants (weak test coverage):
 - "How Closely are Common Mutation Operators Coupled to Real Faults?" (Chalmers 2023)
   - https://research.chalmers.se/en/publication/536348
 
-### 7.3 AI/LLM Mutation Testing
+### 9.3 AI/LLM Mutation Testing
 
 - muBERT (2022): https://arxiv.org/abs/2203.03289
 - MuTAP (2024): https://www.sciencedirect.com/science/article/abs/pii/S0950584924000739
 - LLMorpheus (2024): https://www.franktip.org/pubs/llmorpheus2024.pdf
 - LLMut (2024): https://arxiv.org/html/2406.09843v4
 
-### 7.4 Industrial Applications
+### 9.4 Industrial Applications
 
 - Meta ACH (2025): https://engineering.fb.com/2025/02/05/security/revolutionizing-software-testing-llm-powered-bug-catchers-meta-ach/
 - DeepMind CodeMender (2025): https://deepmind.google/blog/introducing-codemender-an-ai-agent-for-code-security/
 
-### 7.5 Bug Generation
+### 9.5 Bug Generation
 
 - DeepMutants (2021): https://arxiv.org/abs/2107.06657
 - BugLab (Microsoft): https://www.microsoft.com/en-us/research/blog/finding-and-fixing-bugs-with-deep-learning/
 
-### 7.6 Equivalent Mutant Detection
+### 9.6 Equivalent Mutant Detection
 
 - "LLMs for Equivalent Mutant Detection" (ISSTA 2024): https://arxiv.org/html/2408.01760v1
 
-### 7.7 Higher-Order Mutation
+### 9.7 Higher-Order Mutation
 
 - "Higher Order Mutation Testing: A Systematic Literature Review" (2016)
   - https://www.sciencedirect.com/science/article/abs/pii/S1574013716301095
 
-### 7.8 Clojure Tools
+### 9.8 Clojure Tools
 
 - mutant (archived): https://github.com/jstepien/mutant
 - rewrite-clj: https://github.com/clj-commons/rewrite-clj
@@ -1335,7 +1450,7 @@ Survived Mutants (weak test coverage):
 - Eastwood: https://github.com/jonase/eastwood
 - Malli: https://github.com/metosin/malli
 
-### 7.9 Testing Tools
+### 9.9 Testing Tools
 
 - PIT: https://pitest.org/
 - Stryker: https://stryker-mutator.io/
@@ -1343,7 +1458,7 @@ Survived Mutants (weak test coverage):
 - mutmut: https://mutmut.readthedocs.io/
 - Infection: https://infection.github.io/
 
-### 7.10 Benchmarks
+### 9.10 Benchmarks
 
 - Defects4J: https://github.com/rjust/defects4j
 - SWE-bench: https://www.swebench.com/

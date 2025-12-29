@@ -1496,6 +1496,47 @@ Phase 3 adds parallelism and watch mode to leverage this.
 
 ### Phase 4: AI Integration + Polish
 
+**Priority Order (revised based on Phase 3 learnings):**
+1. LLM Infrastructure + Cost Control (prerequisite)
+2. Hybrid Equivalent Detection (lowest risk, highest immediate value)
+3. AI-Powered Mutation Generation (core Phase 4 value)
+4. CI/CD Integration (high practical value)
+5. LLM Test Generation (nice-to-have, complex)
+6. ClojureScript Support (separate track, needs spike first)
+7. IDE Integration (polish, can wait)
+
+#### 4.0 LLM Infrastructure (Prerequisite)
+
+Before integrating AI features, establish infrastructure:
+
+**Cost Control:**
+- [ ] Token counting and budget tracking per run
+- [ ] Configurable cost limits: `:llm-budget-cents 100`
+- [ ] Cost reporting in mutation results
+- [ ] Tiered approach: deterministic first, AI for survivors only
+
+**Provider Abstraction:**
+```clojure
+(defprotocol LLMProvider
+  (generate [this prompt opts] "Generate completion")
+  (estimate-cost [this prompt] "Estimate cost before calling"))
+
+;; Implementations
+(defrecord ClaudeProvider [api-key model])
+(defrecord OllamaProvider [endpoint model])  ; Local, free
+(defrecord OpenAIProvider [api-key model])
+```
+
+**Local Model Support:**
+- [ ] Ollama integration for development/CI (free)
+- [ ] Support CodeLlama, DeepSeek-Coder for mutation generation
+- [ ] Fallback chain: local → cloud when quality needed
+
+**Caching:**
+- [ ] Cache LLM responses by (source-hash, prompt-template)
+- [ ] Reuse mutations for unchanged code
+- [ ] Persist cache across runs
+
 #### 4.1 AI-Powered Mutation Generation
 
 Based on research showing traditional operators miss ~49% of real-world bugs,
@@ -1525,29 +1566,30 @@ add LLM-powered semantic mutations:
 **Cost/Quality Tradeoffs:**
 - [ ] Tiered approach: deterministic first, AI for survivors
 - [ ] Caching: reuse AI mutations for similar code patterns
+- [ ] Use local models (Ollama) for development, cloud for CI
 
-#### 4.7 LLM-based Test Generation (from Meta ACH)
+**Clojure-Specific Prompt Engineering:**
+```clojure
+;; Prompt template optimized for Clojure
+(def mutation-prompt
+  "You are mutating Clojure code. Given this function:
 
-Based on Meta's ACH paper (2025) showing 73% acceptance rate for LLM-generated tests:
+   ```clojure
+   {source-code}
+   ```
 
-- [ ] For each surviving mutant, generate a test that would kill it
-- [ ] Use function context (docstring, schemas, examples) as prompt
-- [ ] Present generated tests for human review before commit
-- [ ] Track acceptance rate for feedback loop
-- [ ] Integration with PR workflow (suggest tests in comments)
+   Generate 3 subtle bugs that:
+   1. Compile without errors
+   2. Represent realistic Clojure mistakes (nil punning, lazy/eager, threading)
+   3. Would be missed by weak tests
 
-**Prompt Strategy:**
+   Focus on: destructuring errors, wrong threading macro, nil vs empty confusion,
+   lazy sequence issues, keyword typos, arity mistakes.
+
+   Return ONLY the mutated code blocks, no explanation.")
 ```
-Given this Clojure function and a mutation that survived testing:
-- Function: {source-code}
-- Docstring: {docstring}
-- Schema: {malli-schema}
-- Mutation: Changed {original} to {mutated} at line {line}
 
-Generate a test that would detect this mutation.
-```
-
-#### 4.8 Hybrid Equivalent Detection (from Meta ACH)
+#### 4.2 Hybrid Equivalent Detection (from Meta ACH)
 
 Combine static patterns with LLM for high-precision equivalent detection:
 
@@ -1568,7 +1610,55 @@ Mutation → Static Pattern Check → [equivalent? skip]
 - [ ] Batch prompting: group multiple mutation sites per API call
 - [ ] Local models: support Ollama for cost-sensitive environments
 
-#### 4.2 ClojureScript Support
+#### 4.3 CI/CD Integration
+
+High practical value for adoption:
+
+- [ ] GitHub Actions workflow templates
+- [ ] GitLab CI configuration
+- [ ] Jenkins plugin
+- [ ] PR comment with mutation score delta
+- [ ] Quality gate: fail if score drops below threshold
+- [ ] Incremental mode: only mutate changed files in PR
+
+**GitHub Action Example:**
+```yaml
+- uses: heretic-clj/mutation-testing@v1
+  with:
+    threshold: 80
+    incremental: true
+    comment-on-pr: true
+```
+
+#### 4.4 LLM-based Test Generation (from Meta ACH)
+
+Based on Meta's ACH paper (2025) showing 73% acceptance rate for LLM-generated tests:
+
+- [ ] For each surviving mutant, generate a test that would kill it
+- [ ] Use function context (docstring, schemas, examples) as prompt
+- [ ] Present generated tests for human review before commit
+- [ ] Track acceptance rate for feedback loop
+- [ ] Integration with PR workflow (suggest tests in comments)
+
+**Prompt Strategy:**
+```
+Given this Clojure function and a mutation that survived testing:
+- Function: {source-code}
+- Docstring: {docstring}
+- Schema: {malli-schema}
+- Mutation: Changed {original} to {mutated} at line {line}
+
+Generate a test that would detect this mutation.
+```
+
+#### 4.5 ClojureScript Support
+
+**Prerequisite:** Spike to assess feasibility before committing resources.
+
+**Feasibility Questions:**
+- [ ] Is ClojureScriptStorm available/maintained?
+- [ ] Can shadow-cljs build hooks integrate cleanly?
+- [ ] What's the coverage collection mechanism in JS runtime?
 
 **Node.js First Approach:**
 - ClojureScriptStorm integration (shadow-cljs)
@@ -1581,22 +1671,25 @@ Mutation → Static Pattern Check → [equivalent? skip]
 - Headless Chrome for test execution
 - Hot reload integration
 
-#### 4.3 IDE Integration
+#### 4.6 IDE Integration
+
+Lower priority - polish phase:
 
 - [ ] LSP server for inline mutation indicators
 - [ ] VS Code extension with survivor highlighting
 - [ ] Emacs/CIDER integration via nREPL
 - [ ] IntelliJ/Cursive plugin
 
-#### 4.4 CI/CD Integration
+#### 4.7 ML-Based Equivalent Detection
 
-- [ ] GitHub Actions workflow templates
-- [ ] GitLab CI configuration
-- [ ] Jenkins plugin
-- [ ] PR comment with mutation score delta
-- [ ] Quality gate: fail if score drops below threshold
+Train a classifier on labeled mutants:
 
-#### 4.5 Advanced Parallelism
+- [ ] Feature extraction: AST patterns, operator type, context
+- [ ] Binary classification: equivalent vs non-equivalent
+- [ ] Train on community-labeled dataset (needs curation)
+- [ ] Integration as third tier after static + LLM
+
+#### 4.8 Advanced Parallelism
 
 **Process Pool Architecture:**
 - [ ] Pre-fork worker JVMs at startup
