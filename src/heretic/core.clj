@@ -443,18 +443,9 @@
                                             :summary final-result
                                             :timestamp (System/currentTimeMillis)})))
 
-              ;; Step 7: Print terminal report (always)
-              (println)
-              (reporter/print-summary all-results)
-
+              ;; Step 7: Print survivor hotspots (files with most survivors)
               (when (seq survivor-list)
-                (println)
-                (reporter/print-survivors all-results)
-                ;; Print diagnosis of survivor patterns
-                (reporter/print-diagnosis all-results))
-
-              ;; Print test effectiveness report
-              (reporter/print-test-effectiveness all-results)
+                (reporter/print-survivor-hotspots all-results))
 
               ;; Step 8: Generate file report based on config
               (case report-format
@@ -472,6 +463,10 @@
                        (reporter/print-edn-report-written edn-path))
                 ;; :terminal or default - no file output needed
                 nil)
+
+              ;; Step 9: Print summary at the end
+              (println)
+              (reporter/print-summary all-results)
 
               ;; Return results
               final-result)))))))

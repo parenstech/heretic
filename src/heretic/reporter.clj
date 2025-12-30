@@ -285,6 +285,26 @@
 
     (println)))
 
+(defn print-survivor-hotspots
+  "Print top 10 files by number of surviving mutations.
+
+   Helps identify which files need the most test improvement."
+  [results]
+  (let [survivor-list (survivors results)
+        by-file (->> survivor-list
+                     (group-by #(get-in % [:mutation :file]))
+                     (map (fn [[file mutations]]
+                            {:file file
+                             :count (count mutations)}))
+                     (sort-by :count >)
+                     (take 10))]
+    (when (seq by-file)
+      (println)
+      (println (bold "Survivor Hotspots"))
+      (println "-----------------")
+      (doseq [{:keys [file count]} by-file]
+        (println (format "  %3d  %s" count (red file)))))))
+
 (defn print-survivors
   "Print details of surviving mutations.
 
