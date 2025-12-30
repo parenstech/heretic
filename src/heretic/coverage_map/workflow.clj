@@ -21,22 +21,23 @@
 ;; Source Dependency Tracking
 ;; =============================================================================
 
-(defn- ns->file-path
-  "Convert namespace symbol to file path (without source root)."
+(defn- ns->base-path
+  "Convert namespace symbol to base file path (without extension or source root)."
   [ns-sym]
   (-> (str ns-sym)
       (str/replace "." "/")
-      (str/replace "-" "_")
-      (str ".clj")))
+      (str/replace "-" "_")))
 
 (defn- find-source-file
-  "Find the actual source file for a namespace in the given source paths."
+  "Find the actual source file for a namespace in the given source paths.
+   Tries .clj first, then .cljc."
   [ns-sym source-paths]
-  (let [rel-path (ns->file-path ns-sym)]
+  (let [base-path (ns->base-path ns-sym)]
     (some (fn [source-path]
-            (let [f (io/file source-path rel-path)]
-              (when (.exists f)
-                (.getPath f))))
+            (or (let [f (io/file source-path (str base-path ".clj"))]
+                  (when (.exists f) (.getPath f)))
+                (let [f (io/file source-path (str base-path ".cljc"))]
+                  (when (.exists f) (.getPath f)))))
           source-paths)))
 
 (defn extract-source-deps

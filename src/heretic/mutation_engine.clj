@@ -86,8 +86,10 @@
            :let [dir (io/file source-path)]
            :when (.exists dir)
            file (file-seq dir)
+           :let [file-name (.getName file)]
            :when (and (.isFile file)
-                      (.endsWith (.getName file) ".clj"))
+                      (or (.endsWith file-name ".clj")
+                          (.endsWith file-name ".cljc")))
            :let [file-path (.getPath file)]
            site (find-mutation-sites file-path)
            ;; parser already returns :operator as keyword

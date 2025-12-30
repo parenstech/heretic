@@ -30,19 +30,26 @@
     (catch Exception _
       nil)))
 
+(defn- clojure-file?
+  "Returns true if file is a Clojure source file (.clj or .cljc)."
+  [file]
+  (let [name (.getName file)]
+    (or (.endsWith name ".clj")
+        (.endsWith name ".cljc"))))
+
 (defn- find-clj-files
-  "Recursively find all .clj files in a directory."
+  "Recursively find all Clojure files (.clj and .cljc) in a directory."
   [dir]
   (let [d (io/file dir)]
     (when (.exists d)
       (->> (file-seq d)
            (filter #(.isFile %))
-           (filter #(.endsWith (.getName %) ".clj"))))))
+           (filter clojure-file?)))))
 
 (defn discover-test-namespaces
   "Find all test namespaces in the given test paths.
 
-   Scans directories for .clj files and extracts ns declarations.
+   Scans directories for Clojure files (.clj and .cljc) and extracts ns declarations.
    Returns sequence of namespace symbols."
   [test-paths]
   (->> test-paths

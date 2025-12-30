@@ -211,15 +211,15 @@
       true  ;; No coverage file -> stale
       (let [{stored-hashes :hashes
              source-deps :source-deps} coverage-data
-            ;; Find test file path
+            ;; Find test file path (try .clj then .cljc)
             test-file-path (some (fn [test-path]
-                                   (let [rel (-> (str test-ns)
-                                                 (str/replace "." "/")
-                                                 (str/replace "-" "_")
-                                                 (str ".clj"))
-                                         f (io/file test-path rel)]
-                                     (when (.exists f)
-                                       (.getPath f))))
+                                   (let [base (-> (str test-ns)
+                                                  (str/replace "." "/")
+                                                  (str/replace "-" "_"))]
+                                     (or (let [f (io/file test-path (str base ".clj"))]
+                                           (when (.exists f) (.getPath f)))
+                                         (let [f (io/file test-path (str base ".cljc"))]
+                                           (when (.exists f) (.getPath f))))))
                                  test-paths)
             current-test-hash (hash-file test-file-path)
             current-source-hash (hash-files source-deps)

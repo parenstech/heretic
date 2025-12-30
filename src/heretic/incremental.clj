@@ -69,14 +69,21 @@
 ;; Change Detection
 ;; =============================================================================
 
+(defn- clojure-file?
+  "Returns true if file is a Clojure source file (.clj or .cljc)."
+  [f]
+  (let [name (.getName f)]
+    (or (.endsWith name ".clj")
+        (.endsWith name ".cljc"))))
+
 (defn- find-clj-files
-  "Recursively find all .clj files in directories."
+  "Recursively find all Clojure files (.clj and .cljc) in directories."
   [source-paths]
   (for [dir source-paths
         :let [d (io/file dir)]
         :when (.exists d)
         f (file-seq d)
-        :when (and (.isFile f) (.endsWith (.getName f) ".clj"))]
+        :when (and (.isFile f) (clojure-file? f))]
     (.getPath f)))
 
 (defn hash-file-forms
