@@ -101,16 +101,24 @@ clj -M:heretic -m heretic.core watch
 After mutation testing, Heretic reports:
 
 ```
+Survivor Hotspots
+-----------------
+   43  src/main/my_app/core.clj
+   12  src/main/my_app/util.clj
+
 Mutation Testing Results
 ========================
-Killed:      98
-Survived:    24
-Equivalent:  5
-No coverage: 10
-Score:       80.3%
+
+Total: 200 mutations
+
+  Killed:      156 (78%)
+  Survived:     24 (12%)
+  No Coverage:  20 (10%)
+
+Score: 86.7%
 ```
 
-Surviving mutations indicate potential gaps in your tests. Review them to decide if you need additional test cases.
+**Survivor Hotspots** shows files ranked by number of surviving mutations - these need better test coverage. Review individual survivors with the `survivors` command or HTML report.
 
 ## Configuration
 
