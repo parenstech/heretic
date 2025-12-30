@@ -434,6 +434,15 @@
                   report-format (:report-format config)
                   output-path (:output-path config "target/heretic-report")]
 
+              ;; Step 6.5: Save mutation results for survivors command
+              (let [results-file (io/file heretic-dir "mutation-results.edn")
+                    survivors-data (mapv (fn [{:keys [mutation]}]
+                                           (select-keys mutation [:file :line :column :operator :original :replacement]))
+                                         survivor-list)]
+                (spit results-file (pr-str {:survivors survivors-data
+                                            :summary final-result
+                                            :timestamp (System/currentTimeMillis)})))
+
               ;; Step 7: Print terminal report (always)
               (println)
               (reporter/print-summary all-results)
