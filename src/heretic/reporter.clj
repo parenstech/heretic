@@ -8,12 +8,12 @@
    - `mutation-score` - Calculate killed/(killed+survived) ratio
    - `print-summary` - Print summary stats to terminal
    - `print-survivors` - List surviving mutations with details
+   - `print-diagnosis` - Print automated diagnosis of survivor patterns
    - `generate-html-report` - Generate HTML report with heatmap and trend charts
-   - `generate-json-report` - Generate JSON report for programmatic access
-
-   No dependencies on other heretic modules."
+   - `generate-json-report` - Generate JSON report for programmatic access"
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
+            [heretic.diagnosis :as diagnosis]
             [heretic.subsumption :as subsumption]
             [hiccup2.core :as h]))
 
@@ -375,13 +375,26 @@
 
       (println))))
 
+(defn print-diagnosis
+  "Print automated diagnosis of survivor patterns.
+
+   Analyzes surviving mutations to identify common test gaps
+   and provides actionable suggestions for improvement."
+  [results]
+  (let [survivor-list (survivors results)]
+    (when (seq survivor-list)
+      (let [diag (diagnosis/diagnose-survivors survivor-list)]
+        (when-let [output (diagnosis/format-diagnosis-terminal diag)]
+          (println output))))))
+
 (defn print-report
   "Print full mutation testing report.
 
-   Combines summary, survivors, no-coverage, and test effectiveness sections."
+   Combines summary, survivors, diagnosis, no-coverage, and test effectiveness sections."
   [results]
   (print-summary results)
   (print-survivors results)
+  (print-diagnosis results)
   (print-no-coverage results)
   (print-test-effectiveness results))
 
@@ -544,12 +557,14 @@
    Returns a map suitable for JSON serialization with:
    - :summary - Overall statistics
    - :survivors - List of surviving mutations
+   - :diagnosis - Analysis of survivor patterns
    - :byFile - Per-file breakdown"
   [results]
   (let [counts (count-by-status results)
         total (count results)
         score (mutation-score results)
-        survivor-list (survivors results)]
+        survivor-list (survivors results)
+        diag (diagnosis/diagnose-survivors survivor-list)]
     {:summary {:total total
                :killed (:killed counts)
                :survived (:survived counts)
@@ -558,6 +573,7 @@
                :error (:error counts)
                :score score}
      :survivors (mapv survivor-to-json-map survivor-list)
+     :diagnosis (diagnosis/format-diagnosis-data diag)
      :byFile (json-stats-by-file results)}))
 
 (defn generate-json-report
@@ -572,6 +588,7 @@
    The JSON structure includes:
    - summary: Overall statistics (total, killed, survived, score, etc.)
    - survivors: List of surviving mutations with file, line, operator details
+   - diagnosis: Analysis of survivor patterns with fixes
    - byFile: Results grouped by source file"
   [results output-path]
   (let [report-data (json-report-data results)
@@ -683,6 +700,30 @@
   .survivor-location { font-family: monospace; font-weight: bold; }
   .survivor-change { color: #6c757d; margin: 5px 0; }
   .survivor-tests { font-size: 0.85em; color: #868e96; }
+  .diagnosis { margin-bottom: 30px; }
+  .diagnosis-list { margin-top: 15px; }
+  .diagnosis-item {
+    background: #fff3cd;
+    border-left: 4px solid #ffc107;
+    padding: 15px;
+    margin-bottom: 15px;
+    border-radius: 0 4px 4px 0;
+  }
+  .diagnosis-item h3 {
+    margin: 0 0 10px 0;
+    color: #856404;
+    font-size: 1.1em;
+  }
+  .diagnosis-item p { margin: 5px 0; }
+  .diagnosis-item .example {
+    background: #f8f9fa;
+    padding: 10px;
+    margin-top: 10px;
+    border-radius: 4px;
+    font-size: 0.9em;
+    overflow-x: auto;
+  }
+  .undiagnosed { font-style: italic; color: #6c757d; margin-top: 15px; }
   .code-snippet {
     font-family: 'SFMono-Regular', Consolas, monospace;
     font-size: 0.85em;
@@ -885,6 +926,29 @@
                 "(none)"
                 (str/join ", " (map str tests-run)))]]))]])))
 
+(defn- html-diagnosis-section
+  "Generate HTML for the survivor diagnosis section."
+  [results]
+  (let [survivor-list (survivors results)]
+    (when (seq survivor-list)
+      (let [diag (diagnosis/diagnose-survivors survivor-list)]
+        (when (seq (:patterns diag))
+          [:div.card.diagnosis
+           [:h2 "Diagnosis"]
+           [:p "Common patterns detected in surviving mutations:"]
+           [:div.diagnosis-list
+            (for [{:keys [pattern-id count diagnosis fix example]} (:patterns diag)]
+              [:div.diagnosis-item
+               [:h3 (str (name pattern-id) " (" count " survivors)")]
+               [:p [:strong "Problem: "] diagnosis]
+               [:p [:strong "Fix: "] fix]
+               (when example
+                 [:pre.example example])])]
+           (when (pos? (:undiagnosed-count diag))
+             [:p.undiagnosed
+              (str (:undiagnosed-count diag) " survivors don't match known patterns. "
+                   "See docs/interpreting-survivors.md for manual analysis.")])])))))
+
 (defn- html-test-effectiveness-section
   "Generate HTML for the test effectiveness ranking section.
 
@@ -1002,7 +1066,8 @@
               (html-trend-section trend-data)
               (html-heatmap-section results)
               (html-test-effectiveness-section results)
-              (html-survivors-section results)]]]))]
+              (html-survivors-section results)
+              (html-diagnosis-section results)]]]))]
      ;; Ensure output directory exists
      (io/make-parents output-path)
      (spit output-path html-content)
@@ -1054,6 +1119,7 @@
    Returns a map with:
    - :summary - Overall statistics
    - :survivors - List of surviving mutations
+   - :diagnosis - Analysis of survivor patterns
    - :by-file - Per-file breakdown
 
    Uses idiomatic Clojure naming (kebab-case) unlike JSON report."
@@ -1061,7 +1127,8 @@
   (let [counts (count-by-status results)
         total (count results)
         score (mutation-score results)
-        survivor-list (survivors results)]
+        survivor-list (survivors results)
+        diag (diagnosis/diagnose-survivors survivor-list)]
     {:summary {:total total
                :killed (:killed counts)
                :survived (:survived counts)
@@ -1070,6 +1137,7 @@
                :error (:error counts)
                :score score}
      :survivors (mapv survivor-to-edn-map survivor-list)
+     :diagnosis (diagnosis/format-diagnosis-data diag)
      :by-file (edn-stats-by-file results)}))
 
 (defn generate-edn-report
@@ -1084,6 +1152,7 @@
    The EDN structure includes:
    - :summary - Overall statistics (total, killed, survived, score, etc.)
    - :survivors - List of surviving mutations with file, line, operator details
+   - :diagnosis - Analysis of survivor patterns with fixes
    - :by-file - Results grouped by source file"
   [results output-path]
   (let [report-data (edn-report-data results)]

@@ -440,7 +440,9 @@
 
               (when (seq survivor-list)
                 (println)
-                (reporter/print-survivors all-results))
+                (reporter/print-survivors all-results)
+                ;; Print diagnosis of survivor patterns
+                (reporter/print-diagnosis all-results))
 
               ;; Print test effectiveness report
               (reporter/print-test-effectiveness all-results)
