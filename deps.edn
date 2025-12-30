@@ -29,8 +29,7 @@
   {:extra-paths ["test"]
    :classpath-overrides {org.clojure/clojure nil}
    :extra-deps {lambdaisland/kaocha {:mvn/version "1.91.1392"}
-                com.github.flow-storm/clojure {:mvn/version "1.12.0-1"}
-                com.github.flow-storm/flow-storm-dbg {:mvn/version "4.1.1"}}
+                com.github.flow-storm/clojure {:mvn/version "1.12.0-1"}}
    :jvm-opts ["-Dclojure.storm.instrumentEnable=false"]  ;; Disable during tests
    :main-opts ["-m" "kaocha.runner"]}
 
@@ -40,10 +39,8 @@
   {:classpath-overrides {org.clojure/clojure nil}
    :extra-deps
    {;; ClojureStorm - patched Clojure compiler for instrumentation
-    com.github.flow-storm/clojure {:mvn/version "1.12.0-1"}
-
-    ;; Flow Storm debugger - provides FormRegistry API
-    com.github.flow-storm/flow-storm-dbg {:mvn/version "4.1.1"}}
+    ;; Includes Emitter, Tracer, and FormRegistry APIs
+    com.github.flow-storm/clojure {:mvn/version "1.12.0-1"}}
 
    :jvm-opts
    ["-Dclojure.storm.instrumentEnable=true"
@@ -57,8 +54,7 @@
   {:extra-paths ["test"]
    :extra-deps
    {lambdaisland/kaocha {:mvn/version "1.91.1392"}
-    com.github.flow-storm/clojure {:mvn/version "1.12.0-1"}
-    com.github.flow-storm/flow-storm-dbg {:mvn/version "4.1.1"}}
+    com.github.flow-storm/clojure {:mvn/version "1.12.0-1"}}
    :classpath-overrides {org.clojure/clojure nil}
    :jvm-opts
    ["-Dclojure.storm.instrumentEnable=true"]}}}

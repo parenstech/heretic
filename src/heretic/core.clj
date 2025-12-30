@@ -353,7 +353,7 @@
     (println)
     (reporter/print-phase "Initializing namespace reloader...")
     (let [source-paths (:source-paths config)]
-      (reloader/init! source-paths))
+      (reloader/init! source-paths :output :quiet))
     (reporter/print-phase "Reloader ready.")
 
     ;; Step 3: Generate and filter mutations (via controller)

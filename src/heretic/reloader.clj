@@ -14,13 +14,25 @@
    - Dependency-aware reload ordering
    - Protocol/multimethod preservation
    - Lifecycle hooks (before-ns-unload/after-ns-reload)"
-  (:require [clj-reload.core :as reload]))
+  (:require [clj-reload.core :as reload])
+  (:import [java.io StringWriter]))
 
 ;; =============================================================================
 ;; State
 ;; =============================================================================
 
 (defonce ^:private state (atom {:initialized? false :dirs nil}))
+
+;; =============================================================================
+;; Helpers
+;; =============================================================================
+
+(defmacro ^:private with-quiet-stdout
+  "Execute body with stdout suppressed. Returns the result of body."
+  [& body]
+  `(let [sw# (StringWriter.)]
+     (binding [*out* sw#]
+       ~@body)))
 
 ;; =============================================================================
 ;; Initialization
@@ -40,10 +52,11 @@
   [source-paths & {:as opts}]
   (try
     (let [dirs (vec source-paths)
-          {:keys [initialized?] current-dirs :dirs} @state]
+          {:keys [initialized?] current-dirs :dirs} @state
+          init-opts (merge {:dirs dirs :output :quiet} opts)]
       (when (or (not initialized?)
                 (not= dirs current-dirs))
-        (reload/init (merge {:dirs dirs} opts))
+        (reload/init init-opts)
         (reset! state {:initialized? true :dirs dirs})))
     {:success true}
     (catch Exception e
@@ -81,7 +94,7 @@
     (throw (ex-info "Reloader not initialized. Call init! first."
                     {:type :not-initialized})))
   (try
-    (let [result (reload/reload (merge {:throw false} opts))]
+    (let [result (with-quiet-stdout (reload/reload (merge {:throw false} opts)))]
       (if (:exception result)
         {:success false
          :error (:exception result)
