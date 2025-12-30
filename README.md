@@ -4,6 +4,14 @@
   <img src="heretic-logo.webp" alt="Heretic" width="400">
 </p>
 
+---
+
+## ⚠️ EXPERIMENTAL - NOT RELEASED ⚠️
+
+**This library is not ready for use.** It's a demo for the curious. The API, behavior, and everything else is subject to change without notice. Do not depend on this for anything.
+
+---
+
 Mutation testing for Clojure with intelligent test selection.
 
 ## Why Mutation Testing?
