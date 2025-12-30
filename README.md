@@ -1,7 +1,7 @@
 # Heretic
 
 <p align="center">
-  <img src="heretic.webp" alt="Heretic" width="400">
+  <img src="heretic-logo.webp" alt="Heretic" width="400">
 </p>
 
 Mutation testing for Clojure with intelligent test selection.
