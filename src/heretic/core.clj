@@ -49,6 +49,7 @@
    :heretic-dir ".heretic"
    :instrument-prefixes []
    :instrument-skip-prefixes []
+   :exclude-files []
    :parallel-collect false
    ;; Operator selection - use :preset OR :operators (operators takes precedence)
    ;; :preset can be :fast, :standard, or :comprehensive

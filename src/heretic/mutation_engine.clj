@@ -70,17 +70,31 @@
 ;; Mutation Generation
 ;; =============================================================================
 
+(defn- file-excluded?
+  "Check if a file path matches any of the exclude patterns.
+   Exclude patterns can be exact paths or paths relative to source-paths."
+  [file-path exclude-files]
+  (when (seq exclude-files)
+    (let [canonical-path (.getCanonicalPath (io/file file-path))
+          exclude-set (set exclude-files)]
+      (or (contains? exclude-set file-path)
+          (contains? exclude-set canonical-path)
+          (some #(.endsWith canonical-path %) exclude-files)))))
+
 (defn generate-mutations
   "Generate all mutation records for the given source paths.
 
    Arguments:
    - source-paths: Sequence of source directories to scan
    - operators: (optional) Sequence of operators to use (defaults to all)
+   - exclude-files: (optional) Sequence of file paths to exclude from mutation
 
    Returns sequence of mutation records with :id added."
   ([source-paths]
    (generate-mutations source-paths ops/all-operators))
   ([source-paths operators]
+   (generate-mutations source-paths operators nil))
+  ([source-paths operators exclude-files]
    (let [operator-ids (set (map :id operators))]
      (for [source-path source-paths
            :let [dir (io/file source-path)]
@@ -91,6 +105,7 @@
                       (or (.endsWith file-name ".clj")
                           (.endsWith file-name ".cljc")))
            :let [file-path (.getPath file)]
+           :when (not (file-excluded? file-path exclude-files))
            site (find-mutation-sites file-path)
            ;; parser already returns :operator as keyword
            :when (contains? operator-ids (:operator site))]

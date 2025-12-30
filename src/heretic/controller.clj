@@ -113,12 +113,17 @@
    - source-paths: Sequence of source directories
    - operators: Sequence of operator definitions
    - files: Optional specific files to mutate (nil = all)
+   - exclude-files: Optional files to exclude from mutation
 
    Returns lazy sequence of mutations."
-  [source-paths operators & {:keys [files]}]
+  [source-paths operators & {:keys [files exclude-files]}]
   (if files
-    (mapcat #(engine/mutations-for-file % operators) files)
-    (engine/generate-mutations source-paths operators)))
+    ;; When specific files provided, filter out excluded ones
+    (let [files-to-mutate (if (seq exclude-files)
+                            (remove #(some (fn [excl] (.endsWith % excl)) exclude-files) files)
+                            files)]
+      (mapcat #(engine/mutations-for-file % operators) files-to-mutate))
+    (engine/generate-mutations source-paths operators exclude-files)))
 
 (defn filter-equivalent-mutations
   "Filter out likely equivalent mutations.
@@ -149,12 +154,12 @@
    This is a pure function that transforms configuration into testable mutations.
 
    Filtering pipeline:
-   1. Generate all mutations from source
+   1. Generate all mutations from source (excluding :exclude-files)
    2. Filter equivalent mutations (if :filter-equivalent is true)
    3. Filter by operator subsumption (if :use-subsumption is true)
 
    Arguments:
-   - config: Configuration map with :source-paths, :filter-equivalent, :use-subsumption
+   - config: Configuration map with :source-paths, :filter-equivalent, :use-subsumption, :exclude-files
    - operators: Resolved operators
    - files: Optional specific files (nil = all in source-paths)
 
@@ -165,7 +170,10 @@
    - :subsumed-count - Count removed by subsumption filter"
   [config operators & {:keys [files]}]
   (let [source-paths (:source-paths config)
-        all-mutations (generate-mutations source-paths operators :files files)
+        exclude-files (:exclude-files config)
+        all-mutations (generate-mutations source-paths operators
+                                          :files files
+                                          :exclude-files exclude-files)
         all-mutations-vec (vec all-mutations)
         total-found (count all-mutations-vec)
         ;; Step 1: Filter equivalent mutations
