@@ -1,120 +1,104 @@
----
-status: stable
-contributions:
-  - "Example: real-world project usage"
-  - "Example: CI integration patterns"
----
-
 # Heretic
 
 Mutation testing for Clojure with intelligent test selection.
 
-## What is Mutation Testing?
+## Why Mutation Testing?
 
-Mutation testing evaluates the quality of your tests by making small changes (mutations) to your source code and checking if your tests catch them. If a test fails, the mutation is "killed" - your tests are doing their job. If all tests pass, the mutation "survived" - you may have a gap in your test coverage.
+Code coverage tells you if code was *executed*. Mutation testing tells you if it was *actually verified*.
 
-Unlike code coverage, which only tells you if code was *executed*, mutation testing tells you if code was *actually verified* by your tests.
+Heretic makes small changes (mutations) to your source code and checks if your tests catch them:
 
-## How Heretic Works
+- **Killed** - A test failed. Your tests are doing their job.
+- **Survived** - All tests passed. You may have a gap in test coverage.
 
-Heretic uses [ClojureStorm](https://github.com/flow-storm/flow-storm-debugger) (a patched Clojure compiler) to trace which tests execute which code. This enables:
+A high mutation score means your tests don't just run your code - they verify its behavior.
 
-1. **Test-to-code mapping**: Know exactly which tests exercise which expressions
-2. **Targeted mutation testing**: Run only relevant tests for each mutation
-3. **Incremental collection**: Only recollect coverage when files change
+## Why Heretic?
 
-```
-+------------------+     +------------------+     +------------------+
-|  Your Tests      | --> |  ClojureStorm    | --> |  Coverage Map    |
-|  (clojure.test)  |     |  (tracing)       |     |  (test -> code)  |
-+------------------+     +------------------+     +------------------+
-                                                          |
-                                                          v
-+------------------+     +------------------+     +------------------+
-|  Report          | <-- |  Targeted Tests  | <-- |  Mutations       |
-|  (survivors)     |     |  (subset)        |     |  (rewrite-clj)   |
-+------------------+     +------------------+     +------------------+
-```
+Mutation testing is expensive. A typical tool runs your entire test suite for every mutation, making it impractical for real projects.
 
-## Status
+Heretic solves this with **test-to-code mapping**: it knows exactly which tests exercise which expressions, so each mutation only runs the tests that matter. This makes mutation testing practical for everyday development.
 
-**Phase 1 complete** - Coverage collection is fully functional. Phase 2 (mutation testing) is next.
+**Key features:**
 
-See [docs/spec.md](docs/spec.md) for the full specification.
-
-## CRITICAL: Self-Instrumentation Warning
-
-**Heretic code must NOT be instrumented by ClojureStorm.** If it is, infinite recursion occurs because tracer callbacks invoke instrumented code, which triggers more callbacks, and so on.
-
-You **must** configure ClojureStorm to skip Heretic namespaces using one of these approaches:
-
-**Option 1: Explicit prefixes (recommended)**
-```
--Dclojure.storm.instrumentAutoPrefixes=false
--Dclojure.storm.instrumentOnlyPrefixes=<your-app-prefix>
-```
-
-**Option 2: Skip Heretic explicitly**
-```
--Dclojure.storm.instrumentSkipPrefixes=heretic
-```
-
-Without these flags, collection will hang or stack overflow.
+- **Coverage-based test selection** via [ClojureStorm](https://github.com/flow-storm/clojure) instrumentation
+- **80+ mutation operators** covering arithmetic, boolean, comparison, collection, nil-handling, threading, and more
+- **Clojure-specific mutations** like `->` vs `->>`, `map` vs `mapv`, keyword case conversion
+- **Subsumption analysis** to reduce redundant mutations while maintaining fault detection
+- **Equivalent mutation detection** to filter out mutations that can't be killed
+- **Incremental testing** - only re-test when source or tests change
+- **Watch mode** for continuous feedback during development
+- **Parallel execution** across source files
+- **Mutant schemata** optimization - compile all mutations once, select at runtime
+- **HTML/JSON/EDN reports** with source heatmaps and survivor details
 
 ## Installation
 
-Add to your `deps.edn`:
+Add Heretic to your `deps.edn`:
 
 ```clojure
 {:aliases
  {:heretic
-  {:extra-deps {io.github.your-org/heretic {:git/tag "v0.1.0" :git/sha "..."}}
+  {:extra-deps {io.github.parenstech/heretic {:git/tag "v0.1.0" :git/sha "..."}}
    :extra-paths ["test"]}}}
 ```
 
-Create a `heretic.edn` config file:
+Create a `heretic.edn` configuration file:
 
 ```clojure
 {:source-paths ["src"]
  :test-paths ["test"]
  :test-namespaces :all  ; or [my.app.core-test my.app.util-test]
 
- ;; ClojureStorm instrumentation (limit to your code)
+ ;; ClojureStorm instrumentation - limit to your code
  :instrument-prefixes ["my-app"]
  :instrument-skip-prefixes ["my-app.dev"]}
 ```
 
+## Quick Start
+
+```bash
+# Collect test-to-code coverage (one-time, cached)
+clj -M:heretic -m heretic.core collect
+
+# Run mutation testing
+clj -M:heretic -m heretic.core mutate
+
+# Watch mode - continuous mutation testing on changes
+clj -M:heretic -m heretic.core watch
+```
+
 ## Usage
 
-```bash
-# Collect test-to-code coverage
-bb heretic:collect
+### Commands
 
-# Show which test namespaces need recollection
-bb heretic:status
+| Command | Description |
+|---------|-------------|
+| `collect` | Build test-to-code coverage map |
+| `collect --force` | Force full recollection |
+| `status` | Show which test namespaces need recollection |
+| `mutate` | Run mutation testing |
+| `mutate --files src/my_app/core.clj` | Mutate specific files |
+| `mutate --operators arithmetic,comparison` | Use specific operator categories |
+| `survivors` | Show surviving mutations from last run |
+| `watch` | Continuous mutation testing on file changes |
+| `clean` | Remove cached coverage data |
 
-# Run mutation testing (Phase 2 - not yet implemented)
-bb heretic:mutate
+### Output
 
-# Show surviving mutations
-bb heretic:survivors
+After mutation testing, Heretic reports:
 
-# Watch mode - continuous mutation testing on file changes
-bb heretic:watch
-
-# Clean coverage data
-bb heretic:clean
+```
+Mutation Testing Results
+========================
+Killed:      98
+Survived:    24
+Equivalent:  5
+No coverage: 10
+Score:       80.3%
 ```
 
-### Options
-
-```bash
-# Force full recollection (ignore staleness)
-bb heretic:collect --force
-
-# Collect specific test namespaces only
-bb heretic:collect --namespaces my.app.core-test,my.app.util-test
-```
+Surviving mutations indicate potential gaps in your tests. Review them to decide if you need additional test cases.
 
 ## Configuration
 
@@ -124,7 +108,7 @@ Full configuration options in `heretic.edn`:
 {;; Source and test locations
  :source-paths ["src"]
  :test-paths ["test"]
- :test-namespaces :all  ; or list of symbols
+ :test-namespaces :all  ; or list of namespace symbols
 
  ;; Coverage storage
  :heretic-dir ".heretic"
@@ -133,66 +117,153 @@ Full configuration options in `heretic.edn`:
  :instrument-prefixes ["my-app"]
  :instrument-skip-prefixes ["my-app.dev" "my-app.test"]
 
- ;; Mutation operators (Phase 2)
- :mutation-operators [:arithmetic :comparison :boolean :return-values]
- :skip-forms #{comment}
- :timeout-ms 5000
+ ;; Mutation operators
+ :preset :standard      ; :fast, :standard, :minimal, or :comprehensive
+ :skip-forms #{comment} ; Forms to skip
+
+ ;; Execution
+ :timeout-ms 5000       ; Per-mutant timeout
+ :parallel-workers 4    ; Number of parallel workers
 
  ;; Reporting
- :report-format :terminal  ; or :html, :json, :edn
+ :report-format :html   ; :terminal, :html, :json, :edn
  :output-path "target/heretic-report"}
 ```
 
-## How Coverage Collection Works
+### Operator Presets
+
+| Preset | Operators | Use Case |
+|--------|-----------|----------|
+| `:fast` | ~16 | Quick feedback during development |
+| `:standard` | ~35 | Balanced set for CI (default) |
+| `:minimal` | ~30 | Subsumption-optimized, ~99% fault detection |
+| `:comprehensive` | 80+ | Maximum coverage when time permits |
+
+## How It Works
+
+### Coverage Collection
+
+Heretic uses [ClojureStorm](https://github.com/flow-storm/clojure), a patched Clojure compiler, to trace which tests execute which expressions:
 
 1. Tests run one-by-one under ClojureStorm tracing
-2. For each expression evaluated, Heretic records: test -> form-id -> coordinates
+2. For each expression evaluated, Heretic records: `test -> form-id -> coordinates`
 3. Coverage is stored per test namespace for incremental updates
 4. An inverse index maps code locations back to tests
 
-This approach works with any test runner (Kaocha, Cognitect, clojure.test) since it runs tests individually rather than wrapping the test framework.
+### Mutation Testing
 
-### Output Structure
+For each mutation:
 
-After collection, the `.heretic/` directory contains:
+1. Look up relevant tests via coverage map
+2. Apply mutation using [rewrite-clj](https://github.com/clj-commons/rewrite-clj)
+3. Reload namespace with [clj-reload](https://github.com/tonsky/clj-reload)
+4. Run targeted tests (stop on first failure)
+5. Record result and restore original code
 
+### Mutant Schemata
+
+When multiple mutations target the same file, Heretic uses **mutant schemata** for efficiency:
+
+```clojure
+;; Original
+(defn calculate [x] (+ x 1))
+
+;; Schematized (all mutations compiled once)
+(defn calculate [x]
+  (case heretic.schemata/*active-mutant*
+    :mut-1-plus-minus (- x 1)
+    :mut-1-mult       (* x 1)
+    (+ x 1)))  ; default = original
 ```
-.heretic/
-├── meta.edn           # Form registry from ClojureStorm
-├── coverage/
-│   └── my.app.core-test.edn   # Per-namespace coverage
-└── index.edn          # Inverse index: [form-id coord] → #{tests}
+
+This avoids recompilation between mutations - just rebind the dynamic var.
+
+## Mutation Operators
+
+### Arithmetic
+`+` <-> `-`, `*` <-> `/`, `inc` <-> `dec`
+
+### Comparison
+`<` <-> `>`, `<=` <-> `>=`, `=` <-> `not=`, boundary mutations (`<` <-> `<=`)
+
+### Boolean
+`and` <-> `or`, `true` <-> `false`, remove `not`
+
+### Collections
+`first` <-> `last`, `rest` <-> `next`, `take` <-> `drop`, `conj` <-> `disj`
+
+### Nil-Handling
+`nil?` <-> `some?`, `seq` <-> `empty?`
+
+### Threading
+`->` <-> `->>`, `->` <-> `some->`, `->>` <-> `some->>`
+
+### Lazy/Eager
+`map` <-> `mapv`, `filter` <-> `filterv`, `for` <-> `doseq`
+
+### Higher-Order Functions
+`filter` <-> `remove`, `keep` <-> `filter`
+
+### Return Values
+Replace `nil` with `false`, `0`, `[]`, `{}`, `""`
+
+### Constants
+`0` <-> `1`, `1` <-> `-1`, common numeric constants
+
+### Destructuring
+`:user-id` <-> `:userId`, `:user/id` <-> `:users/id`, qualified <-> unqualified keywords
+
+## ClojureStorm Configuration
+
+Heretic requires ClojureStorm to collect coverage. Configure it via JVM options:
+
+```clojure
+;; In deps.edn alias
+:jvm-opts ["-Dclojure.storm.instrumentEnable=true"
+           "-Dclojure.storm.instrumentOnlyPrefixes=my-app"
+           "-Dclojure.storm.instrumentSkipPrefixes=my-app.test"]
 ```
 
-## Mutation Operators (Phase 2)
+**Important:** Never instrument Heretic itself, or infinite recursion will occur.
 
-| Category | Original | Mutations |
-|----------|----------|-----------|
-| Arithmetic | `+` | `-`, `*`, `/` |
-| Comparison | `<` | `<=`, `>`, `>=`, `=` |
-| Boolean | `and` | `or` |
-| Return values | `x` | `nil`, `0`, `""`, `[]` |
+## Reports
 
-See the full list in [docs/spec.md](docs/spec.md#mutation-operators).
+### HTML Report
 
-## Development
+The HTML report includes:
+- Mutation score summary
+- Source file heatmap (visual killed/survived ratio per file)
+- Detailed survivor list with code snippets
+- Test effectiveness ranking
+- Historical trends
 
-```bash
-# Start a REPL
-bb dev:repl
+### JSON/EDN Export
 
-# Run tests
-bb test
+Machine-readable output for CI integration:
 
-# ClojureStorm REPL (for development)
-clj -M:dev:clojurestorm
+```clojure
+{:summary {:total 127 :killed 98 :survived 24 :score 0.803}
+ :by-file {"src/my_app/core.clj" {:total 45 :killed 38}}
+ :survivors [{:file "..." :line 42 :operator :swap-plus-minus ...}]}
 ```
+
+## Future Work
+
+The following features are planned for future releases:
+
+- **AI-powered mutations** - LLM-generated semantic mutations targeting real-world bug patterns
+- **AI equivalent detection** - Hybrid static/LLM filtering for surviving mutations
+- **Test generation** - LLM suggestions for tests that would kill survivors
+- **ClojureScript support** - shadow-cljs integration for browser/Node.js testing
+- **Process-level parallelism** - Pre-forked worker JVMs for maximum throughput
 
 ## Dependencies
 
 - [ClojureStorm](https://github.com/flow-storm/clojure) - Instrumented Clojure compiler
 - [rewrite-clj](https://github.com/clj-commons/rewrite-clj) - Source code manipulation
 - [clj-reload](https://github.com/tonsky/clj-reload) - Namespace reloading
+- [Malli](https://github.com/metosin/malli) - Schema validation
+- [Missionary](https://github.com/leonoel/missionary) - Reactive programming for worker supervision
 
 ## License
 
