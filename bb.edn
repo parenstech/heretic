@@ -87,7 +87,8 @@
    :task
    (let [config (load-config)
          code (str "(require '[heretic.core :as heretic])"
-                   "(heretic/mutate! (heretic/load-config))")]
+                   "(heretic/mutate! (heretic/load-config))"
+                   "(System/exit 0)")]
      (run-with-clojurestorm config code))}
 
   heretic:survivors
