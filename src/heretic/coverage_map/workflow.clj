@@ -143,10 +143,20 @@
                    (persist/find-stale-test-namespaces
                     heretic-dir target-ns test-paths source-paths config))
 
-        ;; Get form registry (after loading test namespaces)
-        _ (println "  Loading" (count stale-ns) "stale namespaces...")
-        _ (doseq [ns-sym stale-ns]
-            (println "    Loading" ns-sym)
+        ;; Load ALL discovered test namespaces (not just the subset we're
+        ;; collecting coverage for) so ClojureStorm's FormRegistry ends up
+        ;; with the full set of forms. Otherwise the resulting
+        ;; form-location-index is partial, and downstream mutate runs can't
+        ;; map mutation sites in non-collected namespaces to their covering
+        ;; tests — the symptom is near-zero kills on a run that implicitly
+        ;; recollects only some namespaces via ensure-coverage!.
+        ;; require is a no-op for already-loaded namespaces, so the extra
+        ;; ones are cheap when the JVM was warmed up for this collect; when
+        ;; it wasn't (e.g. in-process collect triggered from mutate!), paying
+        ;; the full load cost is necessary for correctness.
+        _ (println "  Loading" (count all-test-ns) "test namespaces for form registry ("
+                   (count stale-ns) "stale to collect)...")
+        _ (doseq [ns-sym all-test-ns]
             (require ns-sym))
         _ (println "  Getting form registry...")
         forms (registry/get-form-registry)
