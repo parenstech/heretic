@@ -14,8 +14,9 @@
    - Dependency-aware reload ordering
    - Protocol/multimethod preservation
    - Lifecycle hooks (before-ns-unload/after-ns-reload)"
-  (:require [clj-reload.core :as reload])
-  (:import [java.io StringWriter]))
+  (:require [clj-reload.core :as reload]
+            [clojure.java.io :as io])
+  (:import [java.io StringWriter PushbackReader]))
 
 ;; =============================================================================
 ;; State
@@ -126,6 +127,46 @@
    Returns same structure as reload!"
   [& opts]
   (apply reload! opts))
+
+(defn ns-for-file
+  "Read the namespace symbol declared in `file` — the first top-level `(ns ...)`
+   form — or nil if none is found. Used to force-reload a mutated file's namespace
+   without depending on clj-reload's change detection."
+  [file]
+  (with-open [r (PushbackReader. (io/reader (io/file file)))]
+    (loop []
+      (let [form (try (read {:eof ::eof :read-cond :allow} r)
+                      (catch Exception _ ::eof))]
+        (cond
+          (= form ::eof) nil
+          (and (seq? form) (= 'ns (first form)) (symbol? (second form))) (second form)
+          :else (recur))))))
+
+(defn reload-mutated-file!
+  "Force-reload the namespace defined in `file` via `(require ns :reload)`,
+   BYPASSING clj-reload's mtime-based change detection.
+
+   Why this exists: the mutate loop spits a mutated source file then reloads
+   before running the covering tests. clj-reload detects changes by file mtime at
+   millisecond granularity; on coarse-mtime filesystems (e.g. ZFS) consecutive
+   sub-millisecond spits collide on the same mtime, so clj-reload decides the file
+   is unchanged and SILENTLY SKIPS the reload — the mutated bytecode never enters
+   the JVM, the tests run against the original code, and the mutant is falsely
+   scored `survived` (a non-deterministic, load-dependent false-negative). A direct
+   `(require ns :reload)` re-reads the file from the classpath unconditionally, so
+   the mutated (or, on revert, the restored) code always loads. Callers resolve the
+   re-def'd vars at call time, so reloading just the mutated namespace is sufficient.
+
+   Falls back to clj-reload's `reload!` when `file` declares no namespace.
+   Returns the same {:success bool ...} shape as `reload!`."
+  [file]
+  (try
+    (if-let [ns-sym (ns-for-file file)]
+      (do (with-quiet-stdout (require ns-sym :reload))
+          {:success true :reloaded [ns-sym] :unloaded [ns-sym]})
+      (reload!))
+    (catch Throwable e
+      {:success false :error e :reloaded [] :unloaded []})))
 
 ;; =============================================================================
 ;; Utility Functions
