@@ -57,22 +57,35 @@
 
 (defn- evaluate-mutation-impl
   "Implementation of mutation evaluation.
-   Applies mutation, reloads namespace, runs tests, reverts mutation.
+   Applies mutation, force-reloads the mutated namespace, runs tests, then ALWAYS
+   reverts the mutation and force-reloads the restored namespace.
+
+   The reload goes through `reloader/reload-mutated-file!` (a forced
+   `require :reload` of the mutated file's namespace) instead of clj-reload's
+   mtime-gated `reload!`: on coarse-mtime filesystems (e.g. ZFS) the latter silently
+   skips the reload of a just-spit mutant, so tests run against un-mutated code and
+   every mutant is falsely scored `survived`. The post-revert reload restores the
+   original code in the JVM so a mutation cannot leak into the next mutant.
 
    This is the core work unit - runs synchronously within a worker."
   [index mutation config]
-  (engine/with-mutation [applied mutation]
-    (let [reload-result (reloader/reload!)]
-      (if (:success reload-result)
-        (runner/evaluate-mutation index applied config)
-        {:mutation applied
-         :status :error
-         :tests-run #{}
-         :timed-out #{}
-         :killed-by nil
-         :test-durations {}
-         :duration-ms 0
-         :error-message (str "Reload failed: " (:error reload-result))}))))
+  (let [file (:file mutation)
+        applied (engine/apply-mutation! mutation)]
+    (try
+      (let [reload-result (reloader/reload-mutated-file! file)]
+        (if (:success reload-result)
+          (runner/evaluate-mutation index applied config)
+          {:mutation applied
+           :status :error
+           :tests-run #{}
+           :timed-out #{}
+           :killed-by nil
+           :test-durations {}
+           :duration-ms 0
+           :error-message (str "Reload failed: " (:error reload-result))}))
+      (finally
+        (engine/revert-mutation! applied)
+        (reloader/reload-mutated-file! file)))))
 
 (defn ?execute-mutation
   "Execute a single mutation as a cancellable task with timeout.
