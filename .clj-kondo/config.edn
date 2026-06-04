@@ -1,0 +1,5 @@
+{;; `with-mutation` is a binding macro: (with-mutation [m mutation] body...)
+ ;; expands to (let [m (apply-mutation! mutation)] (try body... )). Linting it
+ ;; as `let` teaches clj-kondo that the first binding symbol is in scope in the
+ ;; body (otherwise it reports the bound symbol as unresolved).
+ :lint-as {heretic.mutation-engine/with-mutation clojure.core/let}}

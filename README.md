@@ -34,6 +34,7 @@ Heretic solves this with **test-to-code mapping**: it knows exactly which tests 
 **Key features:**
 
 - **Coverage-based test selection** via [ClojureStorm](https://github.com/flow-storm/clojure) instrumentation
+- **Non-destructive** - mutations run in an isolated sandbox copy, so your working tree is never modified (and an interrupted run leaves nothing behind)
 - **80+ mutation operators** covering arithmetic, boolean, comparison, collection, nil-handling, threading, and more
 - **Clojure-specific mutations** like `->` vs `->>`, `map` vs `mapv`, keyword case conversion
 - **Subsumption analysis** to reduce redundant mutations while maintaining fault detection
@@ -51,8 +52,14 @@ Add Heretic to your `deps.edn`:
 ```clojure
 {:aliases
  {:heretic
-  {:extra-deps {io.github.parenstech/heretic {:git/tag "v0.1.0" :git/sha "..."}}
-   :extra-paths ["test"]}}}
+  {:extra-deps {io.github.parenstech/heretic {:git/tag "v0.1.0" :git/sha "..."}
+                ;; ClojureStorm replaces the Clojure compiler for coverage collection
+                com.github.flow-storm/clojure {:mvn/version "1.12.0-1"}}
+   :classpath-overrides {org.clojure/clojure nil}
+   :extra-paths ["test"]
+   :jvm-opts ["-Dclojure.storm.instrumentEnable=true"
+              "-Dclojure.storm.instrumentOnlyPrefixes=my-app"
+              "-Dclojure.storm.instrumentSkipPrefixes=my-app.test"]}}}
 ```
 
 Create a `heretic.edn` configuration file:
@@ -64,7 +71,11 @@ Create a `heretic.edn` configuration file:
 
  ;; ClojureStorm instrumentation - limit to your code
  :instrument-prefixes ["my-app"]
- :instrument-skip-prefixes ["my-app.dev"]}
+ :instrument-skip-prefixes ["my-app.dev"]
+
+ ;; `mutate`/`watch` run against a sandbox copy; the child JVM reuses this alias
+ ;; (which already has ClojureStorm + your test paths + Heretic on the classpath)
+ :sandbox-aliases ["heretic"]}
 ```
 
 ## Quick Start
@@ -73,10 +84,10 @@ Create a `heretic.edn` configuration file:
 # Collect test-to-code coverage (one-time, cached)
 clj -M:heretic -m heretic.core collect
 
-# Run mutation testing
+# Run mutation testing (sandboxed - your working tree is never modified)
 clj -M:heretic -m heretic.core mutate
 
-# Watch mode - continuous mutation testing on changes
+# Watch mode - continuous sandboxed mutation testing on changes
 clj -M:heretic -m heretic.core watch
 ```
 
@@ -172,7 +183,11 @@ Heretic uses [ClojureStorm](https://github.com/flow-storm/clojure), a patched Cl
 
 ### Mutation Testing
 
-For each mutation:
+Heretic runs against an **isolated sandbox copy** of your project, so applying
+mutations never touches your working tree — no dirty files mid-run, and nothing
+left behind if a run is killed. The sandbox is created (and reused incrementally,
+see [System tools](#system-tools)) before the run; your real source is only ever
+read. Inside the sandbox, for each mutation:
 
 1. Look up relevant tests via coverage map
 2. Apply mutation using [rewrite-clj](https://github.com/clj-commons/rewrite-clj)
@@ -279,11 +294,27 @@ The following features are planned for future releases:
 
 ## Dependencies
 
+### Libraries
+
 - [ClojureStorm](https://github.com/flow-storm/clojure) - Instrumented Clojure compiler
 - [rewrite-clj](https://github.com/clj-commons/rewrite-clj) - Source code manipulation
 - [clj-reload](https://github.com/tonsky/clj-reload) - Namespace reloading
 - [Malli](https://github.com/metosin/malli) - Schema validation
 - [Missionary](https://github.com/leonoel/missionary) - Reactive programming for worker supervision
+
+### System tools
+
+- **`rsync`** — *strongly recommended.* Heretic runs mutation testing in an
+  isolated **sandbox copy** of your project, so applying mutations never touches
+  your working tree (no dirty files mid-run, nothing left behind if a run is
+  killed). When `rsync` is on your `PATH`, that sandbox is **reused incrementally**
+  between runs: only changed files are synced and the cached coverage index
+  (`.heretic/`) is kept, so only the namespaces whose source actually changed are
+  re-collected. Without `rsync`, Heretic still works correctly but falls back to a
+  full copy **and a full coverage recollection on every run** — and coverage
+  collection (the ClojureStorm pass over your test suite) is by far the most
+  expensive phase, so runs are much slower. Install it via your package manager
+  (`apt install rsync`, `brew install rsync`, …).
 
 ## License
 

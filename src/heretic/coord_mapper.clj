@@ -20,7 +20,6 @@
    ;; \"3,1\"   -> a
    ;; \"3,2\"   -> b"
   (:require [clojure.string :as str]
-            [rewrite-clj.node :as n]
             [rewrite-clj.zip :as z]))
 
 ;; =============================================================================

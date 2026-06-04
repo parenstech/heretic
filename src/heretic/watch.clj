@@ -1,24 +1,23 @@
 (ns heretic.watch
-  "File watching for continuous mutation testing.
+  "File watching for continuous, sandboxed mutation testing.
 
-   Watch mode monitors source and test files for changes:
-   - Source file changes: Re-mutate affected file
-   - Test file changes: Re-collect coverage, then re-mutate affected sources
+   On each source-file change, Heretic runs the mutation pipeline against an
+   isolated sandbox copy (heretic.sandbox) scoped to that file — so the file you
+   are editing is never modified in place. The sandbox is persistent and synced
+   incrementally between changes, so only the namespaces whose source actually
+   changed are re-collected.
 
-   Uses nextjournal/beholder for file watching (JNA-based WatchService on Mac,
-   same library used by Kaocha).
+   Each change spawns a child JVM (the sandboxed run), so feedback is on the
+   order of seconds, not instant — this is mutation testing, not unit-test watch.
 
    Usage:
    (def watcher (start-watch! config))
-   ;; ... work on code ...
+   ;; ... edit code ...
    (stop! watcher)"
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [nextjournal.beholder :as beholder]
-            [heretic.coverage-map :as coverage]
-            [heretic.mutation-engine :as engine]
-            [heretic.runner :as runner]
-            [heretic.reloader :as reloader]))
+            [heretic.sandbox :as sandbox]))
 
 ;; =============================================================================
 ;; State
@@ -38,12 +37,12 @@
        (or (str/ends-with? path ".clj")
            (str/ends-with? path ".cljc"))))
 
+(defn- canon [p]
+  (.getCanonicalPath (io/file p)))
+
 (defn- in-path? [paths path-str]
-  (let [file-path (.getCanonicalPath (io/file path-str))]
-    (some (fn [dir]
-            (str/starts-with? file-path
-                              (.getCanonicalPath (io/file dir))))
-          paths)))
+  (let [fp (canon path-str)]
+    (some (fn [dir] (str/starts-with? fp (canon dir))) paths)))
 
 (defn- source-file? [config path]
   (in-path? (:source-paths config) path))
@@ -51,91 +50,38 @@
 (defn- test-file? [config path]
   (in-path? (:test-paths config) path))
 
+(defn- relativize
+  "Path relative to project-root (what mutate-in-sandbox! :files expects — the
+   child resolves :files against its cwd = the sandbox)."
+  [project-root path]
+  (str (.relativize (.toPath (io/file (canon project-root)))
+                    (.toPath (io/file (canon path))))))
+
 ;; =============================================================================
 ;; Change Handlers
 ;; =============================================================================
 
 (defn- handle-source-change
-  "Handle source file change - run mutations for the affected file."
-  [config index file verbose?]
-  (when verbose?
-    (println (format "\n[watch] Source changed: %s" file)))
-
-  ;; Generate mutations for this file only
-  (let [mutations (vec (engine/mutations-for-file file))
-        total (count mutations)]
-
-    (if (zero? total)
-      (when verbose?
-        (println "[watch] No mutations found in file"))
-
-      (do
-        (when verbose?
-          (println (format "[watch] Found %d mutations, testing..." total)))
-
-        ;; Reload changed namespaces
-        (reloader/reload!)
-
-        ;; Run each mutation
-        (let [timeout-ms (or (:timeout-ms config) 5000)
-              results (atom [])]
-          (doseq [mutation mutations]
-            (try
-              (let [result (engine/with-mutation [applied mutation]
-                             (reloader/reload!)
-                             (runner/evaluate-mutation index applied {:timeout-ms timeout-ms}))]
-                (swap! results conj result))
-              (catch Exception e
-                (swap! results conj {:mutation mutation
-                                     :status :error
-                                     :error-message (str e)}))))
-
-          ;; Print summary
-          (let [summary (runner/summarize-results @results)
-                survivors (filter #(= :survived (:status %)) @results)]
-            (println)
-            (println (format "[watch] Results: %d killed, %d survived, %d no-coverage"
-                             (:killed summary) (:survived summary) (:no-coverage summary)))
-            (when (seq survivors)
-              (println "[watch] Surviving mutations:")
-              (doseq [{:keys [mutation]} survivors]
-                (println (format "  - Line %d: %s -> %s"
-                                 (:line mutation)
-                                 (:original mutation)
-                                 (:replacement mutation)))))))))))
+  "Run a sandboxed mutation scoped to the changed source file."
+  [config project-root path verbose?]
+  (let [rel (relativize project-root path)]
+    (when verbose?
+      (println (format "\n[watch] Source changed: %s — running sandboxed mutation..." rel)))
+    (let [r (sandbox/mutate-in-sandbox! config :files [rel])]
+      (if (:error r)
+        (println (format "[watch] %s" (:error r)))
+        (println (format "[watch] %d killed / %d survived / %d no-coverage  (score %.1f%%)"
+                         (:killed r 0) (:survived r 0) (:no-coverage r 0)
+                         (* 100.0 (double (or (:mutation-score r) 0)))))))))
 
 (defn- handle-test-change
-  "Handle test file change - re-collect coverage for the test namespace."
-  [config file verbose?]
+  "A test-only change refreshes that namespace's coverage on the next sandboxed
+   run (the sandbox re-collects stale namespaces automatically), so there is
+   nothing to mutate here — just note it."
+  [project-root path verbose?]
   (when verbose?
-    (println (format "\n[watch] Test changed: %s" file)))
-
-  ;; Convert file path to namespace
-  (let [test-ns (try
-                  (let [content (slurp file)
-                        ns-form (read-string content)]
-                    (when (and (seq? ns-form) (= 'ns (first ns-form)))
-                      (second ns-form)))
-                  (catch Exception _
-                    nil))]
-
-    (if test-ns
-      (do
-        (when verbose?
-          (println (format "[watch] Re-collecting coverage for %s..." test-ns)))
-
-        ;; Re-collect coverage for this namespace
-        (try
-          (coverage/collect-and-persist! config :namespaces [test-ns])
-          (when verbose?
-            (println "[watch] Coverage updated"))
-          :collected
-          (catch Exception e
-            (when verbose?
-              (println (format "[watch] Failed to collect: %s" (.getMessage e))))
-            :error)))
-      (when verbose?
-        (println "[watch] Could not determine namespace from file")))))
+    (println (format "\n[watch] Test changed: %s — its coverage refreshes on the next source-change run."
+                     (relativize project-root path)))))
 
 ;; =============================================================================
 ;; Debouncing
@@ -146,10 +92,8 @@
   [f delay-ms]
   (let [pending (atom nil)]
     (fn [& args]
-      ;; Cancel any pending execution
       (when-let [^java.util.concurrent.Future fut @pending]
         (.cancel fut false))
-      ;; Schedule new execution
       (reset! pending
               (future
                 (Thread/sleep delay-ms)
@@ -160,68 +104,51 @@
 ;; =============================================================================
 
 (defn start-watch!
-  "Start watching source and test files for changes.
+  "Start watching source and test files for changes, running a sandboxed
+   mutation on each source change (the working tree is never modified).
 
    Options:
    - :verbose - Print detailed progress (default: true)
-   - :debounce-ms - Delay before reacting to changes (default: 300)
+   - :debounce-ms - Delay before reacting to changes (default: 2000). A change
+     starts a sandboxed run (a child JVM), so a longer window coalesces rapid
+     save bursts into a single run.
 
-   Returns watcher handle that can be passed to stop!"
+   Returns a watcher handle that can be passed to stop!."
   [config & {:keys [verbose debounce-ms]
              :or {verbose true
-                  debounce-ms 300}}]
-  (println "Starting Heretic watch mode...")
-  (println (format "  Watching source paths: %s" (str/join ", " (:source-paths config))))
-  (println (format "  Watching test paths: %s" (str/join ", " (:test-paths config))))
+                  debounce-ms 2000}}]
+  (let [project-root (System/getProperty "user.dir")]
+    (println "Starting Heretic watch mode (sandboxed — your working tree is never modified)...")
+    (println (format "  Watching: %s"
+                     (str/join ", " (concat (:source-paths config) (:test-paths config)))))
 
-  ;; Load coverage index
-  (let [heretic-dir (:heretic-dir config)
-        index (coverage/load-index heretic-dir)]
-
-    (when-not index
-      (println "Warning: No coverage data found. Run `collect!` first for targeted testing."))
-
-    ;; Initialize reloader
-    (reloader/init! (:source-paths config))
-
-    ;; Create debounced handlers
     (let [source-handler (debounce
-                          (fn [file]
-                            (handle-source-change config index file verbose))
+                          (fn [path] (handle-source-change config project-root path verbose))
                           debounce-ms)
           test-handler (debounce
-                        (fn [file]
-                          (let [result (handle-test-change config file verbose)]
-                            ;; After test coverage updates, we could re-run mutations
-                            ;; but that might be noisy. Just update coverage for now.
-                            result))
-                        debounce-ms)]
-
-      ;; Start file watcher using beholder
-      ;; beholder callback receives {:type :modify/:create/:delete, :path "..."}
-      (let [all-paths (vec (concat (:source-paths config) (:test-paths config)))
-            handler (fn [{:keys [type path]}]
+                        (fn [path] (handle-test-change project-root path verbose))
+                        debounce-ms)
+          all-paths (vec (concat (:source-paths config) (:test-paths config)))
+          handler (fn [{:keys [type path]}]
+                    ;; beholder delivers :path as a java.nio.file.Path — coerce to a string.
+                    (let [path (str path)]
                       (when (and (#{:modify :create} type)
                                  (clj-file? path))
                         (cond
-                          (source-file? config path)
-                          (source-handler path)
+                          (source-file? config path) (source-handler path)
+                          (test-file? config path) (test-handler path)))))
+          watcher (apply beholder/watch handler all-paths)]
 
-                          (test-file? config path)
-                          (test-handler path))))
-            watcher (apply beholder/watch handler all-paths)]
+      (reset! watcher-state {:watcher watcher
+                             :config config
+                             :started-at (now-ms)})
 
-        (reset! watcher-state {:watcher watcher
-                               :config config
-                               :index index
-                               :started-at (now-ms)})
+      (println)
+      (println "Watch mode started. Press Ctrl+C to stop.")
+      (println "Edit source files to trigger sandboxed mutation testing.")
+      (println)
 
-        (println)
-        (println "Watch mode started. Press Ctrl+C to stop.")
-        (println "Edit source files to trigger mutation testing.")
-        (println)
-
-        watcher))))
+      watcher)))
 
 (defn stop!
   "Stop the file watcher."
@@ -249,13 +176,10 @@
 ;; =============================================================================
 
 (defn watch!
-  "Start watch mode and block until interrupted.
-
-   This is the main entry point for CLI usage."
+  "Start watch mode and block until interrupted. Main entry point for CLI usage."
   [config & opts]
   (let [watcher (apply start-watch! config opts)]
     (try
-      ;; Block forever (until interrupted)
       @(promise)
       (finally
         (stop! watcher)))))

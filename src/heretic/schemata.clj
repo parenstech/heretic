@@ -45,10 +45,8 @@
    - `with-mutant`        - Execute code with a specific mutant active
    - `schematize-file!`   - Apply schemata to a file, returning revert info
    - `run-mutation-batch` - Run tests for multiple mutations efficiently"
-  (:require [clojure.java.io :as io]
-            [heretic.coord-mapper :as coord]
+  (:require [clojure.string :as str]
             [heretic.operators :as ops]
-            [heretic.parser :as parser]
             [rewrite-clj.node :as n]
             [rewrite-clj.node.protocols]
             [rewrite-clj.zip :as z]))
@@ -79,8 +77,8 @@
    Example: :mut-42-5-plus-minus"
   [{:keys [line column operator]}]
   (let [op-suffix (-> (name operator)
-                      (clojure.string/replace #"^swap-" "")
-                      (clojure.string/replace #"^replace-" ""))]
+                      (str/replace #"^swap-" "")
+                      (str/replace #"^replace-" ""))]
     (keyword (format "mut-%d-%d-%s" (or line 0) (or column 0) op-suffix))))
 
 (defn- node?
@@ -160,26 +158,6 @@
      :schemata-node schemata-node
      :mutation-ids (mapv :id mutations-with-ids)
      :mutations (mapv :mutation mutations-with-ids)}))
-
-(defn- build-location-index
-  "Build an index of mutations by their line/column position.
-
-   Returns a map of [line column] -> mutations"
-  [mutations]
-  (reduce (fn [idx m]
-            (let [k [(:line m) (:column m)]]
-              (update idx k (fnil conj []) m)))
-          {}
-          mutations))
-
-(defn- sort-mutations-reverse
-  "Sort mutations in reverse order by position (end of file first).
-
-   This allows processing mutations from end to beginning, so that
-   replacements don't affect the positions of earlier mutations."
-  [mutations]
-  (sort-by (fn [m] [(- (:line m 0)) (- (:column m 0))])
-           mutations))
 
 (defn- find-zloc-at-position
   "Find the zloc at a specific line/column position.

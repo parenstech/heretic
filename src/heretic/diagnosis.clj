@@ -159,7 +159,6 @@
           ;; Sort by count descending
           sorted-patterns (vec (sort-by #(- (:count %)) detected))
           ;; Count operators covered by patterns
-          diagnosed-operators (into #{} (mapcat :operators (vals patterns)))
           diagnosed-count (reduce + 0 (keep #(get operator-counts %)
                                             (into #{} (mapcat :matching-operators sorted-patterns))))
           total-survivors (count survivors)]
@@ -175,7 +174,7 @@
 (defn format-diagnosis-terminal
   "Format diagnosis for terminal output.
    Returns a string ready for printing."
-  [{:keys [total-survivors patterns undiagnosed-count]}]
+  [{:keys [patterns undiagnosed-count]}]
   (if (empty? patterns)
     nil
     (let [lines (atom [])]

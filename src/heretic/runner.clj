@@ -21,7 +21,8 @@
    - :no-coverage - No tests cover this mutation site
    - :timeout - Test execution timed out
    - :error - Exception during test execution"
-  (:require [clojure.test :as t]
+  (:require [clojure.set]
+            [clojure.test :as t]
             [heretic.coverage-map :as coverage]
             [heretic.form-bridge :as bridge]
             [heretic.timing :as timing]))

@@ -90,7 +90,7 @@
    {:success false :error <ex> :failed <ns> :reloaded [...] :unloaded [...]}
 
    Throws if not initialized."
-  [& {:keys [only] :as opts}]
+  [& {:as opts}]
   (when-not (:initialized? @state)
     (throw (ex-info "Reloader not initialized. Call init! first."
                     {:type :not-initialized})))

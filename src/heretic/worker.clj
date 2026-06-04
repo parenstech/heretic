@@ -150,14 +150,14 @@
 
    Arguments:
    - ?task: The task to supervise
-   - policy: Keyword (:skip, :retry, :abort) or map with :policy and options
+   - policy-spec: Keyword (:skip, :retry, :abort) or map with :policy and options
 
    Returns supervised task."
-  [?task policy]
+  [?task policy-spec]
   (let [{:keys [policy max-retries]
-         :or {policy (if (keyword? policy) policy :skip)
+         :or {policy (if (keyword? policy-spec) policy-spec :skip)
               max-retries 3}}
-        (if (map? policy) policy {:policy policy})]
+        (if (map? policy-spec) policy-spec {:policy policy-spec})]
     (case policy
       :skip
       (m/sp
@@ -422,7 +422,7 @@
 
 (defn print-progress
   "Default progress callback that prints to stdout."
-  [{:keys [completed total percent]} result]
+  [{:keys [completed percent]} result]
   (let [status-char (case (:status result)
                       :killed "."
                       :survived "S"

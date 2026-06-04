@@ -674,14 +674,13 @@
         combined-matrix
         (reduce
          (fn [acc {:keys [mutants tests matrix]}]
-           (let [local-test-idx (zipmap tests (range))]
-             (reduce-kv
-              (fn [m local-m-idx local-kills]
-                (let [global-m-idx (get mutant-idx-map (nth mutants local-m-idx))
-                      global-kills (set (map #(get test-idx-map (nth tests %)) local-kills))]
-                  (update m global-m-idx (fnil into #{}) global-kills)))
-              acc
-              matrix)))
+           (reduce-kv
+            (fn [m local-m-idx local-kills]
+              (let [global-m-idx (get mutant-idx-map (nth mutants local-m-idx))
+                    global-kills (set (map #(get test-idx-map (nth tests %)) local-kills))]
+                (update m global-m-idx (fnil into #{}) global-kills)))
+            acc
+            matrix))
          {}
          matrices)]
     {:mutants all-mutants
