@@ -91,6 +91,42 @@ clj -M:heretic -m heretic.core mutate
 clj -M:heretic -m heretic.core watch
 ```
 
+## Sandboxed runs
+
+`mutate` and `watch` apply their mutations inside a **disposable copy** of your
+project, so a run only ever *reads* your working tree. You can keep editing, run
+your own tests, even switch branches while a run is in progress — nothing it does
+touches your files, and an interrupted run (Ctrl-C / `kill`) leaves nothing
+behind.
+
+```bash
+# kick this off and keep working in another terminal — your tree stays clean
+clj -M:heretic -m heretic.core mutate
+```
+
+The child JVM runs the copy with the aliases in `:sandbox-aliases` (usually your
+`:heretic` alias, so it has ClojureStorm + Heretic + your test paths on the
+classpath). The sandbox is **persistent and reused** between runs — only the
+namespaces whose source changed are re-collected (this needs
+[`rsync`](#system-tools); without it Heretic falls back to a full copy each run).
+
+For **CI**, make each run hermetic — a full copy, a full re-collect, wiped when
+it finishes:
+
+```clojure
+;; heretic.edn
+{:keep-sandbox false}
+```
+
+For projects whose tests need extra files or dependencies inside the sandbox:
+
+```clojure
+;; heretic.edn
+{:sandbox-extra-paths ["resources" "cassettes"]   ; copied alongside src/test
+ :sandbox-deps {:aliases {:it {:extra-deps {io.example/helper {:mvn/version "1.0"}}}}}
+ :sandbox-aliases ["heretic" "it"]}               ; child runs -M:heretic:it
+```
+
 ## Usage
 
 ### Commands
@@ -102,10 +138,11 @@ clj -M:heretic -m heretic.core watch
 | `status` | Show which test namespaces need recollection |
 | `mutate` | Run mutation testing |
 | `mutate --files src/my_app/core.clj` | Mutate specific files |
-| `mutate --operators arithmetic,comparison` | Use specific operator categories |
 | `survivors` | Show surviving mutations from last run |
 | `watch` | Continuous mutation testing on file changes |
 | `clean` | Remove cached coverage data |
+
+Operator selection is configured in `heretic.edn` (`:preset` or `:operators`), not via the CLI.
 
 ### Output
 
@@ -155,6 +192,18 @@ Full configuration options in `heretic.edn`:
  ;; Execution
  :timeout-ms 5000       ; Per-mutant timeout
  :parallel-workers 4    ; Number of parallel workers
+
+ ;; Sandbox — mutate/watch run against a disposable copy; your tree is never written
+ :sandbox-aliases ["heretic"]    ; deps.edn aliases the child JVM runs with — must put
+                                 ;   ClojureStorm + Heretic + your test paths on its
+                                 ;   classpath (usually your :heretic alias)
+ :keep-sandbox true              ; reuse + incrementally re-collect between runs;
+                                 ;   false = hermetic full copy each run, wiped after (CI)
+ :fresh-sandbox false            ; true = force a clean rebuild + full re-collect this run
+ :sandbox-dir ".heretic-sandbox" ; where the copy lives (gitignore it)
+ :sandbox-extra-paths []         ; extra top-level dirs to copy beyond src/test
+ :sandbox-deps nil               ; extra -Sdeps EDN for the child JVM
+ :sandbox-jvm-opts []            ; extra -J JVM opts for the child (e.g. ["-Xmx4g"])
 
  ;; Reporting
  :report-format :html   ; :terminal, :html, :json, :edn
