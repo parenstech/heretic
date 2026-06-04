@@ -38,13 +38,6 @@
   (contains? #{'vec 'into 'count 'doall 'dorun 'str 'apply 'reduce
                'frequencies 'group-by 'sort 'sort-by} sym))
 
-(defn- single-arity-fn?
-  "Check if a symbol represents a common single-arity function."
-  [sym]
-  (contains? #{'inc 'dec 'str 'name 'keyword 'symbol 'count 'first 'last
-               'rest 'next 'seq 'vec 'set 'keys 'vals 'not 'identity
-               'clojure.core/inc 'clojure.core/dec} sym))
-
 (defn- in-realizing-context?
   "Check if the current location is inside a realizing function call."
   [zloc]

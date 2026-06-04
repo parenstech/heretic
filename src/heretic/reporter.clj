@@ -233,8 +233,7 @@
   (let [counts (count-by-status results)
         total (count results)
         {:keys [killed survived no-coverage timeout error]} counts
-        score (mutation-score results)
-        score-pct (when score (percentage (* score 100) 100 1))]
+        score (mutation-score results)]
 
     (println)
     (println (bold "Mutation Testing Results"))
@@ -459,7 +458,7 @@
     (number? v) (str v)
     (string? v) (str "\"" (escape-json-string v) "\"")
     (keyword? v) (str "\"" (name v) "\"")
-    (symbol? v) (str "\"" (str v) "\"")
+    (symbol? v) (str "\"" v "\"")
     (map? v) (str "{"
                   (->> v
                        (map (fn [[k val]]
@@ -879,7 +878,6 @@
   "Generate HTML for the summary statistics section."
   [results]
   (let [counts (count-by-status results)
-        total (count results)
         score (or (mutation-score results) 1.0)]
     [:div.card
      [:h2 "Summary"]
@@ -908,7 +906,7 @@
   (let [by-file (results-by-file results)]
     [:div.card.heatmap
      [:h2 "Files by Mutation Score"]
-     (for [{:keys [file total killed survived score]} by-file]
+     (for [{:keys [file killed survived score]} by-file]
        [:div.heatmap-row
         [:span.heatmap-file (or file "(unknown)")]
         [:div.heatmap-bar

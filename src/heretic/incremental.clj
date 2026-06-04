@@ -162,7 +162,6 @@
         (let [file (first files)
               prev-forms (get previous file {})
               curr-forms (get current file {})
-              prev-ids (set (keys prev-forms))
               curr-ids (set (keys curr-forms))
               ;; Find forms where hash differs or form is new
               changed-in-file (filter (fn [form-id]

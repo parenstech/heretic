@@ -25,8 +25,7 @@
    - Pure functions for clustering algorithm (functional core)
    - Pure functions for selecting representatives
    - Integration with controller.clj for execution layer"
-  (:require [clojure.set :as set]
-            [heretic.subsumption :as subsumption]))
+  (:require [heretic.subsumption :as subsumption]))
 
 ;; =============================================================================
 ;; Cluster Identity Functions
@@ -127,7 +126,7 @@
      grouped)))
 
 (defmethod cluster-mutations :default
-  [mutations strategy]
+  [_mutations strategy]
   (throw (ex-info "Unknown clustering strategy"
                   {:strategy strategy
                    :available [:none :operator :location :similarity]})))

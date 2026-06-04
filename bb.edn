@@ -11,6 +11,9 @@
 
   :init
   (do
+    ;; heretic.sandbox owns the single ClojureStorm-flag builder
+    ;; (sandbox/storm-jvm-opts); it loads under babashka (clojure.* deps only).
+    (require '[heretic.sandbox :as sandbox])
     (def config-file "heretic.edn")
     (def heretic-dir ".heretic")
 
@@ -19,23 +22,12 @@
         (edn/read-string (slurp config-file))
         (throw (ex-info "Missing heretic.edn config file" {}))))
 
-    (defn clj-storm-opts [config]
-      (let [prefixes (:instrument-prefixes config)
-            skip-prefixes (:instrument-skip-prefixes config)]
-        (cond-> ["-Dclojure.storm.instrumentEnable=true"]
-          (seq prefixes)
-          (conj (str "-Dclojure.storm.instrumentOnlyPrefixes="
-                     (str/join "," prefixes)))
-          (seq skip-prefixes)
-          (conj (str "-Dclojure.storm.instrumentSkipPrefixes="
-                     (str/join "," skip-prefixes))))))
-
     (defn has-arg? [arg]
       (some (fn [a] (= a arg)) *command-line-args*))
 
     (defn run-with-clojurestorm
       [config code]
-      (let [opts (clj-storm-opts config)
+      (let [opts (sandbox/storm-jvm-opts config)
             ;; Convert JVM opts to -J flags for clj
             j-flags (mapv (fn [opt] (str "-J" opt)) opts)
             cmd (concat ["clj"] j-flags ["-M:collect" "-e" code])]
@@ -83,13 +75,21 @@
        (println "Nothing to clean - .heretic directory does not exist")))}
 
   heretic:mutate
-  {:doc "Run mutation testing on source files"
+  {:doc "Run mutation testing in an isolated sandbox copy (working tree untouched)"
    :task
-   (let [config (load-config)
-         code (str "(require '[heretic.core :as heretic])"
-                   "(heretic/mutate! (heretic/load-config))"
+   ;; Sandboxed by default (issue #2). The orchestrator JVM loads ONLY
+   ;; heretic.sandbox (clojure.* deps) and spawns a storm-enabled child whose cwd
+   ;; is the sandbox; loading heretic.core here would pull in heretic.tracer ->
+   ;; clojure.storm.* and need the storm classpath the orchestrator avoids.
+   (let [code (str "(require '[heretic.sandbox :as sb] '[clojure.edn :as edn])"
+                   "(sb/mutate-in-sandbox! (edn/read-string (slurp \"heretic.edn\")))"
                    "(System/exit 0)")]
-     (run-with-clojurestorm config code))}
+     (p/shell "clojure" "-M" "-e" code))}
+
+  heretic:sandbox-clean
+  {:doc "Remove the sandbox directory used by heretic:mutate"
+   :task
+   (println "Removed sandbox at" (sandbox/clean-sandbox! (load-config)))}
 
   heretic:survivors
   {:doc "Show surviving mutations from last run"
@@ -107,20 +107,19 @@
      (run-with-clojurestorm config code))}
 
   heretic:watch
-  {:doc "Watch source and test files for changes, run mutations on change"
+  {:doc "Watch source/test files; run a sandboxed mutation on each source change (working tree untouched)"
    :task
-   (let [config (load-config)
-         code (str "(require '[heretic.watch :as watch])"
-                   "(require '[heretic.core :as heretic])"
-                   "(watch/watch! (heretic/load-config))")]
-     (run-with-clojurestorm config code))}
+   ;; Storm-free orchestrator (like heretic:mutate); each change spawns the storm child.
+   (let [code (str "(require '[heretic.watch :as watch] '[clojure.edn :as edn])"
+                   "(watch/watch! (edn/read-string (slurp \"heretic.edn\")))")]
+     (p/shell "clojure" "-M" "-e" code))}
 
   ;; Development tasks
   dev:repl
   {:doc "Start a development REPL with ClojureStorm"
    :task
    (let [config (load-config)
-         opts (clj-storm-opts config)
+         opts (sandbox/storm-jvm-opts config)
          jvm-opts (str/join " " opts)]
      (p/shell {:extra-env {"JVM_OPTS" jvm-opts}}
               "clj" "-M:dev:clojurestorm" "-m" "nrepl.cmdline" "--interactive"))}
@@ -157,114 +156,56 @@
                    "  (System/exit (if (and (zero? (:fail summary)) (zero? (:error summary))) 0 1)))")]
      (p/shell "clj" "-Sdeps" "{:paths [\"src\" \"test\"]}" "-M" "-e" code))}
 
-  ;; =============================================================================
-  ;; Self-Testing Infrastructure
-  ;; =============================================================================
-  ;; Heretic tests itself using a git worktree to avoid self-corruption.
-  ;; The mutation engine runs in one JVM, tests run in worktree via nREPL.
-
-  self-test:setup
-  {:doc "Create worktree for self-testing and show REPL start instructions"
+  ci
+  {:doc "Run local CI: lint + unit tests in parallel."
    :task
-   (let [worktree-path "../heretic-under-test"
-         worktree-abs (str (fs/absolutize worktree-path))]
-     (if (fs/exists? worktree-path)
-       (do
-         (println "Worktree already exists at" worktree-abs)
-         (println "")
-         (println "To start the worktree REPL:")
-         (println (str "  cd " worktree-abs))
-         (println "  clj -M:dev:test:clojurestorm -m nrepl.cmdline --interactive")
-         (println "")
-         (println "Note the port number, then run:")
-         (println "  bb self-test --port <PORT>"))
-       (do
-         (println "Creating worktree at" worktree-abs "...")
-         (p/shell "git" "worktree" "add" worktree-path "HEAD")
-         (println "")
-         (println "Worktree created! Now start the worktree REPL:")
-         (println (str "  cd " worktree-abs))
-         (println "  clj -M:dev:test:clojurestorm -m nrepl.cmdline --interactive")
-         (println "")
-         (println "Note the port number, then run:")
-         (println "  bb self-test --port <PORT>"))))}
+   (let [checks [{:name "lint"
+                  :cmd ["clj-kondo" "--parallel" "--lint" "src" "--fail-level" "warning"]}
+                 {:name "test:unit"
+                  :cmd ["clojure" "-M:test"]}]
+         _ (println)
+         _ (doseq [{:keys [name]} checks]
+             (println (format "  … %s" name)))
+         started (mapv (fn [{:keys [name cmd]}]
+                         {:name name
+                          :start (System/currentTimeMillis)
+                          :proc (apply p/process {:out :string :err :string} cmd)})
+                       checks)
+         results (mapv (fn [{:keys [name start proc]}]
+                         (let [r (deref proc)]
+                           {:name name
+                            :ok? (zero? (:exit r))
+                            :elapsed (/ (- (System/currentTimeMillis) start) 1000.0)
+                            :out (:out r)
+                            :err (:err r)}))
+                       started)]
+     (println)
+     (doseq [{:keys [name ok? elapsed out err]} results]
+       (println (format "  %s %s  (%.1fs)" (if ok? "✓" "✗") name elapsed))
+       (when-not ok?
+         (when (seq out) (println out))
+         (when (seq err) (println err))))
+     (let [failed (remove :ok? results)]
+       (if (seq failed)
+         (do (println (format "\n%d of %d checks failed." (count failed) (count checks)))
+             (System/exit 1))
+         (println "\nAll checks passed."))))}
 
-  self-test:cleanup
-  {:doc "Remove the self-testing worktree"
-   :task
-   (let [worktree-path "../heretic-under-test"]
-     (if (fs/exists? worktree-path)
-       (do
-         ;; Reset any leftover mutations first
-         (println "Resetting any leftover mutations...")
-         (p/shell {:dir worktree-path :continue true} "git" "checkout" ".")
-         (println "Removing worktree...")
-         (p/shell "git" "worktree" "remove" "--force" worktree-path)
-         (println "Worktree removed."))
-       (println "No worktree found at" worktree-path)))}
+  ;; =============================================================================
+  ;; Self-Testing
+  ;; =============================================================================
+  ;; Heretic mutation-tests itself by running the sandboxed pipeline against its
+  ;; own source — the sandbox isolates the run, so no worktree/nREPL dance is
+  ;; needed (this replaces the retired heretic.self-test/heretic.nrepl-runner
+  ;; worktree machinery). Scoped to a small subset so the full-suite ClojureStorm
+  ;; collect (which can hang) is avoided.
 
   self-test
-  {:doc "Run mutation testing on Heretic itself via worktree nREPL"
+  {:doc "Mutation-test Heretic on itself in a sandbox (scoped subset, avoids the full-suite ClojureStorm hang)"
    :task
-   (let [;; Parse --port argument
-         port-idx (.indexOf (vec *command-line-args*) "--port")
-         port (when (and (>= port-idx 0)
-                         (< (inc port-idx) (count *command-line-args*)))
-                (parse-long (nth *command-line-args* (inc port-idx))))
-
-         ;; Parse --file argument (optional, for testing specific file)
-         file-idx (.indexOf (vec *command-line-args*) "--file")
-         target-file (when (and (>= file-idx 0)
-                                (< (inc file-idx) (count *command-line-args*)))
-                       (nth *command-line-args* (inc file-idx)))
-
-         ;; Parse --limit argument (optional, limit number of mutations)
-         limit-idx (.indexOf (vec *command-line-args*) "--limit")
-         limit (when (and (>= limit-idx 0)
-                          (< (inc limit-idx) (count *command-line-args*)))
-                 (parse-long (nth *command-line-args* (inc limit-idx))))
-
-         worktree-path "../heretic-under-test"]
-     (cond
-       (not port)
-       (do
-         (println "Usage: bb self-test --port <PORT> [--file <FILE>] [--limit <N>]")
-         (println "")
-         (println "First run 'bb self-test:setup' and start the worktree REPL."))
-
-       (not (fs/exists? worktree-path))
-       (do
-         (println "Worktree not found. Run 'bb self-test:setup' first."))
-
-       :else
-       (let [config (load-config)
-             worktree-abs (str (fs/absolutize worktree-path))
-             code (str "(require '[heretic.self-test :as st])"
-                       "(st/run-self-test! "
-                       "{:port " port
-                       " :worktree-path \"" worktree-abs "\""
-                       (when target-file (str " :file \"" target-file "\""))
-                       (when limit (str " :limit " limit))
-                       "})")]
-         (run-with-clojurestorm config code))))}
-
-  self-test:status
-  {:doc "Check self-testing setup status"
-   :task
-   (let [worktree-path "../heretic-under-test"
-         worktree-abs (str (fs/absolutize worktree-path))]
-     (println "Self-test status:")
-     (println "")
-     (if (fs/exists? worktree-path)
-       (do
-         (println "  Worktree: " worktree-abs)
-         (println "  Status: READY")
-         (println "")
-         (println "To start testing:")
-         (println "  1. cd" worktree-abs)
-         (println "  2. clj -M:dev:test:clojurestorm -m nrepl.cmdline --interactive")
-         (println "  3. bb self-test --port <PORT>"))
-       (do
-         (println "  Worktree: NOT FOUND")
-         (println "")
-         (println "Run 'bb self-test:setup' to create the worktree."))))}}}
+   (let [code (str "(require '[heretic.sandbox :as sb] '[clojure.edn :as edn])"
+                   "(sb/mutate-in-sandbox!"
+                   "  (assoc (edn/read-string (slurp \"heretic.edn\")) :test-namespaces ['heretic.timing-test])"
+                   "  :files [\"src/heretic/timing.clj\"])"
+                   "(System/exit 0)")]
+     (p/shell "clojure" "-M" "-e" code))}}}

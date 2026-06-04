@@ -120,27 +120,10 @@
 ;; Zipper Tree Walking
 ;; =============================================================================
 
-(defn- walk-zloc
-  "Walk a zipper depth-first, returning a lazy sequence of all zloc positions.
-
-   Visits every node in the tree, including the starting position."
-  [zloc]
-  (when zloc
-    (lazy-seq
-     (cons zloc
-           (concat
-            ;; Visit children
-            (when-let [child (z/down zloc)]
-              (walk-zloc child))
-            ;; Visit siblings (only if not at root)
-            (when-let [sibling (z/right zloc)]
-              (walk-zloc sibling)))))))
-
 (defn- walk-form
   "Walk a single form depth-first, returning a lazy sequence of all zloc positions.
 
-   Unlike walk-zloc, this only walks within the given form (doesn't traverse siblings
-   at the top level)."
+   Walks only within the given form (does not traverse siblings at the top level)."
   [zloc]
   (when zloc
     (lazy-seq
@@ -171,15 +154,6 @@
      :replacement (str (:replacement op))
      :line (when pos (first pos))
      :column (when pos (second pos))}))
-
-(defn- zloc->form-id
-  "Compute a stable form-id for the top-level form containing zloc.
-
-   Uses a hash of the form's string representation for stability
-   across re-parses of the same source."
-  [zloc]
-  (when-let [top-form (top-level-form zloc)]
-    (hash (z/string top-form))))
 
 (defn find-mutation-sites
   "Find all mutation sites in a zipper.

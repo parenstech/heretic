@@ -25,6 +25,7 @@
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.set :as set]
+            [clojure.string :as str]
             [heretic.collector :as collector]
             [heretic.controller :as controller]
             [heretic.coverage-map :as coverage]
@@ -471,6 +472,10 @@
               ;; Return results
               final-result)))))))
 
+;; Sandboxed mutation (issue #2) lives in heretic.sandbox/mutate-in-sandbox!,
+;; deliberately NOT exposed through heretic.core — see the heretic.sandbox ns
+;; docstring for why (it keeps the orchestrator off the ClojureStorm classpath).
+
 (defn survivors
   "Get surviving mutations from last run.
 
@@ -500,3 +505,63 @@
       (do
         (reporter/print-phase (str "Nothing to clean - " heretic-dir " does not exist"))
         {:deleted false :path heretic-dir}))))
+
+;; =============================================================================
+;; CLI Entry Point
+;; =============================================================================
+
+(defn- print-survivors [config]
+  (let [survs (survivors config)]
+    (if (seq survs)
+      (doseq [s survs]
+        (println (format "  %s:%s  %s -> %s"
+                         (:file s) (:line s) (:original s) (:replacement s))))
+      (println "No surviving mutations."))))
+
+(defn- print-status [config]
+  (let [{:keys [stale-namespaces fresh-namespaces index-exists?]} (status config)]
+    (println (format "Coverage index: %s" (if index-exists? "present" "missing")))
+    (println (format "Fresh namespaces: %d" (count fresh-namespaces)))
+    (println (format "Stale namespaces: %d%s" (count stale-namespaces)
+                     (if (seq stale-namespaces)
+                       (str " — " (str/join ", " stale-namespaces))
+                       "")))))
+
+(defn -main
+  "CLI entry point.
+
+   Usage: clojure -M:heretic -m heretic.core <command> [args]
+
+   Commands:
+     collect [--force]        Build / refresh the test-to-code coverage map
+     mutate  [--files a,b]    Run mutation testing (sandboxed — working tree untouched)
+     watch                    Continuous sandboxed mutation testing on file changes
+     status                   Show which test namespaces need recollection
+     survivors                Show surviving mutations from the last run
+     clean                    Remove cached coverage data
+
+   `mutate` and `watch` run against an isolated sandbox copy via heretic.sandbox
+   (see docs/sandboxed-mutation.md); the others operate in-process."
+  [& args]
+  (let [[cmd & opts] args
+        config (load-config)
+        files (when-let [v (->> opts (drop-while #(not= "--files" %)) second)]
+                (str/split v #","))]
+    (case cmd
+      "collect"   (collect! config :force (boolean (some #{"--force"} opts)))
+      "mutate"    (let [mutate-in-sandbox! (requiring-resolve 'heretic.sandbox/mutate-in-sandbox!)]
+                    (if files
+                      (mutate-in-sandbox! config :files files)
+                      (mutate-in-sandbox! config)))
+      "watch"     ((requiring-resolve 'heretic.watch/watch!) config)  ; blocks until interrupted
+      "status"    (print-status config)
+      "survivors" (print-survivors config)
+      "clean"     (clean! config)
+      (do
+        (println "Unknown command:" (pr-str cmd))
+        (println "Commands: collect | mutate | watch | status | survivors | clean")
+        (System/exit 1)))
+    ;; watch blocks forever; every other command is one-shot.
+    (when-not (= cmd "watch")
+      (shutdown-agents)
+      (System/exit 0))))

@@ -205,7 +205,7 @@
    - Test file changed (hash mismatch)
    - Any source file it depends on changed
    - Config changed"
-  [heretic-dir test-ns test-paths source-paths config]
+  [heretic-dir test-ns test-paths _source-paths config]
   (let [coverage-data (load-test-ns-coverage heretic-dir test-ns)]
     (if (nil? coverage-data)
       true  ;; No coverage file -> stale
