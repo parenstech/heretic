@@ -73,7 +73,10 @@
                    (discover-test-namespaces (:test-paths config))
                    (:test-namespaces config))
         excluded (set (map symbol (:exclude-test-namespaces config)))]
-    (remove excluded included)))
+    ;; Coerce the included names to symbols too (an explicit :test-namespaces may
+    ;; hold strings) so the exclude set actually matches and the return honors the
+    ;; "sequence of namespace symbols" contract.
+    (remove excluded (map symbol included))))
 
 (defn discover-test-vars
   "Find all test vars in the given namespaces.
