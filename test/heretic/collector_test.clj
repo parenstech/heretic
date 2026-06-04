@@ -25,6 +25,22 @@
 ;; Test Discovery
 ;; =============================================================================
 
+(deftest test-resolve-test-namespaces
+  (testing ":exclude-test-namespaces removes namespaces from an explicit list (issue #3)"
+    (is (= '[a.core-test b.util-test]
+           (collector/resolve-test-namespaces
+            {:test-namespaces '[a.core-test b.util-test c.skip-test]
+             :exclude-test-namespaces #{'c.skip-test}}))))
+  (testing "exclude entries may be strings as well as symbols"
+    (is (= '[a.core-test]
+           (collector/resolve-test-namespaces
+            {:test-namespaces '[a.core-test c.skip-test]
+             :exclude-test-namespaces ["c.skip-test"]}))))
+  (testing "no excludes leaves the list unchanged"
+    (is (= '[a.core-test c.skip-test]
+           (collector/resolve-test-namespaces
+            {:test-namespaces '[a.core-test c.skip-test]})))))
+
 (deftest test-discover-test-vars
   (testing "Discovers vars with :test metadata"
     ;; Load the fixture namespace

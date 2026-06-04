@@ -57,6 +57,24 @@
        (keep file->ns-symbol)
        (distinct)))
 
+(defn resolve-test-namespaces
+  "Effective test namespaces to collect and run, given config.
+
+   `:test-namespaces` selects the set (`:all` → discovered from `:test-paths`, or
+   an explicit seq), then any namespace in `:exclude-test-namespaces` is removed.
+
+   Use the exclude set to skip a namespace that can't run under ClojureStorm
+   instrumentation (or is too slow/flaky) without having to enumerate every other
+   namespace. Names may be symbols or strings.
+
+   Returns a sequence of namespace symbols."
+  [config]
+  (let [included (if (= :all (:test-namespaces config))
+                   (discover-test-namespaces (:test-paths config))
+                   (:test-namespaces config))
+        excluded (set (map symbol (:exclude-test-namespaces config)))]
+    (remove excluded included)))
+
 (defn discover-test-vars
   "Find all test vars in the given namespaces.
 

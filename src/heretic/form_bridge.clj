@@ -34,11 +34,19 @@
   (into {}
         (for [[form-id {:keys [form/file form/line]}] forms
               :when (and file line)
-              :let [abs-path (some (fn [src-path]
-                                     (let [f (io/file src-path file)]
-                                       (when (.exists f)
-                                         (.getCanonicalPath f))))
-                                   source-paths)]
+              :let [f0 (io/file file)
+                    abs-path (if (.isAbsolute f0)
+                               ;; ClojureStorm records an absolute path for files
+                               ;; loaded via `load-file` (scripts, etc.). Use it
+                               ;; directly — resolving it against source-paths would
+                               ;; throw "not a relative path" via clojure.java.io/file
+                               ;; and crash the whole coverage build.
+                               (when (.exists f0) (.getCanonicalPath f0))
+                               (some (fn [src-path]
+                                       (let [f (io/file src-path file)]
+                                         (when (.exists f)
+                                           (.getCanonicalPath f))))
+                                     source-paths))]
               :when abs-path]
           [[abs-path line] form-id])))
 
