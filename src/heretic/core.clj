@@ -183,8 +183,12 @@
   "Evaluate a single mutation with file modification and namespace reloading."
   [index mutation config]
   (engine/with-mutation [applied mutation]
-    ;; Reload changed namespaces
-    (let [reload-result (reloader/reload!)]
+    ;; Force-reload the mutated namespace, bypassing clj-reload's mtime gate.
+    ;; Consecutive sub-millisecond spits (apply → revert) collide on the same
+    ;; mtime, so plain reload! silently skips the reload and the mutant is falsely
+    ;; scored `survived` (0% on fast/small projects). Mirrors heretic.worker's
+    ;; parallel path.
+    (let [reload-result (reloader/reload-mutated-file! (:file applied))]
       (if (:success reload-result)
         ;; Run tests for this mutation
         (runner/evaluate-mutation index applied config)
