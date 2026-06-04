@@ -25,6 +25,44 @@
 ;; Test Discovery
 ;; =============================================================================
 
+(deftest test-resolve-test-namespaces
+  (testing ":exclude-test-namespaces removes namespaces from an explicit list (issue #3)"
+    (is (= '[a.core-test b.util-test]
+           (collector/resolve-test-namespaces
+            {:test-namespaces '[a.core-test b.util-test c.skip-test]
+             :exclude-test-namespaces #{'c.skip-test}}))))
+  (testing "exclude entries may be strings as well as symbols"
+    (is (= '[a.core-test]
+           (collector/resolve-test-namespaces
+            {:test-namespaces '[a.core-test c.skip-test]
+             :exclude-test-namespaces ["c.skip-test"]}))))
+  (testing "no excludes leaves the list unchanged"
+    (is (= '[a.core-test c.skip-test]
+           (collector/resolve-test-namespaces
+            {:test-namespaces '[a.core-test c.skip-test]}))))
+  (testing "a symbol exclude matches a string-valued :test-namespaces entry (issue #3)"
+    (is (= '[a.core-test]
+           (collector/resolve-test-namespaces
+            {:test-namespaces ["a.core-test" "c.skip-test"]
+             :exclude-test-namespaces #{'c.skip-test}})))))
+
+(deftest test-resolve-test-namespaces-all-with-exclude
+  (testing ":test-namespaces :all discovers from disk, then :exclude-test-namespaces is removed (issue #3)"
+    (let [dir (java.io.File. (System/getProperty "java.io.tmpdir")
+                             (str "heretic-rtn-" (System/currentTimeMillis)))]
+      (.mkdirs dir)
+      (spit (java.io.File. dir "a_test.clj") "(ns a-test)")
+      (spit (java.io.File. dir "b_test.clj") "(ns b-test)")
+      (try
+        (let [result (set (collector/resolve-test-namespaces
+                           {:test-namespaces :all
+                            :test-paths [(.getPath dir)]
+                            :exclude-test-namespaces #{'b-test}}))]
+          (is (contains? result 'a-test) "a non-excluded discovered ns is kept")
+          (is (not (contains? result 'b-test)) "the excluded ns is removed from the :all set"))
+        (finally
+          (doseq [f (reverse (file-seq dir))] (.delete f)))))))
+
 (deftest test-discover-test-vars
   (testing "Discovers vars with :test metadata"
     ;; Load the fixture namespace

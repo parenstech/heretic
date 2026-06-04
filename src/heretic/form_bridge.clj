@@ -13,7 +13,9 @@
    Since mutation sites can be anywhere within a form, we find the form whose
    start line is the largest value <= mutation line (the containing form).
 
-   This module is pure - it takes data and returns data, no I/O."
+   Most of this module is pure data transformation; `build-form-location-index`
+   probes the filesystem (`.exists` / canonicalize) to resolve each form's file
+   to a canonical path."
   (:require [clojure.java.io :as io]))
 
 ;; =============================================================================
@@ -25,20 +27,25 @@
 
    Arguments:
    - forms: Map of {form-id -> {:form/file, :form/line, ...}} from ClojureStorm
-   - source-paths: Sequence of source directories to resolve relative paths
+   - source-paths: directories to resolve a relative form file against (the caller
+     passes the source + test paths). An absolute form file is used directly.
 
    Returns {[absolute-file-path line] -> form-id}
 
-   Pure function."
+   Reads the filesystem to canonicalize each form's file."
   [forms source-paths]
   (into {}
         (for [[form-id {:keys [form/file form/line]}] forms
               :when (and file line)
-              :let [abs-path (some (fn [src-path]
-                                     (let [f (io/file src-path file)]
-                                       (when (.exists f)
-                                         (.getCanonicalPath f))))
-                                   source-paths)]
+              :let [f0 (io/file file)
+                    ;; ClojureStorm records an absolute path for files loaded via
+                    ;; `load-file` (scripts, etc.); use it directly. Resolving an
+                    ;; absolute path against source-paths would throw "not a relative
+                    ;; path" via clojure.java.io/file and crash the coverage build.
+                    candidates (if (.isAbsolute f0)
+                                 [f0]
+                                 (map #(io/file % file) source-paths))
+                    abs-path (some #(when (.exists %) (.getCanonicalPath %)) candidates)]
               :when abs-path]
           [[abs-path line] form-id])))
 

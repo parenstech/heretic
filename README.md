@@ -177,6 +177,8 @@ Full configuration options in `heretic.edn`:
  :source-paths ["src"]
  :test-paths ["test"]
  :test-namespaces :all  ; or list of namespace symbols
+ :exclude-test-namespaces #{}  ; skip these even when :test-namespaces is :all
+                               ;   (e.g. a test that can't run under instrumentation)
 
  ;; Coverage storage
  :heretic-dir ".heretic"

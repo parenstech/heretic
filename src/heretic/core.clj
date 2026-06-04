@@ -47,6 +47,7 @@
   {:source-paths ["src"]
    :test-paths ["test"]
    :test-namespaces :all
+   :exclude-test-namespaces #{} ; namespaces to skip from collection/running
    :heretic-dir ".heretic"
    :instrument-prefixes []
    :instrument-skip-prefixes []
@@ -140,10 +141,8 @@
         source-paths (:source-paths config)
         test-paths (:test-paths config)
 
-        ;; Discover all test namespaces
-        all-test-ns (if (= :all (:test-namespaces config))
-                      (collector/discover-test-namespaces test-paths)
-                      (:test-namespaces config))
+        ;; Discover all test namespaces (minus :exclude-test-namespaces)
+        all-test-ns (collector/resolve-test-namespaces config)
 
         ;; Check existing coverage files
         coverage-files (persist/list-coverage-files heretic-dir)

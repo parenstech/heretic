@@ -124,11 +124,9 @@
         ;; Initialize tracer
         _ (tracer/init!)
 
-        ;; Discover test namespaces
+        ;; Discover test namespaces (minus :exclude-test-namespaces)
         _ (println "  Discovering test namespaces in:" test-paths)
-        all-test-ns (if (= :all (:test-namespaces config))
-                      (collector/discover-test-namespaces test-paths)
-                      (:test-namespaces config))
+        all-test-ns (collector/resolve-test-namespaces config)
         _ (println "  Found namespaces:" (vec all-test-ns))
 
         ;; Filter to requested namespaces if specified

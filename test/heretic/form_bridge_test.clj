@@ -45,6 +45,22 @@
       ;; Since file doesn't exist, result is empty
       (is (= {} (bridge/build-form-location-index forms ["nonexistent"]))))))
 
+(deftest test-build-form-location-index-absolute-path
+  (testing "an absolute :form/file (e.g. a load-file'd script) does not crash the build (issue #3)"
+    ;; clojure.java.io/file throws \"not a relative path\" when an absolute child is
+    ;; resolved against a source-path; the index must tolerate the absolute paths
+    ;; ClojureStorm records for load-file'd files.
+    (let [tmp (java.io.File/createTempFile "heretic-fb" ".clj")
+          abs (.getCanonicalPath tmp)]
+      (try
+        (is (= {[abs 7] 99}
+               (bridge/build-form-location-index {99 {:form/file abs :form/line 7}} ["src"]))
+            "an existing absolute path is used directly")
+        (finally (.delete tmp)))))
+  (testing "an absolute :form/file that doesn't exist is skipped, not thrown on"
+    (is (= {} (bridge/build-form-location-index
+               {1 {:form/file "/no/such/heretic/abs/path.clj" :form/line 1}} ["src"])))))
+
 ;; =============================================================================
 ;; find-containing-form Tests
 ;; =============================================================================
