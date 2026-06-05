@@ -41,3 +41,11 @@ docs/babel-adapter.md
 
 # Sandboxed mutation runs (heretic.sandbox)
 .heretic-sandbox/
+
+# Vendored G2/G3 validation targets + experiment scratch (local reproducers, not committed)
+validation/medley/
+validation/honeysql/
+validation/data.csv/
+validation/tools.cli/
+validation/uri/
+validation/experiments/
