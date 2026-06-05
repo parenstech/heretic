@@ -146,6 +146,7 @@
                      "heretic.reloader-test"
                      "heretic.incremental-test"
                      "heretic.killmatrix-test"
+                     "heretic.process-worker-test"
                      "heretic.trends-test"]
          quote-ns (fn [ns] (str "(quote " ns ")"))
          require-forms (str/join " " (map quote-ns namespaces))

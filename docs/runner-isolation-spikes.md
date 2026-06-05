@@ -39,9 +39,19 @@ with a seeded infinite-loop mutant, and measured. A judge agent ranked them on t
    exit** (it still burns a core until the JVM dies — reclaiming the CPU mid-run is B3's job). Verified by
    `run-tests-runs-on-daemon-thread-test`.
 
-### ⭐ Strategic — the real fix for limitation B (build next, its own effort)
+### ⭐ Strategic — the real fix for limitation B
 
-3. **B3 — forked worker-JVM pool with `destroyForcibly`.** The *only* spike that measurably reclaims a runaway,
+3. **B3 — forked worker-JVM with `destroyForcibly`.** ✅ **B3a (single worker) BUILT** — `heretic.process-worker`
+   (generic spawn + newline-framed EDN protocol, all non-protocol output on stderr, per-request timeout →
+   `destroyForcibly` → respawn; 8 layer-1 tests under plain clj), `heretic.process-worker-child` (load index +
+   target nses once, serve mutants), `heretic.runner-process/evaluate-mutations-process` (parent holds the
+   pristine source + restores it before respawn so a mid-apply kill can't corrupt the tree). Layer-2 smoke on
+   `validation/sample`: load-once, a seeded infinite-loop mutant force-killed → `:timeout` while the parent stays
+   healthy and finishes the queue, and exact verdict parity with in-process `evaluate-mutation`; ~0 steady-state
+   overhead, no orphan JVMs, sample byte-identical. **Next: B3b** — the N-worker pool (work queue) + wiring as a
+   third `core.clj` `:executor :process` (the single-worker API is shippable as-is). Original plan retained below.
+
+   The *only* spike that measurably reclaims a runaway,
    at ~zero steady-state overhead, and its work-queue structure natively hosts process parallelism (the README's
    "Pre-forked worker JVMs") and pairs with A1's chunking. It is the answer to the worker-supervision design doc's
    deferred **Open Question #1**. Implementation plan:
