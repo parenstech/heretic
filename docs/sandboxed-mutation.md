@@ -257,10 +257,11 @@ in-place bb task — sandboxed is the only supported entry point.
 The tempting alternative is to never touch disk at all: apply each mutation by
 `eval`-ing the rewritten form straight into the live JVM, redefining the var.
 Clojure vars are late-bound, so already-compiled callers (including the tests, run
-in the same JVM) pick up the new definition immediately. Heretic's dormant
-`schemata` machinery already builds the switch-per-mutant form in memory, and a
-REPL experiment confirmed the mechanism works: redefinition propagates, switching
-is thread-local, and it is ~250× cheaper per apply than recompiling. So why not it?
+in the same JVM) pick up the new definition immediately. A former `schemata`
+prototype (since removed — see `docs/validation-results.md` §1) built the
+switch-per-mutant form in memory, and a REPL experiment confirmed the mechanism
+works: redefinition propagates, switching is thread-local, and it is ~250× cheaper
+per apply than recompiling. So why not it?
 
 **It does not actually resolve #2.** In-memory redefinition only works when the
 mutated subform sits inside an ordinary `defn`. It is wrong — *silently* — for a
