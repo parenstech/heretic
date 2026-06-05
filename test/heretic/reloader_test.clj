@@ -224,3 +224,68 @@
     (let [reload3 (reloader/reload-after-revert!)]
       (is (true? (:success reload3))
           "Reload after revert should succeed"))))
+
+;; =============================================================================
+;; Regression: value-captured re-exports must refresh on reload
+;; =============================================================================
+;;
+;; A namespace that re-exports a var BY VALUE — (def f other/f) — captures the
+;; function at load-time. Reloading ONLY the defining namespace leaves the
+;; re-export pointing at the pre-mutation function, so a covering test that
+;; reaches the mutated code through the re-export runs UN-mutated code and the
+;; mutant is falsely scored `survived`. reload-mutated-file! must therefore
+;; reload the defining namespace AND its transitive dependents.
+;;
+;; These tests use on-classpath fixtures (heretic.fixtures.reexport-{core,facade})
+;; and init the reloader on the fixtures dir so the dependency graph is parseable.
+
+(def ^:private reexport-core-ns 'heretic.fixtures.reexport-core)
+(def ^:private reexport-facade-ns 'heretic.fixtures.reexport-facade)
+(def ^:private reexport-fixtures-dir "test/heretic/fixtures")
+(def ^:private reexport-core-file
+  (.getPath (io/file "test" "heretic" "fixtures" "reexport_core.clj")))
+
+(defn- facade-answer
+  "Invoke the value-captured re-export heretic.fixtures.reexport-facade/answer,
+   resolved at runtime (no compile-time dependency on the fixture)."
+  []
+  ((deref (find-var (symbol (name reexport-facade-ns) "answer")))))
+
+(deftest reload-order-includes-reexport-dependents-test
+  (testing "reload-order returns the mutated ns plus its by-value re-exporting dependent, dependency-first"
+    (require reexport-core-ns :reload)
+    (require reexport-facade-ns :reload)
+    (reloader/init! [reexport-fixtures-dir])
+    (let [order (vec (#'reloader/reload-order reexport-core-ns))]
+      (is (some #{reexport-core-ns} order)
+          "must include the mutated namespace itself")
+      (is (some #{reexport-facade-ns} order)
+          "must include the by-value re-exporting dependent")
+      (is (< (.indexOf order reexport-core-ns)
+             (.indexOf order reexport-facade-ns))
+          "the dependency must be ordered before its dependent"))))
+
+(deftest reexport-dependent-refreshes-after-reload-test
+  (testing "reload-mutated-file! refreshes a value-captured re-export when the defining ns is mutated"
+    (let [original (slurp reexport-core-file)]
+      (try
+        (require reexport-core-ns :reload)
+        (require reexport-facade-ns :reload)
+        (reloader/init! [reexport-fixtures-dir])
+        (is (= :original (facade-answer))
+            "baseline: the facade re-exports the original answer")
+
+        ;; Mutate the DEFINING namespace on disk (as the mutate loop does).
+        (spit reexport-core-file
+              "(ns heretic.fixtures.reexport-core)\n(defn answer [] :mutated)\n")
+        (let [result (reloader/reload-mutated-file! reexport-core-file)]
+          (is (true? (:success result))
+              "reload-mutated-file! reports success")
+          (is (= :mutated (facade-answer))
+              (str "the value-captured re-export MUST reflect the mutation; "
+                   "if it still returns :original the mutant would falsely survive")))
+        (finally
+          ;; Restore so the mutation never leaks into other tests.
+          (spit reexport-core-file original)
+          (require reexport-core-ns :reload)
+          (require reexport-facade-ns :reload))))))
