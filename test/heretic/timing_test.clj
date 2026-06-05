@@ -215,20 +215,66 @@
 ;; =============================================================================
 
 (deftest calculate-dynamic-timeout-multiplier-test
-  (testing "Timeout is calculated as duration * multiplier (tests line 164 *->/)"
+  (testing "Timeout is duration * multiplier + additive (tests line 164 *->/)"
     (let [timing-data {'test/foo {:duration-ms 1000 :runs 1}}
-          ;; With multiplier 3.0, expected = 1000 * 3.0 = 3000
+          ;; With multiplier 3.0 and additive-ms 0, expected = 1000 * 3.0 = 3000
           ;; If mutation changes * to /, expected would be 1000 / 3.0 = 333
           ;; base-timeout defaults to 1000, so result must exceed that
-          result (timing/calculate-dynamic-timeout timing-data 'test/foo {:multiplier 3.0})]
+          result (timing/calculate-dynamic-timeout timing-data 'test/foo
+                                                   {:multiplier 3.0 :additive-ms 0})]
       (is (= 3000 result)))))
+
+(deftest calculate-dynamic-timeout-additive-default-test
+  (testing "Additive warmup constant defaults to 4000ms (PIT-style)"
+    (let [timing-data {'test/foo {:duration-ms 1000 :runs 1}}
+          ;; Default multiplier 3.0 + default additive 4000 = 1000*3 + 4000 = 7000
+          result (timing/calculate-dynamic-timeout timing-data 'test/foo {})]
+      (is (= 7000 result)))))
+
+(deftest calculate-dynamic-timeout-additive-explicit-test
+  (testing "Explicit additive-ms is added to the scaled duration"
+    (let [timing-data {'test/foo {:duration-ms 50 :runs 1}}
+          ;; 50 * 3.0 + 4000 = 4150; floor (base-timeout) 1000 doesn't bind
+          result (timing/calculate-dynamic-timeout timing-data 'test/foo
+                                                   {:multiplier 3.0 :additive-ms 4000})]
+      (is (= 4150 result)))))
+
+(deftest calculate-dynamic-timeout-additive-respects-floor-test
+  (testing "Floor (base-timeout-ms) still binds after adding additive-ms"
+    (let [timing-data {'test/foo {:duration-ms 10 :runs 1}}
+          ;; 10 * 3.0 + 0 = 30, but base-timeout floor is 5000
+          result (timing/calculate-dynamic-timeout timing-data 'test/foo
+                                                   {:base-timeout-ms 5000
+                                                    :multiplier 3.0
+                                                    :additive-ms 0})]
+      (is (= 5000 result)))))
+
+(deftest calculate-dynamic-timeout-additive-respects-cap-test
+  (testing "Max cap still binds after adding additive-ms"
+    (let [timing-data {'test/foo {:duration-ms 100000 :runs 1}}
+          ;; 100000 * 3.0 + 4000 = 304000, capped at 30000
+          result (timing/calculate-dynamic-timeout timing-data 'test/foo
+                                                   {:additive-ms 4000})]
+      (is (= 30000 result)))))
+
+(deftest calculate-dynamic-timeout-no-estimate-default-timeout-test
+  (testing "No estimate uses :default-timeout-ms when provided, else max"
+    (let [timing-data {'test/other {:duration-ms 100 :runs 1}}]
+      ;; Explicit default-timeout-ms is honoured for the no-estimate case
+      (is (= 7500 (timing/calculate-dynamic-timeout timing-data 'test/unknown
+                                                    {:default-timeout-ms 7500})))
+      ;; Without it, falls back to max-timeout-ms (conservative, not tighter)
+      (is (= 30000 (timing/calculate-dynamic-timeout timing-data 'test/unknown {}))))))
 
 (deftest calculate-dynamic-timeout-respects-base-test
   (testing "Timeout is at least base-timeout-ms"
     (let [timing-data {'test/foo {:duration-ms 10 :runs 1}}
-          ;; 10 * 3.0 = 30, but base is 1000
+          ;; 10 * 3.0 + 0 = 30, but base (floor) is 1000. additive-ms 0 isolates
+          ;; the floor from the warmup constant.
           result (timing/calculate-dynamic-timeout timing-data 'test/foo
-                                                   {:base-timeout-ms 1000 :multiplier 3.0})]
+                                                   {:base-timeout-ms 1000
+                                                    :multiplier 3.0
+                                                    :additive-ms 0})]
       (is (= 1000 result)))))
 
 (deftest calculate-dynamic-timeout-respects-max-test

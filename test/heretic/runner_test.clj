@@ -549,3 +549,148 @@
       (is (:any-failed result))
       (is (= #{erroring-test-sym} (:tests-run result)))
       (is (< elapsed 100) "Single erroring test should complete quickly"))))
+
+;; =============================================================================
+;; No-early-exit (kill-matrix) mode Tests
+;; =============================================================================
+
+(deftest run-tests-early-exit-default-stops-on-first-failure-test
+  (testing "Default mode stops at the first killing test (does not run all three)"
+    ;; run-tests sets the test collection, so which killer is hit first is
+    ;; iteration-order dependent — assert the early-exit PROPERTY, not identity:
+    ;; it stops before running all tests and records exactly one killer.
+    (let [result (runner/run-tests [failing-test-sym passing-test-sym erroring-test-sym] 5000)]
+      (is (= :completed (:status result)))
+      (is (:any-failed result))
+      (is (< (count (:tests-run result)) 3) "early exit: not all tests ran")
+      (is (= 1 (+ (count (:failed result)) (count (:errored result))))
+          "exactly one killer is recorded under early exit"))))
+
+(deftest run-tests-no-early-exit-collects-all-killers-test
+  (testing ":no-early-exit? runs every test and collects the full killer set"
+    (let [result (runner/run-tests [failing-test-sym passing-test-sym erroring-test-sym]
+                                   {:timeout-ms 5000 :no-early-exit? true})]
+      (is (= :completed (:status result)))
+      (is (:any-failed result))
+      ;; All three tests ran despite the early failure
+      (is (= #{failing-test-sym passing-test-sym erroring-test-sym} (:tests-run result)))
+      (is (= #{failing-test-sym} (:failed result)))
+      (is (= #{erroring-test-sym} (:errored result))))))
+
+(deftest run-tests-no-early-exit-all-pass-survives-test
+  (testing ":no-early-exit? with all passing tests still reports no failure"
+    (let [result (runner/run-tests [passing-test-sym passing-test-sym]
+                                   {:timeout-ms 5000 :no-early-exit? true})]
+      (is (= :completed (:status result)))
+      (is (not (:any-failed result)))
+      (is (= #{} (:failed result)))
+      (is (= #{} (:errored result))))))
+
+(deftest run-tests-runs-on-daemon-thread-test
+  (testing "tests run on a DAEMON thread so a leaked infinite-loop mutant cannot block JVM exit"
+    (reset! heretic.fixtures.mock-tests/daemon-probe nil)
+    (runner/run-tests ['heretic.fixtures.mock-tests/daemon-probe-test] 5000)
+    (is (true? @heretic.fixtures.mock-tests/daemon-probe)
+        "the test executor thread must be a daemon")))
+
+;; A mock index whose single form maps to one passing + two killing tests, so a
+;; mutation there is killed by TWO distinct tests.
+(def multi-killer-index
+  {:coord-to-tests {[777 [0]] #{passing-test-sym failing-test-sym erroring-test-sym}}
+   :form-to-tests {777 #{passing-test-sym failing-test-sym erroring-test-sym}}})
+
+(def multi-killer-mutation {:form-id 777 :coord [0] :operator :swap-plus-minus
+                            :file "x.clj" :line 1})
+
+(deftest evaluate-mutation-default-records-single-killer-test
+  (testing "Default evaluate-mutation records one killer (killed-by-all has just it)"
+    (let [result (runner/evaluate-mutation multi-killer-index multi-killer-mutation {})]
+      (is (= :killed (:status result)))
+      (is (contains? #{failing-test-sym erroring-test-sym} (:killed-by result)))
+      ;; default (early-exit) -> killed-by-all has just the one killer found
+      (is (= 1 (count (:killed-by-all result)))))))
+
+(deftest evaluate-mutation-kill-matrix-mode-collects-all-killers-test
+  (testing ":kill-matrix-mode records the COMPLETE killer set in :killed-by-all"
+    (let [result (runner/evaluate-mutation multi-killer-index multi-killer-mutation
+                                           {:kill-matrix-mode true})]
+      (is (= :killed (:status result)))
+      (is (= #{failing-test-sym erroring-test-sym} (:killed-by-all result)))
+      (is (contains? (:killed-by-all result) (:killed-by result)))
+      ;; all three covering tests were run (passing one included)
+      (is (= #{passing-test-sym failing-test-sym erroring-test-sym} (:tests-run result))))))
+
+(deftest evaluate-mutations-full-populates-killed-by-all-test
+  (testing "evaluate-mutations-full forces kill-matrix-mode for every mutation"
+    (let [results (runner/evaluate-mutations-full multi-killer-index
+                                                  [multi-killer-mutation multi-killer-mutation]
+                                                  {})]
+      (is (= 2 (count results)))
+      (is (every? #(= #{failing-test-sym erroring-test-sym} (:killed-by-all %)) results)))))
+
+;; =============================================================================
+;; G5: Adaptive Per-Test Timeout Wiring Tests
+;; =============================================================================
+
+(deftest run-tests-flat-timeout-without-timing-data-test
+  (testing "Without timing-data, the flat :timeout-ms is used verbatim (default preserved)"
+    ;; medium-slow-test sleeps 200ms. With a flat 50ms timeout and NO timing-data,
+    ;; it MUST time out -- proving the flat path is unchanged.
+    (let [result (runner/run-tests [medium-slow-test-sym] {:timeout-ms 50})]
+      (is (= :partial (:status result)))
+      (is (contains? (:timed-out result) medium-slow-test-sym)
+          "With no timing-data the flat 50ms timeout still applies, so it times out"))))
+
+(deftest run-tests-timing-data-adaptive-timeout-rescues-test
+  (testing "With timing-data, the adaptive per-test timeout (base*3+4000) rescues a test
+            that the same too-tight flat timeout would have falsely timed out"
+    ;; Same test (200ms), same flat 50ms floor, but now we provide a tiny historical
+    ;; estimate (10ms). Adaptive timeout = max(10*3 + 4000, 50) = 4030ms, so the 200ms
+    ;; test COMPLETES instead of false-timing-out.
+    (let [timing-data {medium-slow-test-sym {:duration-ms 10 :runs 1}}
+          result (runner/run-tests [medium-slow-test-sym]
+                                   {:timeout-ms 50 :timing-data timing-data}
+                                   :internal)]
+      (is (= :completed (:status result))
+          "Adaptive timeout (10*3+4000) gives the 200ms test enough headroom")
+      (is (empty? (:timed-out result)))
+      (is (contains? (:tests-run result) medium-slow-test-sym))
+      (is (pos? (get-in result [:results :pass]))))))
+
+(deftest run-tests-timing-data-no-estimate-falls-back-to-flat-test
+  (testing "A test present in the run but ABSENT from timing-data keeps the flat timeout"
+    ;; timing-data has an entry for a DIFFERENT test, so medium-slow-test has no
+    ;; estimate -> it falls back to the flat 50ms timeout and times out.
+    (let [timing-data {fast-test-sym {:duration-ms 5 :runs 1}}
+          result (runner/run-tests [medium-slow-test-sym]
+                                   {:timeout-ms 50 :timing-data timing-data}
+                                   :internal)]
+      (is (= :partial (:status result)))
+      (is (contains? (:timed-out result) medium-slow-test-sym)
+          "No estimate for this test -> flat 50ms floor applies -> times out"))))
+
+(deftest run-tests-additive-ms-override-test
+  (testing ":additive-ms is honoured end-to-end in the per-test path"
+    ;; With additive-ms 0 and a tiny estimate, adaptive = max(10*3+0, 50) = 50ms,
+    ;; which is too tight for the 200ms test -> it times out. This proves the
+    ;; additive constant is what provides the headroom (not the multiplier).
+    (let [timing-data {medium-slow-test-sym {:duration-ms 10 :runs 1}}
+          result (runner/run-tests [medium-slow-test-sym]
+                                   {:timeout-ms 50 :timing-data timing-data :additive-ms 0}
+                                   :internal)]
+      (is (= :partial (:status result)))
+      (is (contains? (:timed-out result) medium-slow-test-sym)
+          "additive-ms 0 collapses the headroom -> the 200ms test times out"))))
+
+(deftest evaluate-mutation-adaptive-timeout-rescues-test
+  (testing "evaluate-mutation passes timing-data through so the adaptive timeout applies"
+    (let [index {:coord-to-tests {[700 [0]] #{medium-slow-test-sym}}
+                 :form-to-tests {700 #{medium-slow-test-sym}}}
+          mutation {:form-id 700 :coord [0]}
+          timing-data {medium-slow-test-sym {:duration-ms 10 :runs 1}}
+          ;; Flat 50ms would time out (status :timeout). With timing-data the
+          ;; adaptive 4030ms lets the (passing) 200ms test complete -> :survived.
+          result (runner/evaluate-mutation index mutation
+                                           {:timeout-ms 50 :timing-data timing-data})]
+      (is (= :survived (:status result))
+          "Adaptive timeout lets the passing test complete instead of false-timeout"))))

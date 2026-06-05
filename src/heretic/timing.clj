@@ -142,31 +142,57 @@
 (defn calculate-dynamic-timeout
   "Calculate dynamic timeout based on historical test duration.
 
-   Uses the formula: timeout = max(base-timeout, duration * multiplier)
+   Uses the formula:
+     timeout = clamp(estimated * multiplier + additive-ms,
+                     base-timeout-ms, max-timeout-ms)
+
+   The additive constant (:additive-ms) is what PIT (+4000ms), StrykerJS
+   (+5000ms) and mutmut (+1.0s) all add on top of the multiplier to absorb
+   JVM classloading / JIT warmup, which inflates the first test execution by
+   several seconds. Heretic runs on ClojureStorm, which makes it *more*
+   exposed to warmup, so the constant matters here more than a bare floor:
+   a 50ms test gets 50*3+4000 = 4150ms of headroom instead of just 1150ms.
+   See docs/mutation-testing-survey.md §3-G5.
 
    Arguments:
    - timing-data: Timing data map (or nil)
    - test-sym: Test symbol
    - opts: Options map:
-     - :base-timeout-ms - Minimum timeout (default 1000ms)
+     - :base-timeout-ms - Minimum timeout / floor (default 1000ms)
      - :multiplier - Multiplier for historical duration (default 3.0)
+     - :additive-ms - Warmup constant added to the scaled duration
+                      (default 4000ms, PIT-style)
      - :max-timeout-ms - Maximum timeout cap (default 30000ms)
+     - :default-timeout-ms - Timeout to use when there is NO estimate for
+                             test-sym (default :max-timeout-ms, i.e. the
+                             conservative pre-additive behaviour). Choosing a
+                             conservative fallback here is deliberate: with no
+                             historical data a too-tight timeout produces a
+                             false KILL (inflated score), which the field
+                             treats as the worse error.
 
    Returns timeout in milliseconds."
   [timing-data test-sym opts]
-  (let [{:keys [base-timeout-ms multiplier max-timeout-ms]
+  (let [{:keys [base-timeout-ms multiplier additive-ms max-timeout-ms default-timeout-ms]
          :or {base-timeout-ms 1000
               multiplier 3.0
+              additive-ms 4000
               max-timeout-ms 30000}} opts
         estimated (get-estimated-duration timing-data test-sym)]
     (if estimated
-      ;; Use historical data: timeout = duration * multiplier, clamped
-      (-> (* estimated multiplier)
-          (max base-timeout-ms)
+      ;; Use historical data: timeout = duration * multiplier + additive, clamped.
+      ;; Apply the cap FIRST, then the floor, so the floor is authoritative: if a
+      ;; caller configures base-timeout-ms (the flat per-test timeout) larger than
+      ;; max-timeout-ms, the result is the floor, never the smaller cap. This keeps
+      ;; the invariant "adaptive timeout never tightens below the flat timeout"
+      ;; even for unusually large flat timeouts.
+      (-> (+ (* estimated multiplier) additive-ms)
           (min max-timeout-ms)
+          (max base-timeout-ms)
           long)
-      ;; No data, use max timeout (conservative)
-      max-timeout-ms)))
+      ;; No data: conservative fallback (defaults to max-timeout-ms). We do NOT
+      ;; regress to anything tighter than today's no-estimate behaviour.
+      (or default-timeout-ms max-timeout-ms))))
 
 (defn estimate-total-duration
   "Estimate total duration for running a set of tests.

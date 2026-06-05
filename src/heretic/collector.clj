@@ -24,7 +24,11 @@
   [file]
   (try
     (with-open [rdr (java.io.PushbackReader. (io/reader file))]
-      (let [form (read rdr)]
+      ;; :read-cond :allow so .cljc ns forms that carry a reader conditional
+      ;; (e.g. (ns foo #?(:clj (:import ...)))) parse instead of throwing
+      ;; "Conditional read not allowed" — which would otherwise be swallowed by
+      ;; the catch below and silently drop the namespace from discovery.
+      (let [form (read {:read-cond :allow} rdr)]
         (when (and (seq? form) (= 'ns (first form)))
           (second form))))
     (catch Exception _

@@ -78,8 +78,19 @@
       ;; Test was interrupted - this is expected during cancellation
       nil)))
 
+(def daemon-probe
+  "Captures whether the test ran on a daemon thread (see runner daemon fix)."
+  (atom nil))
+
+(defn daemon-probe-test
+  "Records the daemon-ness of the thread it runs on."
+  []
+  (reset! daemon-probe (.isDaemon (Thread/currentThread)))
+  (is (= 1 1)))
+
 ;; Register the :test metadata so these can be run via clojure.test/test-var
 (alter-meta! #'passing-test assoc :test passing-test)
+(alter-meta! #'daemon-probe-test assoc :test daemon-probe-test)
 (alter-meta! #'failing-test assoc :test failing-test)
 (alter-meta! #'erroring-test assoc :test erroring-test)
 (alter-meta! #'slow-test assoc :test slow-test)
