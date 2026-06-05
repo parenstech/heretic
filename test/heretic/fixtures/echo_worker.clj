@@ -53,6 +53,8 @@
             :ping
             (emit! {:tag :verdict :op :ping :pid (pid) :served n})
 
-            ;; default :echo
-            (emit! {:tag :verdict :op :echo :n (:n req) :served n})))
+            ;; default :echo — echoes :n AND :key (the pool addresses by :key, so
+            ;; a verdict must carry the request's key back for keyed aggregation).
+            (emit! {:tag :verdict :op :echo :n (:n req) :key (:key req)
+                    :pid (pid) :served n})))
         (recur)))))

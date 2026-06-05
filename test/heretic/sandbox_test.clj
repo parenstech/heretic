@@ -183,6 +183,77 @@
             "not flattened to sandbox/main")
         (finally (sb/clean-sandbox! cfg))))))
 
+(deftest copy-project!-test
+  (testing "copies classpath roots + config, includes .heretic, absolutizes :local/root, writes effective config"
+    (let [root (temp-dir)
+          target (io/file root ".heretic-sandbox" "w0")
+          ;; A project that depends on Heretic via a RELATIVE :local/root — the
+          ;; copy must keep that resolving against the ORIGINAL root, not the copy.
+          cfg {:source-paths ["src"] :test-paths ["test"]
+               :heretic-dir ".heretic" :extra-key :present}]
+      (.mkdirs (io/file root "src" "demo"))
+      (spit (io/file root "src" "demo" "core.clj") "(ns demo.core)")
+      (.mkdirs (io/file root "test"))
+      (spit (io/file root "test" "t.clj") "()")
+      ;; An existing coverage index the worker must inherit (so it doesn't re-collect).
+      (.mkdirs (io/file root ".heretic" "coverage"))
+      (spit (io/file root ".heretic" "index.edn") (pr-str {:coord-to-tests {}}))
+      (spit (io/file root ".heretic" "coverage" "demo.edn") (pr-str {:ns 'demo}))
+      (spit (io/file root "deps.edn")
+            (pr-str {:paths ["src"]
+                     :deps {'heretic/heretic {:local/root ".."}
+                            'foo/bar {:mvn/version "1.0"}}}))
+      (spit (io/file root "heretic.edn") (pr-str {}))
+      (let [returned (sb/copy-project! cfg (.getPath root) (.getPath target)
+                                       :include-heretic true)]
+        (testing "returns the target path"
+          (is (= (.getPath target) returned)))
+        (testing "classpath roots copied with structure preserved"
+          (is (.exists (io/file target "src" "demo" "core.clj")))
+          (is (.exists (io/file target "test" "t.clj"))))
+        (testing ".heretic index copied (worker does NOT re-collect)"
+          (is (.exists (io/file target ".heretic" "index.edn")))
+          (is (.exists (io/file target ".heretic" "coverage" "demo.edn"))))
+        (testing ":local/root absolutized against the ORIGINAL root"
+          (let [deps (edn/read-string (slurp (io/file target "deps.edn")))
+                root-path (get-in deps [:deps 'heretic/heretic :local/root])]
+            (is (.isAbsolute (io/file root-path)))
+            (is (= (.getCanonicalPath (io/file (.getPath root) ".."))
+                   root-path))
+            (is (= {:mvn/version "1.0"} (get-in deps [:deps 'foo/bar]))
+                "non-local coords untouched")))
+        (testing "effective config written as the copy's heretic.edn"
+          (is (= cfg (edn/read-string (slurp (io/file target "heretic.edn")))))))))
+  (testing ":include-heretic false (default) omits the .heretic index"
+    (let [root (temp-dir)
+          target (io/file root "sbx" "w0")
+          cfg {:source-paths ["src"] :heretic-dir ".heretic"}]
+      (.mkdirs (io/file root "src"))
+      (spit (io/file root "src" "a.clj") "()")
+      (.mkdirs (io/file root ".heretic"))
+      (spit (io/file root ".heretic" "index.edn") (pr-str {}))
+      (spit (io/file root "deps.edn") (pr-str {:paths ["src"]}))
+      (spit (io/file root "heretic.edn") (pr-str {}))
+      (sb/copy-project! cfg (.getPath root) (.getPath target))
+      (is (.exists (io/file target "src" "a.clj")))
+      (is (not (.exists (io/file target ".heretic")))
+          ":include-heretic false -> index NOT copied")))
+  (testing "a fresh copy replaces stale target contents"
+    (let [root (temp-dir)
+          target (io/file root "sbx" "w0")
+          cfg {:source-paths ["src"] :heretic-dir ".heretic"}]
+      (.mkdirs (io/file root "src"))
+      (spit (io/file root "src" "a.clj") "()")
+      (spit (io/file root "deps.edn") (pr-str {:paths ["src"]}))
+      (spit (io/file root "heretic.edn") (pr-str {}))
+      ;; Pre-seed the target with a stale file that must be removed.
+      (.mkdirs (io/file target "src"))
+      (spit (io/file target "src" "STALE.clj") "(stale)")
+      (sb/copy-project! cfg (.getPath root) (.getPath target))
+      (is (.exists (io/file target "src" "a.clj")))
+      (is (not (.exists (io/file target "src" "STALE.clj")))
+          "stale target contents wiped before fresh copy"))))
+
 (deftest read-summary-test
   (testing "returns the :summary map mutate! persisted"
     (let [dir (temp-dir)

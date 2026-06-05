@@ -176,13 +176,17 @@
 ;; (no babashka.fs on its classpath), and the sandbox is a disposable copy, so a
 ;; small hand-rolled walk is preferred over pulling in a tree-walk dependency.
 
-(defn- delete-tree!
+(defn delete-tree!
+  "Recursively delete a file/directory. Idempotent — a no-op on an absent path."
   [^File f]
   (when (.isDirectory f)
     (doseq [c (.listFiles f)] (delete-tree! c)))
   (.delete f))
 
-(defn- copy-tree!
+(defn copy-tree!
+  "Recursively copy `src` to `dst`, skipping any directory/file whose name
+   satisfies `exclude?`. Directory structure (and the entry's relative path) is
+   preserved."
   [^File src ^File dst exclude?]
   (if (.isDirectory src)
     (do
@@ -208,12 +212,60 @@
     (doseq [entry (sync-entries config project-root)]
       (copy-tree! (io/file project-root entry) (io/file sandbox entry) exclude?))))
 
-(defn- write-effective-config!
+(defn write-effective-config!
   "Write the orchestrator's resolved config as the sandbox's heretic.edn so the
    child JVM's (load-config) agrees with the orchestrator (test namespaces,
    operators, etc.) — single source of config truth."
   [config sandbox]
   (spit (io/file sandbox "heretic.edn") (pr-str config)))
+
+(defn copy-project!
+  "Public, self-contained project copier for per-worker filesystem isolation (B3b).
+
+   Copies the project's classpath roots + config files (the `sync-entries` set)
+   from `project-root` into a FRESH `target-dir`, then:
+   - with `{:include-heretic true}` (default false) ALSO copies the existing
+     `.heretic` coverage index so the worker child does NOT re-collect — it loads
+     the index its copy carries;
+   - absolutizes every relative `:local/root` in the copy's deps.edn against the
+     ORIGINAL `project-root` (so e.g. `heretic/heretic {:local/root \"..\"}`
+     resolves to the shared real Heretic source — only the TARGET source is copied
+     + mutated per worker; Heretic itself is never copied);
+   - writes the effective `config` as the copy's heretic.edn.
+
+   Each copy is thus self-consistent: its index, its source, and the apply-target
+   all live in ONE working dir — the single-sandbox path-consistency property the
+   key-addressed pool relies on. `target-dir` is created fresh (any prior contents
+   removed). Returns the absolute path of `target-dir`."
+  [config project-root target-dir & {:keys [include-heretic] :or {include-heretic false}}]
+  (let [target (io/file target-dir)
+        ;; Exclude the target itself (in case it sits under project-root) and, by
+        ;; default, .heretic. When :include-heretic, drop .heretic from the
+        ;; exclude set so the index dir is copied with the source.
+        base (if include-heretic (disj base-excludes ".heretic") base-excludes)
+        excludes (conj base (.getName target))
+        exclude? #(contains? excludes %)
+        heretic-dir (:heretic-dir config ".heretic")]
+    (delete-tree! target)
+    (.mkdirs target)
+    ;; Classpath roots + config files (relative paths preserved).
+    (doseq [entry (sync-entries config project-root)]
+      (copy-tree! (io/file project-root entry) (io/file target entry) exclude?))
+    ;; The coverage index lives OUTSIDE the sync-entries set, so copy it
+    ;; explicitly when requested (so the worker loads it instead of re-collecting).
+    (when include-heretic
+      (let [hd (io/file project-root heretic-dir)]
+        (when (.isDirectory hd)
+          (copy-tree! hd (io/file target heretic-dir) (constantly false)))))
+    ;; Absolutize :local/root against the ORIGINAL project-root so shared local
+    ;; deps (Heretic itself) still resolve from the copy's working dir.
+    (let [src-deps (io/file project-root "deps.edn")]
+      (when (.exists src-deps)
+        (let [deps (edn/read-string (slurp src-deps))
+              fixed (absolutize-local-roots deps project-root)]
+          (spit (io/file target "deps.edn") (pr-str fixed)))))
+    (write-effective-config! config target)
+    (.getPath target)))
 
 (defn- rewrite-deps-in-sandbox!
   "Absolutize relative :local/root paths in the sandbox's deps.edn so local deps

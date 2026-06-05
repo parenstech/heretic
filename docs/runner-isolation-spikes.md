@@ -48,8 +48,23 @@ with a seeded infinite-loop mutant, and measured. A judge agent ranked them on t
    pristine source + restores it before respawn so a mid-apply kill can't corrupt the tree). Layer-2 smoke on
    `validation/sample`: load-once, a seeded infinite-loop mutant force-killed → `:timeout` while the parent stays
    healthy and finishes the queue, and exact verdict parity with in-process `evaluate-mutation`; ~0 steady-state
-   overhead, no orphan JVMs, sample byte-identical. **Next: B3b** — the N-worker pool (work queue) + wiring as a
-   third `core.clj` `:executor :process` (the single-worker API is shippable as-is). Original plan retained below.
+   overhead, no orphan JVMs, sample byte-identical.
+
+   ✅ **B3b (N-worker pool) BUILT** — `heretic.process-pool` (generic N-worker pool over a shared key queue,
+   per-worker kill+respawn) + `heretic.sandbox/copy-project!` (per-worker project copies incl. the `.heretic`
+   index, `:local/root` absolutized to the shared real heretic). Each worker runs in its OWN copy and addresses
+   mutants by stable `mutation-key` (each child regenerates mutations in its copy → no cross-copy path remapping
+   → every copy self-consistent, the proven single-sandbox property). Wired as `core.clj :executor :process`
+   with `:parallel-workers N` (N=1 = the unchanged single-worker path). **Correctness proof (reproduced ×2):
+   the N=2 parallel result set EQUALS sequential `evaluate-mutations-full`** — same `:status` + `:killed-by-all`
+   for every key (cross-contamination would break equality); a seeded loop mutant is killed+respawned in its
+   worker (copy source restored) without corrupting the other; all copies deleted, no orphans. A boot
+   `{:tag :ready}` handshake keeps the per-request deadline from counting the child's ~2.8 s ClojureStorm boot
+   (that bug was the FAIL→PASS fix). Speedup is target-size dependent — N=2 on the tiny `validation/sample` is
+   ~0.73× (two boots + copy overhead dominate sub-second eval); the win needs large targets where boot amortizes.
+   **Follow-up:** the parallel==sequential proof ran on a single-namespace target, so the dependent-reload
+   contamination path is only argued structurally — validate it on a multi-namespace target (e.g. a re-exporting
+   facade, or honeysql) under N>1. Original plan retained below.
 
    The *only* spike that measurably reclaims a runaway,
    at ~zero steady-state overhead, and its work-queue structure natively hosts process parallelism (the README's

@@ -89,9 +89,9 @@
 
 (defn- start-reader-thread
   "Drain the child's stdout line-by-line; push every line that parses to a map
-   with `:tag :verdict` onto `q`. Non-verdict / unparseable lines are dropped
-   (framing robustness — a stray stdout line can't desync the protocol). Exits
-   when stdout closes (child dead)."
+   with `:tag :verdict` (or `:tag :ready`) onto `q`. Non-verdict / unparseable
+   lines are dropped (framing robustness — a stray stdout line can't desync the
+   protocol). Exits when stdout closes (child dead)."
   [^BufferedReader rdr ^ArrayBlockingQueue q]
   (doto (Thread.
          ^Runnable
@@ -100,7 +100,7 @@
              (loop []
                (when-let [line (.readLine rdr)]
                  (let [v (try (edn/read-string line) (catch Exception _ ::junk))]
-                   (when (and (map? v) (= :verdict (:tag v)))
+                   (when (and (map? v) (#{:verdict :ready} (:tag v)))
                      ;; Bounded queue; block briefly if the parent is slow, but
                      ;; never wedge forever (the parent always drains in order).
                      (.offer q v 60 TimeUnit/SECONDS)))
@@ -168,6 +168,26 @@
       ;; may have the child's final verdict in-flight — a non-blocking poll here
       ;; would race the reader's .offer and spuriously declare ::dead) then give up.
       :else (or (.poll q 100 TimeUnit/MILLISECONDS) ::dead))))
+
+(defn wait-ready!
+  "Block until the worker's child emits its `{:tag :ready}` handshake (consuming
+   that line off the verdict queue), up to `boot-timeout-ms`. Returns true on
+   ready, ::timeout if the deadline passed, ::dead if the child died first.
+
+   This separates the child's one-time boot (e.g. ClojureStorm's ~2.8s init) from
+   the per-request deadline, so a slow first mutant after a fresh/respawned child
+   isn't spuriously force-killed for boot cost it didn't incur. Only used when the
+   child actually emits :ready (the mutation child does; the generic echo fixture
+   does not — pass :await-ready? accordingly)."
+  [worker boot-timeout-ms]
+  (let [v (read-verdict worker boot-timeout-ms)]
+    (cond
+      (and (map? v) (= :ready (:tag v))) true
+      (= v ::dead) ::dead
+      (= v ::timeout) ::timeout
+      ;; A non-ready map arrived first — unexpected, but treat as ready-enough
+      ;; (the protocol guarantees :ready precedes any verdict).
+      :else true)))
 
 ;; =============================================================================
 ;; Shutdown-hook orphan guard
@@ -241,14 +261,22 @@
                   the mutation layer uses to RESTORE the pristine source snapshot a
                   mid-apply kill left mutated on disk, so the respawned child loads
                   a clean tree. Runs on both ::timeout and ::dead.
+   - :await-ready?  when true, consume a `{:tag :ready}` handshake after each spawn
+                  (and respawn) BEFORE sending requests, so the child's one-time
+                  boot does not count against the first request's deadline.
+   - :boot-timeout-ms  deadline for the :ready handshake (default 60000).
 
    GUARANTEE: the child (original and every respawn) is destroyed in a finally and
    tracked by the shutdown hook, so no orphan worker JVM survives."
-  [spawn-spec requests {:keys [timeout-ms on-timeout on-respawn]
-                        :or {timeout-ms 30000 on-timeout :respawn}}]
+  [spawn-spec requests {:keys [timeout-ms on-timeout on-respawn await-ready? boot-timeout-ms]
+                        :or {timeout-ms 30000 on-timeout :respawn boot-timeout-ms 60000}}]
   (let [reqs (vec requests)
         respawn? (= on-timeout :respawn)
-        worker-atom (atom (track! (spawn! spawn-spec)))]
+        spawn-ready! (fn []
+                       (let [w (track! (spawn! spawn-spec))]
+                         (when await-ready? (wait-ready! w boot-timeout-ms))
+                         w))
+        worker-atom (atom (spawn-ready!))]
     (try
       (loop [i 0
              acc (transient [])]
@@ -271,7 +299,7 @@
                   ;; restore the pristine snapshot before the fresh child loads it.
                   (when on-respawn (on-respawn req))
                   (if respawn?
-                    (do (reset! worker-atom (track! (spawn! spawn-spec)))
+                    (do (reset! worker-atom (spawn-ready!))
                         (recur (inc i) (conj! acc {:tag tag :request req})))
                     ;; :stop — record this one and skip the rest.
                     (persistent!
