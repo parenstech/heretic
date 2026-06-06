@@ -997,3 +997,57 @@
     {:mutants mutants
      :tests tests
      :matrix matrix}))
+
+(defn build-full-kill-matrix
+  "Build a COMPLETE kill matrix from no-early-exit results.
+
+   Unlike `build-kill-matrix` (which reads the single `:killed-by` produced by an
+   early-exit run and so yields an at-most-one-killer-per-mutant matrix), this reads
+   `:killed-by-all` — the FULL set of tests that kill each mutant — so the resulting
+   matrix supports EXACT dominator/subsumption analysis.
+
+   Requires results produced by `runner/evaluate-mutations-full` (or
+   `runner/evaluate-mutation` with `:kill-matrix-mode true`), which populate
+   `:killed-by-all`. Falls back to the single `:killed-by` when `:killed-by-all` is
+   absent, so it degrades gracefully on early-exit results.
+
+   Returns {:mutants [...] :tests [...] :matrix {mutant-idx #{test-indices}}}
+   — the shape consumed by `complete-subsumption-analysis`, `find-dominator-mutants`,
+   and `select-minimal-mutants`."
+  [results]
+  (let [killed (filter #(= :killed (:status %)) results)
+        killers-of (fn [r] (or (not-empty (:killed-by-all r))
+                               (some-> (:killed-by r) hash-set)
+                               #{}))
+        mutants (mapv mutation-identity killed)
+        all-tests (vec (distinct (mapcat killers-of killed)))
+        test-idx (zipmap all-tests (range))
+        matrix (into {}
+                     (map-indexed
+                      (fn [idx r]
+                        [idx (set (map test-idx (killers-of r)))])
+                      killed))]
+    {:mutants mutants
+     :tests all-tests
+     :matrix matrix}))
+
+(defn kill-matrix-analysis
+  "End-to-end exact subsumption analysis from kill-matrix-mode results.
+
+   Takes the results of `runner/evaluate-mutations-full` (each carrying
+   `:killed-by-all`) and returns the dominator/minimal-set analysis the G2/G3/G5
+   calibration experiments need:
+
+   {:kill-matrix {...}                  ; the full {mutant -> #{killing tests}} matrix
+    :dominators #{mutant-indices}       ; dominator mutants (minimal kill sets)
+    :minimal-mutants [mutant-indices]   ; greedy test-cover selection
+    :subsumption-graph {m-idx -> #{dominated}}
+    :stats {:total-mutants n :dominator-count n :reduction-percentage pct}}"
+  [results]
+  (let [km (build-full-kill-matrix results)
+        analysis (complete-subsumption-analysis km)]
+    {:kill-matrix km
+     :dominators (:dominators analysis)
+     :minimal-mutants (select-minimal-mutants km)
+     :subsumption-graph (:subsumption-graph analysis)
+     :stats (:stats analysis)}))

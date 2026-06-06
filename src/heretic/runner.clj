@@ -105,23 +105,70 @@
           (swap! results update :error inc))))
     @results))
 
+(defn- run-on-daemon-thread
+  "Run `thunk` on a fresh DAEMON thread; return [promise thread].
+
+   Why a daemon thread (not `future`): a mutation can turn bounded code into a
+   tight CPU loop, and `Thread.interrupt` (what `future-cancel` does) CANNOT stop
+   a loop that never hits an interruptible point. With `future` (non-daemon pool
+   threads) such a leaked runner thread keeps the JVM from ever exiting — measured
+   in spike B2/A1, the process hung on shutdown with a live non-daemon
+   pool-1-thread. A daemon thread leaks at most a daemon (the loop keeps burning a
+   core until the JVM dies, but it no longer BLOCKS JVM exit), so the run can
+   finish/abort and the process exits cleanly. Reclaiming the CPU mid-run requires
+   process isolation — see docs/validation-results.md §5.6 (spike B3)."
+  [thunk]
+  (let [p (promise)
+        t (doto (Thread. ^Runnable
+                 (fn [] (deliver p (try {:ok (thunk)}
+                                        (catch Throwable e {:throw e})))))
+            (.setDaemon true)
+            (.setName "heretic-test-runner")
+            (.start))]
+    [p t]))
+
 (defn- run-test-with-timeout
   "Run a single test with timeout.
 
    Returns:
    - {:status :completed :results {...} :duration-ms n} on successful completion
-   - {:status :timeout :duration-ms n} if test exceeds timeout
-   - {:status :error :exception e :duration-ms n} on unexpected error"
+   - {:status :timeout :duration-ms n} if test exceeds timeout"
   [test-var timeout-ms]
   (let [start-time (System/currentTimeMillis)
-        f (future (run-single-test test-var))
-        result (deref f timeout-ms ::timeout)
+        [p ^Thread t] (run-on-daemon-thread #(run-single-test test-var))
+        outcome (deref p timeout-ms ::timeout)
         duration-ms (- (System/currentTimeMillis) start-time)]
-    (if (= result ::timeout)
+    (if (= outcome ::timeout)
       (do
-        (future-cancel f)
+        (.interrupt t)  ; best-effort; a tight CPU loop ignores it but is a daemon
         {:status :timeout :duration-ms duration-ms})
-      {:status :completed :results result :duration-ms duration-ms})))
+      ;; run-single-test catches Exception/AssertionError itself; a Throwable that
+      ;; still escapes (e.g. an Error) is counted as one errored test.
+      (if (:throw outcome)
+        {:status :completed :results {:pass 0 :fail 0 :error 1} :duration-ms duration-ms}
+        {:status :completed :results (:ok outcome) :duration-ms duration-ms}))))
+
+(defn- per-test-timeout
+  "Resolve the timeout for a single test.
+
+   When :timing-data is present AND we have a historical estimate for this
+   test, derive an adaptive timeout via timing/calculate-dynamic-timeout:
+   the flat :timeout-ms acts as the base-timeout-ms FLOOR (so the adaptive
+   value never drops below the configured flat timeout), and :additive-ms is
+   the JVM/ClojureStorm warmup constant (default 4000ms).
+
+   Otherwise (no timing-data, or no estimate for THIS test) it returns the
+   flat :timeout-ms unchanged. This preserves default behaviour exactly:
+   first runs and the vast majority of existing tests carry no timing-data,
+   so they keep the flat timeout."
+  [test-sym timeout-ms timing-data additive-ms]
+  (if (and timing-data
+           (timing/get-estimated-duration timing-data test-sym))
+    (timing/calculate-dynamic-timeout
+     timing-data test-sym
+     {:base-timeout-ms timeout-ms
+      :additive-ms additive-ms})
+    timeout-ms))
 
 (defn run-tests
   "Execute a set of tests with independent timeout handling.
@@ -138,12 +185,24 @@
    Arguments:
    - test-syms: Collection of test symbols to run
    - opts: Either a number (timeout-ms for backwards compat) or options map:
-     - :timeout-ms - Per-test timeout in milliseconds (default 5000)
+     - :timeout-ms - Flat per-test timeout in milliseconds (default 5000). Acts
+       as the FLOOR for the adaptive timeout when timing-data is present, and is
+       the timeout used verbatim when there is no timing-data / no estimate.
+     - :additive-ms - JVM/ClojureStorm warmup constant added to estimated*
+       multiplier when computing the adaptive per-test timeout (default 4000).
+       Only used when timing-data provides an estimate for a given test.
      - :budget-ms - Total time budget for all tests (optional, nil = unlimited)
-     - :timing-data - Historical timing data for test ordering (optional)
+     - :timing-data - Historical timing data. Drives test ordering AND, when an
+       estimate exists for a test, an adaptive per-test timeout
+       (clamp(estimated*3.0 + additive-ms, timeout-ms, 30000)). Without it the
+       flat :timeout-ms is used unchanged, preserving default behaviour.
+     - :no-early-exit? - When true, run ALL tests even after a failure, so
+       :failed/:errored hold the COMPLETE set of killing tests. Used by
+       kill-matrix mode for exact subsumption/dominator analysis. Default false.
 
-   Early exit: Stops execution as soon as a test fails/errors (for mutation
-   testing, one failure is sufficient to mark the mutation as killed).
+   Early exit: By default, stops execution as soon as a test fails/errors (for
+   mutation testing, one failure is sufficient to mark the mutation as killed).
+   Disabled by :no-early-exit?.
 
    Returns:
    {:status :completed/:partial/:budget-exhausted/:no-tests
@@ -161,7 +220,8 @@
      (run-tests test-syms timeout-ms :internal)
      (run-tests test-syms {:timeout-ms timeout-ms} :internal)))
   ([test-syms opts _]
-   (let [{:keys [timeout-ms budget-ms timing-data] :or {timeout-ms 5000}} opts
+   (let [{:keys [timeout-ms budget-ms timing-data no-early-exit? additive-ms]
+          :or {timeout-ms 5000 additive-ms 4000}} opts
          start-time (System/currentTimeMillis)
          test-syms-set (set test-syms)
          ;; Order tests by historical speed (fastest first) if timing data available
@@ -220,8 +280,10 @@
                (if-not test-var
                  ;; Var not found, skip and continue
                  (recur (next remaining) aggregate ran timed-out failed errored test-durations)
-                 ;; Run the test
-                 (let [result (run-test-with-timeout test-var timeout-ms)
+                 ;; Run the test with an adaptive per-test timeout when timing
+                 ;; data is available; otherwise the flat timeout-ms (default).
+                 (let [test-timeout (per-test-timeout test-sym timeout-ms timing-data additive-ms)
+                       result (run-test-with-timeout test-var test-timeout)
                        test-duration (:duration-ms result)]
                    (case (:status result)
                      ;; Timeout: record it but continue with other tests
@@ -243,8 +305,9 @@
                            new-failed (if (pos? fail) (conj failed test-sym) failed)
                            new-errored (if (pos? error) (conj errored test-sym) errored)
                            any-failed (or (pos? fail) (pos? error))]
-                       ;; Early termination: stop if any test failed/errored
-                       (if any-failed
+                       ;; Early termination: stop on first kill UNLESS no-early-exit?
+                       ;; (kill-matrix mode runs every test to collect all killers).
+                       (if (and any-failed (not no-early-exit?))
                          {:status :completed
                           :results new-aggregate
                           :tests-run new-ran
@@ -305,19 +368,25 @@
      - :timeout-ms - Per-test timeout (default 5000)
      - :budget-ms - Total time budget per mutation (optional)
      - :timing-data - Historical timing data for test ordering (optional)
+     - :kill-matrix-mode - When true, run ALL covering tests (no early exit) and
+       populate :killed-by-all with the full set of killing tests, for exact
+       subsumption/dominator analysis. Slower; for calibration, not normal runs.
 
    Returns MutationResult:
    {:mutation <mutation-record>
     :status :killed/:survived/:no-coverage/:timeout/:error
     :tests-run #{test-sym1 test-sym2}
     :timed-out #{test-sym...}  ; tests that individually timed out
-    :killed-by test-sym  ; test that killed this mutation (nil if not killed)
+    :killed-by test-sym  ; first test that killed this mutation (nil if not killed)
+    :killed-by-all #{test-sym...}  ; ALL killing tests in :kill-matrix-mode, else
+                                   ; the single killer (or nil if not killed)
     :test-durations {test-sym duration-ms ...}  ; per-test execution times
     :duration-ms 150}"
   [index mutation config]
   (let [timeout-ms (or (:timeout-ms config) 5000)
         budget-ms (:budget-ms config)
         timing-data (:timing-data config)
+        kill-matrix-mode (boolean (:kill-matrix-mode config))
         tests (tests-for-mutation index mutation)]
     (if (empty? tests)
       ;; No tests cover this mutation
@@ -326,12 +395,15 @@
        :tests-run #{}
        :timed-out #{}
        :killed-by nil
+       :killed-by-all nil
        :test-durations {}
        :duration-ms 0}
       ;; Run the tests with timeout options and timing data
       (let [test-result (run-tests tests {:timeout-ms timeout-ms
+                                          :additive-ms (:additive-ms config 4000)
                                           :budget-ms budget-ms
-                                          :timing-data timing-data})
+                                          :timing-data timing-data
+                                          :no-early-exit? kill-matrix-mode})
             status (case (:status test-result)
                      ;; All tests completed - check if mutation was killed
                      :completed (determine-mutation-status test-result)
@@ -345,8 +417,11 @@
                                          :timeout)
                      ;; No tests to run
                      :no-tests :no-coverage)
-            ;; Determine which test killed this mutation (first failed or errored test)
-            ;; Due to early exit, there should be at most one test in failed+errored
+            ;; In default (early-exit) mode there is at most one killer; in
+            ;; kill-matrix mode :failed/:errored hold the COMPLETE killer set.
+            all-killers (when (= status :killed)
+                          (clojure.set/union (:failed test-result #{})
+                                             (:errored test-result #{})))
             killed-by (when (= status :killed)
                         (or (first (:failed test-result))
                             (first (:errored test-result))))]
@@ -355,6 +430,7 @@
          :tests-run (:tests-run test-result)
          :timed-out (:timed-out test-result #{})
          :killed-by killed-by
+         :killed-by-all all-killers
          :test-durations (:test-durations test-result {})
          :duration-ms (:duration-ms test-result)}))))
 
@@ -373,6 +449,25 @@
    Returns sequence of MutationResult maps."
   [index mutations config]
   (mapv #(evaluate-mutation index % config) mutations))
+
+(defn evaluate-mutations-full
+  "Evaluate mutations in KILL-MATRIX mode (no early exit): every covering test is
+   run for every mutant, so each result carries :killed-by-all — the full set of
+   killing tests. Feed the results to heretic.subsumption/build-full-kill-matrix
+   for exact dominator/subsumption analysis (G2/G3) and dominator mutation score (G5).
+
+   This is the no-early-exit instrument the calibration analyses need; it is
+   SLOWER than evaluate-mutations (no first-kill short-circuit) and is intended for
+   small corpora, not normal runs.
+
+   Arguments:
+   - index: Coverage index
+   - mutations: Sequence of mutation records
+   - config: Configuration map (:kill-matrix-mode is forced true)
+
+   Returns sequence of MutationResult maps with :killed-by-all populated."
+  [index mutations config]
+  (mapv #(evaluate-mutation index % (assoc config :kill-matrix-mode true)) mutations))
 
 (defn summarize-results
   "Summarize mutation evaluation results.

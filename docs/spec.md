@@ -1490,7 +1490,7 @@ Phase 3 adds parallelism and watch mode to leverage this.
 - [x] Mutant clustering with 4 strategies
 - [x] HTML/JSON/EDN reports provide actionable insights
 - [x] Watch mode enables feedback on incremental changes
-- [x] Mutant schemata compile-once optimization
+- [x] ~~Mutant schemata compile-once optimization~~ — implemented then **removed 2026-06-05** (benchmarked marginal; see `docs/validation-results.md` §1)
 
 **Phase 3 Status: 100% COMPLETE**
 

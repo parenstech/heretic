@@ -30,6 +30,7 @@
   (:require [heretic.mutation-engine :as engine]
             [heretic.reloader :as reloader]
             [heretic.runner :as runner]
+            [heretic.timing :as timing]
             [missionary.core :as m]))
 
 ;; =============================================================================
@@ -50,6 +51,55 @@
                    locks
                    (assoc locks file-path lock))))
         (get @!file-locks file-path))))
+
+;; =============================================================================
+;; Adaptive Per-Mutation Timeout
+;; =============================================================================
+
+(defn- mutation-timeout-ms
+  "Resolve the per-mutation (whole work-unit) timeout.
+
+   This bounds the ENTIRE evaluation of one mutant: reload + every covering
+   test (each with its own adaptive per-test timeout) + revert + reload. It
+   must therefore be more generous than any single per-test timeout.
+
+   Resolution order:
+   1. An explicit :mutation-timeout-ms in config always wins (operator override).
+   2. Otherwise, when :timing-data is present, derive it adaptively from the
+      estimated total duration of the tests covering THIS mutation:
+        estimate-total-duration(covering tests) * factor + constant
+      clamped to [floor, cap]. The factor/constant absorb reload + warmup +
+      the per-test multiplier headroom; defaults factor 3.0, constant 5000ms,
+      floor = the flat fallback (30000), cap 120000ms. Because the floor is the
+      old flat 30000, this only ever RAISES the budget for genuinely slow
+      mutants, never tightens it.
+   3. Otherwise fall back to :timeout-ms or the historical flat 30000ms.
+
+   The covering-test lookup reuses runner/tests-for-mutation, so the worker
+   needs nothing it doesn't already have (index + mutation + config)."
+  [index mutation config]
+  (let [flat (or (:timeout-ms config) 30000)
+        timing-data (:timing-data config)]
+    (or (:mutation-timeout-ms config)
+        (when timing-data
+          (let [{:keys [mutation-timeout-factor mutation-timeout-additive-ms
+                        mutation-timeout-cap-ms]
+                 :or {mutation-timeout-factor 3.0
+                      mutation-timeout-additive-ms 5000
+                      mutation-timeout-cap-ms 120000}} config
+                tests (try (runner/tests-for-mutation index mutation)
+                           (catch Exception _ nil))]
+            (when (seq tests)
+              (let [estimated (timing/estimate-total-duration timing-data tests flat)]
+                ;; cap first, then floor, so the flat floor is authoritative even
+                ;; if a caller sets :timeout-ms above the cap (mirrors
+                ;; timing/calculate-dynamic-timeout).
+                (-> (+ (* estimated mutation-timeout-factor)
+                       mutation-timeout-additive-ms)
+                    (min mutation-timeout-cap-ms)
+                    (max flat)
+                    long)))))
+        flat)))
 
 ;; =============================================================================
 ;; Single Mutation Execution
@@ -97,7 +147,9 @@
    Arguments:
    - index: Coverage index for test lookup
    - mutation: Mutation record with :file, :form-id, :coord, :operator
-   - config: Configuration map with :timeout-ms, :timing-data
+   - config: Configuration map with :timeout-ms, :timing-data,
+     :mutation-timeout-ms. The per-mutation timeout is adaptive: see
+     mutation-timeout-ms. With no :timing-data it stays the flat 30000ms.
 
    Returns Task that yields MutationResult:
    {:mutation <mutation>
@@ -105,9 +157,7 @@
     :killed-by <test-sym> or nil
     :duration-ms <ms>}"
   [index mutation config]
-  (let [timeout-ms (or (:mutation-timeout-ms config)
-                       (:timeout-ms config)
-                       30000)
+  (let [timeout-ms (mutation-timeout-ms index mutation config)
         file-path (:file mutation)
         file-lock (get-file-lock file-path)]
     (m/sp
@@ -357,7 +407,9 @@
      - :mutations - Sequence of mutations to test (required)
      - :parallelism - Number of concurrent workers (default: CPU count)
      - :parallel? - Enable parallel execution (default: true)
-     - :mutation-timeout-ms - Per-mutation timeout (default: 30000)
+     - :mutation-timeout-ms - Explicit per-mutation timeout override. When
+       absent and :timing-data is present, derived adaptively from covering
+       tests' estimated total duration; otherwise falls back to 30000.
      - :timeout-ms - Per-test timeout, passed to runner (default: 5000)
      - :supervision - :skip, :retry, or :abort (default: :skip)
      - :on-progress - Callback (fn [progress-map result]) for progress

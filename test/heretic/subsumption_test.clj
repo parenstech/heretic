@@ -586,3 +586,65 @@
     (is (not (contains? sub/minimal-preset-operators :swap-lt-gt)))
     ;; swap-gt-lt is dominated by swap-gt-gte
     (is (not (contains? sub/minimal-preset-operators :swap-gt-lt)))))
+
+;; =============================================================================
+;; Full Kill Matrix (no-early-exit) Tests
+;; =============================================================================
+;; These exercise the exact-subsumption instrument that unblocks G2/G3/G5: a
+;; matrix built from :killed-by-all (the COMPLETE killer set per mutant) produced
+;; by runner/evaluate-mutations-full.
+
+;; Three killed mutants with overlapping killer sets, plus one survivor:
+;;   m1 killed by {t1,t2}    m2 killed by {t1}    m3 killed by {t1,t2,t3}
+;; m2 has a minimal kill set (it is the dominator); m3's kills cover every test.
+(def full-results
+  [{:status :killed   :mutation {:id :m1 :file "a" :line 1 :coord "1" :operator :op}
+    :killed-by 't1 :killed-by-all #{'t1 't2}}
+   {:status :killed   :mutation {:id :m2 :file "a" :line 2 :coord "1" :operator :op}
+    :killed-by 't1 :killed-by-all #{'t1}}
+   {:status :killed   :mutation {:id :m3 :file "a" :line 3 :coord "1" :operator :op}
+    :killed-by 't1 :killed-by-all #{'t1 't2 't3}}
+   {:status :survived :mutation {:id :m4 :file "a" :line 4 :coord "1" :operator :op}
+    :killed-by nil :killed-by-all nil}])
+
+(deftest build-full-kill-matrix-uses-all-killers-test
+  (testing "build-full-kill-matrix records the complete killer set per mutant"
+    (let [{:keys [mutants tests matrix]} (sub/build-full-kill-matrix full-results)]
+      ;; only the 3 killed mutants are in the matrix; the survivor is excluded
+      (is (= 3 (count mutants)))
+      (is (= 3 (count tests)) "all three killing tests are indexed")
+      ;; each mutant's row has the right number of killing tests
+      (is (= #{2 1 3} (set (map count (vals matrix))))
+          "kill-set sizes are |{t1,t2}|=2, |{t1}|=1, |{t1,t2,t3}|=3"))))
+
+(deftest build-full-kill-matrix-falls-back-to-single-killer-test
+  (testing "without :killed-by-all it degrades to the single :killed-by"
+    (let [{:keys [matrix]} (sub/build-full-kill-matrix
+                            [{:status :killed :mutation {:id :x} :killed-by 't1}
+                             {:status :killed :mutation {:id :y} :killed-by 't2}])]
+      (is (every? #(= 1 (count %)) (vals matrix))
+          "each mutant has exactly one killer when killed-by-all is absent"))))
+
+(deftest kill-matrix-analysis-dominators-and-minimal-test
+  (testing "kill-matrix-analysis computes dominators, minimal cover, and stats"
+    (let [{:keys [dominators minimal-mutants stats kill-matrix]}
+          (sub/kill-matrix-analysis full-results)]
+      ;; exactly one dominator (the mutant with the minimal kill set, {t1})
+      (is (= 1 (count dominators)))
+      ;; the dominator's kill-set is the singleton {t1}
+      (is (= 1 (count (get (:matrix kill-matrix) (first dominators)))))
+      ;; greedy set-cover picks the single mutant whose kills cover all tests ({t1,t2,t3})
+      (is (= 1 (count minimal-mutants)))
+      (is (= 3 (count (get (:matrix kill-matrix) (first minimal-mutants)))))
+      ;; reduction stats: 3 mutants -> 1 dominator = 66.67% reduction
+      (is (= 3 (:total-mutants stats)))
+      (is (= 1 (:dominator-count stats)))
+      (is (< 66.0 (:reduction-percentage stats) 67.0)))))
+
+(deftest kill-matrix-analysis-empty-test
+  (testing "kill-matrix-analysis on no killed mutants is empty, not a crash"
+    (let [{:keys [dominators minimal-mutants stats]}
+          (sub/kill-matrix-analysis [{:status :survived :mutation {:id :s}}])]
+      (is (empty? dominators))
+      (is (empty? minimal-mutants))
+      (is (= 0 (:total-mutants stats))))))

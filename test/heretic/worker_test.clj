@@ -400,3 +400,54 @@
              :parallel? false}))
       ;; With no mutations, no progress callbacks should fire
       (is (= 0 (count @results-atom))))))
+
+;; =============================================================================
+;; Adaptive per-mutation timeout (mutation-timeout-ms)
+;; =============================================================================
+
+(def ^:private timeout-fn #'worker/mutation-timeout-ms)
+
+;; Mock index/mutation so tests-for-mutation resolves two covering tests.
+(def ^:private to-index
+  {:coord-to-tests {[100 [0]] #{'t.ns/a 't.ns/b}}
+   :form-to-tests {100 #{'t.ns/a 't.ns/b}}})
+(def ^:private to-mutation {:form-id 100 :coord [0]})
+
+(deftest mutation-timeout-no-timing-data-uses-flat-default-test
+  (testing "no timing-data, no override -> historical flat 30000"
+    (is (= 30000 (timeout-fn to-index to-mutation {}))))
+  (testing "no timing-data but :timeout-ms set -> that flat value"
+    (is (= 50000 (timeout-fn to-index to-mutation {:timeout-ms 50000})))))
+
+(deftest mutation-timeout-explicit-override-wins-test
+  (testing ":mutation-timeout-ms always wins, even with timing-data"
+    (is (= 12345 (timeout-fn to-index to-mutation
+                             {:mutation-timeout-ms 12345
+                              :timing-data {'t.ns/a {:duration-ms 99999}}})))))
+
+(deftest mutation-timeout-adaptive-small-estimate-floored-test
+  (testing "timing-data with small estimate -> floored at flat 30000 (never tightens)"
+    ;; estimate = 100+200 = 300; 300*3+5000 = 5900 < 30000 -> 30000
+    (is (= 30000 (timeout-fn to-index to-mutation
+                             {:timing-data {'t.ns/a {:duration-ms 100}
+                                            't.ns/b {:duration-ms 200}}})))))
+
+(deftest mutation-timeout-adaptive-large-estimate-test
+  (testing "timing-data with large estimate -> estimated*3+5000, above the floor"
+    ;; estimate = 5000+5000 = 10000; 10000*3+5000 = 35000
+    (is (= 35000 (timeout-fn to-index to-mutation
+                             {:timing-data {'t.ns/a {:duration-ms 5000}
+                                            't.ns/b {:duration-ms 5000}}})))))
+
+(deftest mutation-timeout-adaptive-capped-test
+  (testing "huge estimate -> capped at 120000"
+    ;; estimate = 50000*2 = 100000; 100000*3+5000 = 305000 -> capped 120000
+    (is (= 120000 (timeout-fn to-index to-mutation
+                              {:timing-data {'t.ns/a {:duration-ms 50000}
+                                             't.ns/b {:duration-ms 50000}}})))))
+
+(deftest mutation-timeout-no-covering-tests-falls-back-test
+  (testing "timing-data present but mutation has no covering tests -> flat"
+    (is (= 30000 (timeout-fn {:coord-to-tests {} :form-to-tests {}}
+                             {:form-id 999 :coord [0]}
+                             {:timing-data {'t.ns/a {:duration-ms 5000}}})))))

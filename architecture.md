@@ -598,7 +598,14 @@ Operators can be:
    :ai         [:fp :ai/semantic :ai/logic-invert]})
 ```
 
-### 5.5 Mutant Schemata (Compile-Once Optimization)
+### 5.5 Mutant Schemata (Compile-Once Optimization) — REMOVED 2026-06-05
+
+> **This optimization was removed.** The `heretic.schemata` module has been deleted. An empirical benchmark
+> (recorded in `docs/validation-results.md` §1) measured its payoff and found it **marginal**: schemata's
+> saving is capped at `(2N−2)·t_reload` (~tens of ms per file) *independent of covering-test cost*, so the
+> speedup decays toward 1.0 as tests get slower (6.06× at ~0 ms/test → 1.10× at 50 ms/test), while carrying a
+> +666% per-site dispatch tax at high mutant density. It was also dead code (never wired into the worker). The
+> rest of this section is retained as historical design rationale only; the code it describes no longer exists.
 
 For maximum efficiency, use **mutant schemata**: compile all mutations once, select at runtime. This technique is implemented in `heretic.schemata`.
 
@@ -1526,6 +1533,7 @@ Options:
 | 2025-12-28 | Coverage-based test selection | PITest/Google proven, commit-aware gives 93% reduction |
 | 2025-12-28 | Equivalent mutant preprocessing | 25% trivially equivalent, 61% comment-only (Meta research) |
 | 2025-12-28 | Mutant schemata via dynamic vars | Compile-once optimization, natural for Clojure |
+| 2026-06-05 | **Reverted: removed mutant schemata** | Benchmarked marginal (saving ≈ (2N−2)·t_reload, speedup→1 as test cost grows) + dead code; see `docs/validation-results.md` §1 |
 | 2025-12-28 | FP-specific operators | MuCheck-inspired, targets Clojure idioms |
 | | | |
 

@@ -21,7 +21,13 @@
 
    Executor selection:
    - :executor :legacy - Uses Java ExecutorService (default, backwards compatible)
-   - :executor :missionary - Uses Missionary-based worker supervision with reliable timeout"
+   - :executor :missionary - Uses Missionary-based worker supervision with reliable timeout
+   - :executor :process - Forked worker JVM(s) (B3): the ONLY platform-correct fix
+     for an uninterruptible infinite-loop mutant (kill the OS process). Honors
+     :parallel-workers = N (N>1 = the per-worker-copy pool, full filesystem
+     isolation). :executor :process IS its own isolation (per-worker copies) and
+     must NOT be nested inside heretic.sandbox/mutate-in-sandbox! — it is a direct
+     core path (see run-mutations-process)."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.set :as set]
@@ -319,6 +325,46 @@
     @results-atom))
 
 ;; =============================================================================
+;; Process Executor (B3 — forked worker JVM(s))
+;; =============================================================================
+
+(defn run-mutations-process
+  "Run `mutations` via heretic.runner-process — forked worker JVM(s) that survive
+   an uninterruptible infinite-loop mutant (kill the OS process), with
+   per-worker filesystem isolation when :parallel-workers > 1.
+
+   This is a DIRECT core path: it is its own isolation (per-worker copies), so it
+   is invoked WITHOUT the heretic.sandbox/mutate-in-sandbox! wrapper. It returns
+   the same per-mutation result-map vector the in-process executors produce,
+   normalized to the MutationResult shape (so aggregate-results / reporting work
+   unchanged). A reclaimed loop mutant is :timeout.
+
+   The runner-process child needs the ClojureStorm classpath; supply :child-aliases
+   (e.g. [:heretic]) + :process-worker-dir, or :child-deps — see
+   heretic.runner-process/child-spawn-spec. `index` is accepted for signature
+   parity with the other executors but is unused (each child loads its own index)."
+  [_index mutations config]
+  (let [eval-process (requiring-resolve 'heretic.runner-process/evaluate-mutations-process)
+        ;; runner-process returns {:mutation :status :killed-by :killed-by-all
+        ;; :timed-out :eval-ms}; normalize to the MutationResult shape the rest of
+        ;; core/controller expects (add :tests-run / :duration-ms defaults).
+        results (eval-process config mutations)
+        total (count mutations)
+        progress (atom 0)]
+    (mapv (fn [r]
+            (let [current (swap! progress inc)]
+              (locking *out*
+                (reporter/print-mutation-progress current total (:status r))))
+            {:mutation (:mutation r)
+             :status (:status r)
+             :tests-run (or (:tests-run r) #{})
+             :timed-out (or (:timed-out r) #{})
+             :killed-by (:killed-by r)
+             :killed-by-all (:killed-by-all r)
+             :duration-ms (or (:eval-ms r) 0)})
+          results)))
+
+;; =============================================================================
 ;; Main Entry Point
 ;; =============================================================================
 
@@ -421,6 +467,19 @@
                                                                :parallel-workers worker-count
                                                                :mutation-timeout-ms (:mutation-timeout-ms config 30000)
                                                                :supervision-policy (:supervision-policy config :skip)))
+
+                              :process
+                              ;; Forked worker JVM(s) — its OWN isolation (per-worker
+                              ;; copies when :parallel-workers > 1); a direct core
+                              ;; path, NOT wrapped in mutate-in-sandbox!. Pass the
+                              ;; raw config (child-aliases / parallel-workers /
+                              ;; timeout-ms / sandbox-dir) through.
+                              ;; default-config has :parallel-workers nil (key present),
+                              ;; so coerce explicitly to 1 here rather than relying on the
+                              ;; 3-arg default (which never fires) + downstream nil-coercion.
+                              (run-mutations-process index mutations
+                                                     (merge config test-config
+                                                            {:parallel-workers (or (:parallel-workers config) 1)}))
 
                               ;; :legacy (default) - use ExecutorService
                               (if parallel?

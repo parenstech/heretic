@@ -42,7 +42,6 @@ Heretic solves this with **test-to-code mapping**: it knows exactly which tests 
 - **Incremental testing** - only re-test when source or tests change
 - **Watch mode** for continuous feedback during development
 - **Parallel execution** across source files
-- **Mutant schemata** optimization - compile all mutations once, select at runtime
 - **HTML/JSON/EDN reports** with source heatmaps and survivor details
 
 ## Installation
@@ -245,24 +244,6 @@ read. Inside the sandbox, for each mutation:
 3. Reload namespace with [clj-reload](https://github.com/tonsky/clj-reload)
 4. Run targeted tests (stop on first failure)
 5. Record result and restore original code
-
-### Mutant Schemata
-
-When multiple mutations target the same file, Heretic uses **mutant schemata** for efficiency:
-
-```clojure
-;; Original
-(defn calculate [x] (+ x 1))
-
-;; Schematized (all mutations compiled once)
-(defn calculate [x]
-  (case heretic.schemata/*active-mutant*
-    :mut-1-plus-minus (- x 1)
-    :mut-1-mult       (* x 1)
-    (+ x 1)))  ; default = original
-```
-
-This avoids recompilation between mutations - just rebind the dynamic var.
 
 ## Mutation Operators
 

@@ -6,7 +6,8 @@
    - Top-level form navigation
    - Quoted form detection (skip mutations in quoted contexts)
    - Mutation site discovery with correct coordinates"
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.set]
+            [clojure.test :refer [deftest is testing]]
             [heretic.coord-mapper :as coord-mapper]
             [heretic.operators :as ops]
             [heretic.parser :as parser]
