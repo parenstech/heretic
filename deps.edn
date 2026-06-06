@@ -2,34 +2,34 @@
 
  :deps
  {;; Schema validation
-  metosin/malli {:mvn/version "0.17.0"}
+  metosin/malli {:mvn/version "0.20.1"}
 
   ;; Source code manipulation
-  rewrite-clj/rewrite-clj {:mvn/version "1.1.47"}
+  rewrite-clj/rewrite-clj {:mvn/version "1.2.54"}
 
   ;; Namespace reloading with proper protocol/multimethod handling
-  io.github.tonsky/clj-reload {:mvn/version "0.7.1"}
+  io.github.tonsky/clj-reload {:mvn/version "1.0.0"}
 
   ;; HTML generation for reports
-  hiccup/hiccup {:mvn/version "2.0.0-RC3"}
+  hiccup/hiccup {:mvn/version "2.0.0"}
 
   ;; File watching for watch mode (used by Kaocha, better Mac support)
-  com.nextjournal/beholder {:mvn/version "1.0.2"}
+  com.nextjournal/beholder {:mvn/version "1.0.3"}
 
   ;; Reactive programming for worker supervision
-  missionary/missionary {:mvn/version "b.40"}}
+  missionary/missionary {:mvn/version "b.47"}}
 
  :aliases
  {:dev
   {:extra-paths ["dev" "test"]
-   :extra-deps {nrepl/nrepl {:mvn/version "1.3.0"}}}
+   :extra-deps {nrepl/nrepl {:mvn/version "1.7.0"}}}
 
   ;; Tests require ClojureStorm since heretic depends on it
   :test
   {:extra-paths ["test"]
    :classpath-overrides {org.clojure/clojure nil}
    :extra-deps {lambdaisland/kaocha {:mvn/version "1.91.1392"}
-                com.github.flow-storm/clojure {:mvn/version "1.12.0-1"}}
+                com.github.flow-storm/clojure {:mvn/version "1.12.5"}}
    :jvm-opts ["-Dclojure.storm.instrumentEnable=false"]  ;; Disable during tests
    :main-opts ["-m" "kaocha.runner"]}
 
@@ -40,7 +40,7 @@
    :extra-deps
    {;; ClojureStorm - patched Clojure compiler for instrumentation
     ;; Includes Emitter, Tracer, and FormRegistry APIs
-    com.github.flow-storm/clojure {:mvn/version "1.12.0-1"}}
+    com.github.flow-storm/clojure {:mvn/version "1.12.5"}}
 
    :jvm-opts
    ["-Dclojure.storm.instrumentEnable=true"
@@ -54,7 +54,7 @@
   {:extra-paths ["test"]
    :extra-deps
    {lambdaisland/kaocha {:mvn/version "1.91.1392"}
-    com.github.flow-storm/clojure {:mvn/version "1.12.0-1"}}
+    com.github.flow-storm/clojure {:mvn/version "1.12.5"}}
    :classpath-overrides {org.clojure/clojure nil}
    :jvm-opts
    ["-Dclojure.storm.instrumentEnable=true"]}}}

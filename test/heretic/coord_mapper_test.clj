@@ -223,7 +223,8 @@
       ;; (do @foo)
       ;;  0   1
       (is (= 'do (z/sexpr (mapper/coord->zloc zloc [0]))))
-      (is (= '(deref foo) (z/sexpr (mapper/coord->zloc zloc [1]))))
+      ;; rewrite-clj 1.2.x renders @foo as Clojure's reader does: (clojure.core/deref foo)
+      (is (= '(clojure.core/deref foo) (z/sexpr (mapper/coord->zloc zloc [1]))))
 
       (testing "round-trip for deref"
         (is (:valid (mapper/validate-round-trip zloc [0])))
