@@ -1,10 +1,10 @@
 ---
 status: stable
 contributions:
-  - "Needs: benchmarks comparing equivalent detection effectiveness"
-  - "Needs: real-world subsumption reduction measurements"
-  - "Needs: clustering strategy validation on real codebases"
-  - "Needs: LLM mutation generation quality/cost benchmarks"
+  - "Done (#9, G1): equivalent filter audited — ~20/29 patterns were unsound; rewritten to 13 sound patterns. See docs/validation-results.md §1-2"
+  - "Done (#9, G2): real-world subsumption reduction measured across 5 targets — target-dependent (−11pp…+29pp), inconclusive. See docs/validation-results.md §5"
+  - "Done (#9, G3): clustering validated — static hardness ranking is no better than random (5/10), retired in heretic.clustering. See docs/validation-results.md §5.3"
+  - "Needs: LLM mutation generation quality/cost benchmarks (blocked on Phase 4 AI, unbuilt)"
 ---
 
 # Heretic: AI-Powered Mutation Testing for Clojure

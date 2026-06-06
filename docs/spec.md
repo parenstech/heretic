@@ -1,7 +1,7 @@
 ---
 status: phase-3-complete
 contributions:
-  - "Needs: Phase 4 process-level worker pool with pre-forked JVMs"
+  - "Done (#9): Phase 4 process-level worker pool with pre-forked JVMs — heretic.process-pool, :executor :process; see docs/validation-results.md"
   - "Needs: Phase 4 ClojureScript/shadow-cljs integration"
   - "Needs: Phase 4 AI-powered semantic mutation generation"
   - "Needs: Phase 4 LLM test generation for survivors (from Meta ACH)"
@@ -1236,7 +1236,7 @@ Options for parallel mutation testing:
 
 - **File-level locking**: Parallel across files, sequential within files
 - **Copy-on-write source trees**: Full parallelism with temp directories
-- **Worker pool**: Pre-fork JVMs that receive mutations over sockets
+- **Worker pool**: Pre-fork JVMs (shipped in #9 as `:executor :process` — via per-worker sandbox copies + EDN-over-stdio, not sockets)
 
 **Recommendation**: Start sequential, add file-level parallelism in Phase 3.
 
@@ -1401,7 +1401,7 @@ Research shows subsumption can reduce mutation testing time by 30-50%.
 **Implementation:**
 - [x] Uses `future` for test timeout handling in `runner.clj`
 - [x] File-level parallelism via Missionary (`worker.clj`)
-- [ ] Process-level worker pool (Phase 4)
+- [x] Process-level worker pool (#9: `heretic.process-pool`, `:executor :process`)
 
 **Controller + Worker Model (Implemented):**
 
@@ -1427,10 +1427,10 @@ Research shows subsumption can reduce mutation testing time by 30-50%.
 - [x] Configurable parallelism via `:parallel-workers`
 - [x] Supervision policies: `:skip`, `:retry`, `:abort`
 
-**Process-Level Parallelism (Phase 4):**
-- [ ] Pre-fork worker JVMs
-- [ ] Socket-based task distribution
-- [ ] Mutant schemata via dynamic vars (no file modification)
+**Process-Level Parallelism (shipped in #9 — `:executor :process`):**
+- [x] Pre-fork worker JVMs (`heretic.process-worker` / `heretic.process-pool`)
+- [x] ~~Socket-based task distribution~~ — superseded: per-worker sandbox copies + a newline-framed EDN-over-stdio protocol, not sockets
+- [ ] ~~Mutant schemata via dynamic vars~~ — removed 2026-06-05 (benchmarked marginal; see `docs/validation-results.md` §1)
 
 #### 3.5 Performance Optimizations ✅ COMPLETE
 
@@ -1812,10 +1812,10 @@ Train a classifier on labeled mutants:
 
 #### 4.8 Advanced Parallelism
 
-**Process Pool Architecture:**
-- [ ] Pre-fork worker JVMs at startup
-- [ ] Socket-based mutant distribution
-- [ ] Mutant schemata via dynamic vars:
+**Process Pool Architecture (shipped in #9 — `:executor :process`):**
+- [x] Pre-fork worker JVMs at startup (`heretic.process-pool`, `:parallel-workers N`)
+- [x] ~~Socket-based mutant distribution~~ — superseded: shared in-process key queue + per-worker sandbox copies + EDN-over-stdio, not sockets
+- [ ] ~~Mutant schemata via dynamic vars~~ — removed 2026-06-05 (benchmarked marginal):
   ```clojure
   (defonce ^:dynamic *mutant-id* nil)
 

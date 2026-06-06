@@ -1,6 +1,6 @@
 # Worker Supervision Architecture for Heretic
 
-**Status:** Design Document
+**Status:** Implemented — see `src/heretic/worker.clj` (Missionary file-level pool) and, for process isolation, `src/heretic/process_worker.clj` / `process_pool.clj` / `runner_process.clj` (shipped in #9). This document is retained as the design rationale.
 **Date:** 2025-12-29
 
 ## Problem Statement
