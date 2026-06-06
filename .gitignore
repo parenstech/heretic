@@ -48,4 +48,5 @@ validation/honeysql/
 validation/data.csv/
 validation/tools.cli/
 validation/uri/
+validation/multins/
 validation/experiments/

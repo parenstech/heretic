@@ -62,9 +62,17 @@ with a seeded infinite-loop mutant, and measured. A judge agent ranked them on t
    `{:tag :ready}` handshake keeps the per-request deadline from counting the child's ~2.8 s ClojureStorm boot
    (that bug was the FAIL→PASS fix). Speedup is target-size dependent — N=2 on the tiny `validation/sample` is
    ~0.73× (two boots + copy overhead dominate sub-second eval); the win needs large targets where boot amortizes.
-   **Follow-up:** the parallel==sequential proof ran on a single-namespace target, so the dependent-reload
-   contamination path is only argued structurally — validate it on a multi-namespace target (e.g. a re-exporting
-   facade, or honeysql) under N>1. Original plan retained below.
+   ✅ **Multi-namespace isolation VALIDATED** (the follow-up). Built a `mns.core` + `mns.facade` target where
+   `facade` **value-captures** core's vars (`(def add core/add)`), so a `core` mutation only reaches a facade
+   test if `facade` is reloaded as a *dependent* — the exact cross-worker contamination vector (and the case
+   heretic's own reloader "reload transitive dependents" fix targets). Result (independently reproduced ×2):
+   across all 33 mutants (11 `core` + 22 `facade`) the N=2 parallel `:status` AND `:killed-by-all` **equal**
+   sequential for **every** key (0 mismatches); and 2 `core` mutants are killed via the *strict* re-export tests
+   `test-facade-add-reexport`/`test-facade-scale-reexport` in **both** modes — so the dependent-reload path is
+   genuinely hit and per-worker isolation preserves it. A filesystem sampler caught both worker copies mutated in
+   both namespaces with concurrent cross-ns mutation, confirming the contamination window was actually open and
+   the per-worker copies closed it. So the dependent-reload contamination path is now **empirically** proven, not
+   just argued structurally. (Target lives at `validation/multins/`, gitignored.) Original plan retained below.
 
    The *only* spike that measurably reclaims a runaway,
    at ~zero steady-state overhead, and its work-queue structure natively hosts process parallelism (the README's
