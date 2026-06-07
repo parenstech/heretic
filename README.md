@@ -191,6 +191,8 @@ Full configuration options in `heretic.edn`:
  :skip-forms #{comment} ; Forms to skip
 
  ;; Execution
+ :executor :legacy      ; :legacy (fast, in-process; default) or :process (forked
+                        ;   worker JVMs that survive infinite-loop/crash mutants)
  :timeout-ms 5000       ; Per-mutant timeout
  :parallel-workers 4    ; Number of parallel workers
 
@@ -210,6 +212,13 @@ Full configuration options in `heretic.edn`:
  :report-format :html   ; :terminal, :html, :json, :edn
  :output-path "target/heretic-report"}
 ```
+
+**Executors.** `:legacy` (default) runs mutants in-process — fastest. `:executor
+:process` runs each mutant's tests in a forked worker JVM and force-kills + respawns
+it on timeout — the only way to reclaim a mutant that becomes an uninterruptible CPU
+loop (`Thread.interrupt` can't; `Thread.stop` is gone on JDK 20+). Under `bb mutate`
+the forked workers automatically inherit the sandbox's ClojureStorm classpath, so
+`:executor :process` works with no extra config.
 
 ### Operator Presets
 
