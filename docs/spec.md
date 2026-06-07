@@ -1299,7 +1299,7 @@ for test targeting.
 
 #### 3.1 Complete Clojure-Specific Operators ✅ COMPLETE
 
-65+ operators implemented in `operators.clj`:
+81 operators implemented in `operators.clj`:
 
 **Collection Operators:**
 | Original | Mutation | Notes |
@@ -1436,9 +1436,9 @@ Research shows subsumption can reduce mutation testing time by 30-50%.
 
 - [x] **Early termination**: Stop testing mutant on first failure (in `runner.clj`)
 - [x] **Selective mutation**: Four presets in `operators.clj`:
-  - `:minimal` - 30 operators based on subsumption (~99% fault detection)
-  - `:fast` - 15 high-impact operators
-  - `:standard` - Balanced set with collection/nil/threading
+  - `:minimal` - 31 operators based on subsumption (~99% fault detection)
+  - `:fast` - 16 high-impact operators
+  - `:standard` - 36 operators (balanced set with collection/nil/threading)
   - `:comprehensive` - All 81 operators
 - [x] **Incremental mutation**: Form-level hashing in `incremental.clj`
 - [x] **Test ordering**: Fastest-first ordering in `timing.clj`, proven-killers prioritized

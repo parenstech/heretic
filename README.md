@@ -215,10 +215,10 @@ Full configuration options in `heretic.edn`:
 
 | Preset | Operators | Use Case |
 |--------|-----------|----------|
-| `:fast` | ~16 | Quick feedback during development |
-| `:standard` | ~35 | Balanced set for CI (default) |
-| `:minimal` | ~30 | Subsumption-optimized, ~99% fault detection |
-| `:comprehensive` | 80+ | Maximum coverage when time permits |
+| `:fast` | 16 | Quick feedback during development |
+| `:standard` | 36 | Balanced set for CI (default) |
+| `:minimal` | 31 | Subsumption-optimized, ~99% fault detection |
+| `:comprehensive` | 81 | Maximum coverage when time permits |
 
 ## How It Works
 
