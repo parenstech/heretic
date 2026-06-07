@@ -1,6 +1,6 @@
 # Wiring `:executor :process` into `bb mutate` — sandbox-bypass plan
 
-**Status:** In progress — blocker fixed + reachability proven; ergonomic entry + benchmark remain.
+**Status:** Complete — blocker fixed, reachable, early-exit + ergonomic auto-derive done; benchmark + consolidation done (see `docs/executor-consolidation.md`).
 **Date:** 2026-06-07
 **Relates to:** #9 (built the process executor), #11 (doc reconciliation). Branch: `feat/wire-process-executor`.
 
@@ -30,11 +30,19 @@ a real blocker and simplified the design:
   — deferred until parallel `:process` is wanted.
 - **Fail-fast guard added.** `:executor :process` without `:child-aliases`/`:child-deps`
   now throws an actionable error instead of the cryptic "no results (child exit 1)".
+- **Ergonomic entry DONE (2026-06-07).** `sandbox/derive-process-child-config`
+  auto-derives the worker spawn keys (`:child-aliases` / `:child-jvm-opts` /
+  `:child-deps`) from the sandbox's own `:sandbox-aliases` / `storm-jvm-opts` /
+  `:sandbox-deps` when `:executor :process`. So `bb mutate` with **just**
+  `:executor :process` in `heretic.edn` works — no hand-set `:child-*`. Explicit
+  `:child-*` keys are still respected. (In-place/non-sandbox runs stay
+  config-driven, as planned — the orchestrator can't introspect its own launch.)
+  Verified e2e on heretic-self (19/20, zero manual child-config) + unit-tested
+  (`sandbox-test/derive-process-child-config-test`).
 
-**Remaining for step 1:** an ergonomic entry (a `bb` task or default so users opt
-in via `heretic.edn` without hand-setting `:child-aliases`) + user docs.
-**Then step 2:** benchmark `:legacy` / `:missionary` / `:process` on a real target
-(babel). **Step 3:** collapse to two executors using the numbers.
+**Step 1 COMPLETE.** **Step 2** (benchmark `:legacy` / `:missionary` / `:process`)
+and **Step 3** (collapse to two executors) were done separately — see
+`docs/executor-consolidation.md` (`:missionary` dropped; `:legacy` + `:process`).
 
 ---
 

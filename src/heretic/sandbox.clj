@@ -219,6 +219,26 @@
   [config sandbox]
   (spit (io/file sandbox "heretic.edn") (pr-str config)))
 
+(defn derive-process-child-config
+  "Ergonomic wiring for `:executor :process` under the sandbox flow.
+
+   The `:process` executor forks worker JVM(s) that must load instrumented code,
+   so they need the SAME ClojureStorm classpath the sandbox child runs under
+   (`child-command`). Rather than make a user re-specify it, default the worker
+   spawn keys (`:child-aliases` / `:child-jvm-opts` / `:child-deps`) from the
+   sandbox's own config — so `bb mutate` with just `:executor :process` works.
+   Explicit `:child-*` keys are respected (only absent ones are filled).
+
+   No-op unless `:executor` is `:process`."
+  [config]
+  (if (= :process (:executor config))
+    (-> config
+        (update :child-aliases  #(or % (:sandbox-aliases config ["collect"])))
+        (update :child-jvm-opts #(or % (into (vec (storm-jvm-opts config))
+                                             (:sandbox-jvm-opts config))))
+        (update :child-deps     #(or % (:sandbox-deps config))))
+    config))
+
 (defn copy-project!
   "Public, self-contained project copier for per-worker filesystem isolation (B3b).
 
@@ -372,7 +392,8 @@
    added `:sandbox` metadata map (`:dir`, `:exit`, `:kept?`, `:reused?`). Returns
    `{:sandbox ... :error ...}` when the child failed or wrote no results."
   [config & {:keys [files project-root]}]
-  (let [project-root (or project-root (System/getProperty "user.dir"))
+  (let [config (derive-process-child-config config)
+        project-root (or project-root (System/getProperty "user.dir"))
         sandbox (resolve-sandbox-dir config project-root)
         sandbox-f (io/file sandbox)
         keep? (:keep-sandbox config true)

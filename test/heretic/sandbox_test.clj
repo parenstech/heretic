@@ -59,6 +59,36 @@
           "-Sdeps EDN round-trips")
       (is (= ["-M:collect:heretic-src" "-e" "CODE"] (take-last 3 cmd))))))
 
+(deftest derive-process-child-config-test
+  (testing "no-op unless :executor :process"
+    (let [c {:executor :legacy :sandbox-aliases ["collect"]}]
+      (is (= c (sb/derive-process-child-config c)))
+      (is (not (contains? (sb/derive-process-child-config c) :child-aliases)))))
+  (testing ":process with no child-* derives the worker classpath from sandbox-* + storm opts"
+    (let [c (sb/derive-process-child-config {:executor :process
+                                             :instrument-prefixes ["heretic"]})]
+      (is (= ["collect"] (:child-aliases c)) "defaults to the :collect alias")
+      (is (some #(str/starts-with? % "-Dclojure.storm.instrumentEnable") (:child-jvm-opts c))
+          "carries the storm flags the worker needs")
+      (is (some #(= "-Dclojure.storm.instrumentOnlyPrefixes=heretic" %) (:child-jvm-opts c)))
+      (is (nil? (:child-deps c)) "no :sandbox-deps → no :child-deps")))
+  (testing "derives :child-* from explicit sandbox-* (external project shape)"
+    (let [deps {:aliases {:heretic-src {:extra-paths ["/abs/heretic/src"]}}}
+          c (sb/derive-process-child-config {:executor :process
+                                             :sandbox-aliases ["collect" "heretic-src"]
+                                             :sandbox-deps deps
+                                             :sandbox-jvm-opts ["-Xmx4g"]})]
+      (is (= ["collect" "heretic-src"] (:child-aliases c)))
+      (is (= deps (:child-deps c)))
+      (is (some #(= "-Xmx4g" %) (:child-jvm-opts c)) "folds in :sandbox-jvm-opts")))
+  (testing "explicit :child-* keys are respected (not overwritten)"
+    (let [c (sb/derive-process-child-config {:executor :process
+                                             :child-aliases ["myalias"]
+                                             :child-deps {:x 1}
+                                             :sandbox-aliases ["collect"]})]
+      (is (= ["myalias"] (:child-aliases c)))
+      (is (= {:x 1} (:child-deps c))))))
+
 (deftest resolve-sandbox-dir-test
   (testing "relative default joined to project root"
     (is (= "/proj/.heretic-sandbox" (sb/resolve-sandbox-dir {} "/proj"))))
