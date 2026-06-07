@@ -280,6 +280,27 @@
           (is (some? target))
           (is (= (:original site) (str (z/sexpr target)))))))))
 
+(deftest test-mutation-site->zloc-multi-form
+  ;; Regression: a site's :coord is relative to its top-level form, identified
+  ;; by :form-id. Navigating the coord from the file root resolves only the
+  ;; FIRST form; sites in any later form silently returned nil, which made the
+  ;; equivalent filter (controller/filter-equivalent-mutations) a no-op on every
+  ;; real (multi-form) file. mutation-site->zloc must anchor by :form-id first.
+  (testing "resolves sites across every top-level form, not just the first"
+    (let [source "(defn a [x] (+ x 1))\n(defn b [y] (- y 2))\n(defn c [z] (* z 3))"
+          zloc  (parser/parse-string source)
+          sites (parser/find-mutation-sites zloc)]
+      ;; Each operator site lives in a different top-level form.
+      (is (<= 3 (count sites)) "expected at least one site per form")
+      (doseq [site sites]
+        (let [target (parser/mutation-site->zloc site zloc)]
+          (is (some? target)
+              (str "site in form-id " (:form-id site) " must resolve"))
+          (is (= (:original site) (str (z/sexpr target))))))
+      ;; Distinct form-ids prove the sites really span multiple forms (so the
+      ;; assertion above isn't trivially satisfied by a single-form fixture).
+      (is (< 1 (count (distinct (map :form-id sites))))))))
+
 ;; =============================================================================
 ;; Edge Cases
 ;; =============================================================================

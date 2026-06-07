@@ -8,6 +8,7 @@ any result can be checked.
 | Gap | Status | Headline result | Artifact |
 |-----|--------|-----------------|----------|
 | **G1** soundness | **✅ FIXED** | ~20 unsound patterns removed/tightened; sound-only filter; tests green | this doc §2 + `validation-plan.md` §2 |
+| **G1** wiring + recall | **🐞 FIXED + MEASURED** (5 targets) | filter was a **silent no-op** in prod (`mutation-site->zloc` ignored `:form-id` → 0% site resolution); fixed (0%→**100%**); measured recall **0 / 635 mutants** (158 on covered ops) — sound but ~zero recall on idiomatic Clojure | this doc §2.1 |
 | **G4** schemata crossover | **done → module DELETED** | Marginal (speedup→1 as test cost grows); `heretic.schemata` removed | this doc §1 |
 | G2 subsumption | **measured** (5 targets) | **target-dependent** (Δ −11pp … +29pp vs random); beats random on non-degenerate honeysql/data.csv, loses on uri → inconclusive, do NOT retire | this doc §5 |
 | G3 clustering | **measured** (5 targets) | hardness-rep beats random on exactly **5/10** target×strategy pairs = a coin flip, no reliable signal → retire the hardness table | this doc §5 |
@@ -183,9 +184,84 @@ added the missing `[clojure.set]` require.
 
 **Residual / follow-up.** This makes the filter *sound* (zero false positives by construction) at the cost of
 **recall** — the survey (§3-G1) notes a sound static detector should expect only single-digit-to-~30% recall.
-Measuring the realized recall (and whether a sound **TCE-style bytecode-identity** detector should back it up)
-is the corpus-gated G1 Half-2/Half-3 work in `validation-plan.md` §3-G1, still outstanding. Open decision: the
-filter remains default-on (`:filter-equivalent` defaults true) — now safe to keep on because it is sound.
+The realized-recall measurement (§2.1 below) is now done.
+
+---
+
+## 2.1 G1 — the filter was inert, and its recall is zero on real code (FIXED + MEASURED)
+
+Attempting to measure the §2 filter's realized recall on the validation corpus surfaced a **second, separate
+defect**: the soundness rewrite made the filter *correct*, but the filter **never actually ran** in production.
+
+**Bug — the filter was a silent no-op.** A mutation's `:coord` is **relative to its top-level form** (identified
+by `:form-id`); `mutation_engine/apply-mutation!` anchors to that form via `find-form-by-id` *before* applying
+the coord (`mutation_engine.clj:145-155`). But `parser/mutation-site->zloc` — the navigation the production
+filter relies on (`controller/filter-equivalent-mutations`, `controller.clj:140-144`) — navigated the
+form-relative coord **straight from the file root**, skipping the `:form-id` anchor. That resolves only the
+*first* top-level form; for a mutation in any later form, `coord->zloc` returns **nil**, and
+`equiv/filter-equivalent-mutations` treats a nil zloc as `:testable`. So on every multi-form file (i.e. every
+real source file) the filter resolved **0%** of sites and flagged **0** mutations — it was dead weight. The unit
+tests never caught it because they hand-build single-form zlocs (`(+ 1 (- 2 3))`), where file-root == the one
+form, so navigation happens to succeed.
+
+**Fix.** `parser/mutation-site->zloc` now anchors by `:form-id` (new public `parser/find-form-by-id`) before
+applying the coord, exactly mirroring `apply-mutation!`; `mutation_engine` was refactored to reuse
+`parser/find-form-by-id` (its private duplicate deleted — single source of truth for form navigation). Fall-back
+to file-root navigation is preserved for sites with no `:form-id`. Regression test
+`parser_test/test-mutation-site->zloc-multi-form` (a 3-form fixture, sites in distinct forms — fails pre-fix).
+`bb test:fast` → **523 tests / 2088 assertions / 0 failures**; `clj-kondo` clean.
+
+**Effect of the fix — site resolution 0% → 100%.** Re-running the production-identical zloc-fn
+(`parse-file` → `mutation-site->zloc`) across five vendored targets:
+
+| target | total mutants | zloc resolved (pre-fix → post-fix) | mutants on covered operators | flagged equivalent |
+|--------|--------------:|:----------------------------------:|-----------------------------:|-------------------:|
+| `clojure.data.csv` | 13 | 0% → **100%** | 2 | **0** |
+| `medley` | 77 | 0% → **100%** | 31 | **0** |
+| `honeysql` | 459 | 0% → **100%** | 102 | **0** |
+| `lambdaisland/uri` | 73 | 0% → **100%** | 18 | **0** |
+| `multins` (synthetic) | 13 | 0% → **100%** | 5 | **0** |
+| **total** | **635** | — | **158** | **0** |
+
+**Measured recall on real code: 0.** Even now that the filter runs, and even though **158 / 635** mutants use an
+operator the sound patterns *cover* (`first`/`last` 75, `rest`/`next` 45, `->`/`->>` 24, `+`/`-` 11, `*`/`/` 2,
+…), **not one** matches the required syntactic shape. The sound patterns demand contrived contexts that idiomatic
+Clojure does not contain: a **literal** identity element in tail position (`(+ x 0)`), a **single-element vector
+literal** (`(first [x])`), `rest`/`next` as the collection arg of `some`, a `map`/`mapv` swap immediately inside
+a type-normalizing realizer (`(vec (map f xs))`), or a step-less thread (`(-> x)`). Real `first`/`rest`/`+` calls
+operate on *bound* values, so they never qualify. This is the strong-negative end of the literature's
+"single-digit-to-~30%, operator-concentrated" range (survey §3-G1): on these pure small/medium libraries the
+realized recall is **0**.
+
+**Positive control (the matcher is not vacuously dead).** To prove the 0 is corpus-driven, not a still-broken
+matcher, a synthetic file containing the exact sound shapes —
+`(+ x 0)`, `(* x 1)`, `(some pos? (rest xs))`, `(first [42])`, plus a non-equivalent `(+ x y)` control — runs
+through the full fixed path: **4 / 4 equivalent shapes flagged** (plus-minus, mult-div, rest-next, first-last);
+the `(+ x y)` control stays testable. The end-to-end path flags correctly when the shape is present; the corpus
+simply lacks the shapes.
+
+**Soundness, re-confirmed.** The prime directive held under real load: the now-live filter was exercised on 635
+real mutants across 5 targets and flagged **0** — i.e. zero false positives, and (here) zero true positives too.
+
+### Reproduce
+
+```bash
+# Per target (has a :heretic alias + collected .heretic index):
+cd validation/<target>          # data.csv | medley | honeysql | uri | multins
+clojure -M:heretic -e "$(cat /tmp/g1-diagnostic.clj)"   # generate → resolve zloc → filter (no test exec)
+# Positive control (pure modules, base deps — no ClojureStorm):
+cd <repo-root> && clojure -M -e "$(cat /tmp/g1-positive-control.clj)"
+```
+
+The diagnostic counts total mutants, zloc-resolution rate (the fix's effect), covered-operator mutants, and
+flagged mutants; the positive control asserts the four synthetic equivalent shapes are flagged.
+
+**Open decision (sharpened).** The filter is sound *and* (post-fix) genuinely runs — but it removes **0**
+mutants on real code, so it is currently pure overhead + documentation. Three options: (a) keep it default-on as
+cheap insurance (it adds one parse per mutant but is provably safe); (b) demote it to opt-in, since it earns
+nothing on idiomatic code; (c) invest in a **TCE-style bytecode-identity** detector for real, sound recall — the
+G1 Half-2/Half-3 work in `validation-plan.md` §3-G1, which this result re-motivates (static pattern recall is 0,
+so dynamic/bytecode equivalence is the only path to non-trivial G1 payoff in Clojure).
 
 ---
 

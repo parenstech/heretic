@@ -115,22 +115,6 @@
 ;; Mutation Application
 ;; =============================================================================
 
-(defn- find-form-by-id
-  "Find the top-level form with the given form-id (hash).
-   Returns the zloc at the matching form, or nil if not found."
-  [zloc form-id]
-  (let [forms-container (z/up zloc)]
-    (if (= :forms (z/tag forms-container))
-      ;; Navigate through siblings to find matching form
-      (loop [z zloc]
-        (when z
-          (if (= form-id (hash (z/string z)))
-            z
-            (recur (z/right z)))))
-      ;; Single form (zloc is not under :forms container)
-      (when (= form-id (hash (z/string zloc)))
-        zloc))))
-
 (defn apply-mutation!
   "Apply a mutation to a source file.
 
@@ -160,7 +144,7 @@
 
         ;; First find the top-level form with matching form-id
         form-zloc (if form-id
-                    (find-form-by-id zloc form-id)
+                    (parser/find-form-by-id zloc form-id)
                     zloc)
         _ (when-not form-zloc
             (throw (ex-info "Failed to find form with matching form-id"
