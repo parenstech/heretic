@@ -2,6 +2,25 @@
 
 > **Purpose.** Heretic ships five optimizations whose payoff numbers are currently *asserted, not measured*: (G1) static equivalent-mutant detection, (G2) operator subsumption (`:minimal` preset), (G3) mutant clustering + representative selection, (G4) mutant-schemata threshold (applied only when a file has ≥3 mutations), and (G5) an adaptive per-mutant timeout that exists as code but is unused. This survey assembles the published, measured evidence the field has on each, so the asserted numbers can be replaced with calibrated ones. Throughout, **measured** = a number a primary study reports; **asserted** = a number Heretic states without local measurement. Claims the adversarial fact-checkers flagged are footnoted in §5 and should be down-weighted.
 
+> **Status (2026-06-07) — all five gaps validated.** This document is the *original SOTA review* (the open
+> questions); the measured answers now exist, logged in `docs/validation-results.md` and annotated per-gap inline
+> in §3 below. One-line outcomes:
+> - **G1** — the static filter was **unsound** (~20 of ~29 patterns could mark a *killable* mutant equivalent →
+>   drop it → inflate the score, the exact risk §3-G1 flagged); rewritten to **13 provably-sound patterns**. *(fixed)*
+> - **G2** — `:minimal` is **target-dependent** (Δ −11pp … +29pp vs equal-size random across 5 targets);
+>   inconclusive, **do NOT retire**. *(measured)*
+> - **G3** — the static operator-"hardness" table is **no better than random** (won 5 of 10 pairs); **removed** in
+>   favour of an arbitrary/deterministic representative (`heretic.clustering`). *(retired)*
+> - **G4** — mutant schemata is **marginal** (compile crossover N\*≈1 but the saving is capped + a density tax);
+>   the `heretic.schemata` module was **deleted**. *(removed)*
+> - **G5** — adaptive timeout **wired into the runner** + the missing additive constant added (`:additive-ms`,
+>   default 4000ms); first Clojure timeout-only-kill base rate **3.7%**, **0 false kills**. *(done)*
+>
+> A first Clojure benchmark now exists too (babel, 1583 mutations; + 5 OSS targets), partially answering §1's
+> "there is no Clojure mutation-testing benchmark." The forked-worker `:process` executor that grew out of the
+> G5/timeout work (the only reliable infinite-loop reclaim; `:missionary` dropped after a full benchmark) is in
+> `docs/executor-consolidation.md`.
+
 ---
 
 ## 1. Executive summary
@@ -75,6 +94,13 @@
 
 **(e) Verdict: UNKNOWN, with a correctness risk.** Effectiveness is unmeasured; the soundness property TCE/EMS guarantee is *not* present. **Concrete path:** a bytecode-identity (TCE-style) check fits Heretic's ClojureStorm/JVM architecture and would give a provably-sound ~30%-of-equivalents detector "for free," measurable against a constructed Clojure corpus.
 
+> **MEASURED → FIXED (see `docs/validation-results.md` §2).** The correctness risk this section flagged was
+> real. An audit of the ~29 patterns found **~20 unsound** — they could mark a *killable* mutant equivalent and
+> drop it, **inflating the score** (the exact false-positive failure mode in (d)/(e)). The filter was rewritten to
+> **13 provably-sound patterns** and `equivalent_test.clj` is now a soundness-regression suite. The *soundness*
+> hole is closed; *precision/recall* against a Clojure corpus is still unmeasured — the TCE-style bytecode-identity
+> direction in (e) remains the future upgrade.
+
 ---
 
 ### G2 — Subsumption reduction (`:minimal` preset: "~40% fewer / ~99%")
@@ -99,6 +125,15 @@ Mutant-level subsumption is far more aggressive: only **~10.2% of C mutants are 
 
 **(e) Verdict: PLAUSIBLE but unproven, and likely OPTIMISTIC as stated.** The number has a strong literature analog, but it is unmeasured on Clojure, conflates traditional with dominator score, and has no random-baseline control. **Also reconcile the docs:** RORG's canonical name is "Global," not Heretic's gloss "Guard," and the 3-of-7 subsumption "does not always hold" (Lindstrom & Marki) — untested under Clojure's truthy/falsey + polymorphic comparison semantics. **To measure G2:** run one full no-early-exit pass, compare `:minimal` vs full killed-sets on the same pool, report dominator-score retention and reduction vs. random.
 
+> **MEASURED (see `docs/validation-results.md` §5).** Run across 5 OSS targets (validation/sample, medley,
+> honeysql, clojure.data.csv, lambdaisland/uri) with the no-early-exit kill-matrix runner this gap motivated.
+> Verdict: **target-dependent** — Δ vs equal-size random ranges **−10.7pp (uri) … +29pp (data.csv)**; it clears the
+> ~13pp Gopinath ceiling on the non-degenerate targets (honeysql/data.csv) but loses on uri → **inconclusive; do
+> NOT retire `:minimal`** on these numbers. Dominant confound discovered: kill-matrix **degeneracy** — clean small
+> libs kill mutants with disjoint singletons (0% dominator reduction), so a powered verdict needs larger,
+> non-degenerate targets. The (e) "PLAUSIBLE but unproven, likely optimistic" call stands: neither validated nor
+> refuted.
+
 ---
 
 ### G3 — Mutant clustering + representative selection (hand-coded "hardness" table)
@@ -117,6 +152,13 @@ Mutant-level subsumption is far more aggressive: only **~10.2% of C mutants are 
 **(d) Heretic asserted vs. evidence.** Heretic ranks operators by a **static, hand-coded hardness table** and assumes hardest-to-kill = best representative — *only simulated, never validated on real code*. The evidence directly undermines both premises: hardness is a **dynamic per-mutant** property weakly correlated with operator identity, and **no paper supports "hardest = best representative."** Fault-revealing mutants are a *different ~2% slice* than the hard/subsuming mutants.
 
 **(e) Verdict: OPTIMISTIC / unsupported as designed.** The static operator-hardness premise conflicts with the empirical finding that hardness is dynamic. **Concrete path:** Heretic already runs tests per mutant, so it *has* kill-vectors — cluster on **observed behavior** (or adopt FaRM-style learned fault-revelation ranking) instead of a static label, and benchmark against equal-size random + against fault detection. If clustering cannot beat random by a wide margin, the complexity is unjustified.
+
+> **MEASURED → RETIRED (see `docs/validation-results.md` §5.3).** Confirmed exactly as (e) predicted: the static
+> hardness representative beat a same-size random representative on **5 of 10** target×strategy pairs — a coin
+> flip, no reliable signal. The static `operator-hardness` table was **removed** from `heretic.clustering` (PR #11);
+> `select-representative` now returns an arbitrary-but-deterministic member. The (e) upgrade path — cluster on
+> **observed kill-vectors** — is now cheap (the kill-matrix runner already collects `:killed-by-all`) and is the
+> recommended direction if clustering is ever revisited.
 
 ---
 
@@ -170,6 +212,14 @@ Empirical grounding: timeouts cause **70% of flaky failures**; baseline-scaled t
 **(d) Heretic asserted vs. evidence.** Heretic's **3.0× multiplier is squarely in the safe band** (between PIT 1.25× and cargo-mutants 5×) — *not* the weak point. The two real gaps: (i) **no additive constant** — a pure multiplier gives a 400ms JVM test only 1200ms, vs PIT's `400×1.25+4000 = 4500ms` of warmup headroom; the 1000ms floor is thin protection on the JVM; (ii) **it is dead code** — confirmed: `timing.clj:142` defines it (defaults multiplier 3.0, base 1000, max 30000), called only by `timing_test.clj`; `runner.clj:141` uses `:timeout-ms 5000`, `worker.clj:108` uses `30000`.
 
 **(e) Verdict: multiplier PLAUSIBLE; formula INCOMPLETE; feature UNUSED (G5 confirmed).** Recommended replacement: `timeout = clamp(baseline × 1.5..3.0 + ~4000ms, ~1000–2000ms, ~30000ms)` — add a PIT/Stryker-style constant rather than relying on the floor — and **wire the existing fn into the runner** (the `:timing-data` plumbing already flows through). Heretic could also contribute the **first measured proportion of timeout-mutants for Clojure**, which no source reports.
+
+> **WIRED + MEASURED (see `docs/validation-results.md` §4 + §6).** Both gaps in (d) are closed. The **additive
+> constant landed** (`:additive-ms`, default **4000ms**, PIT-style — `calculate-dynamic-timeout` now computes
+> `clamp(duration×3 + 4000, floor, cap)`) and the fn is **wired into the runner** (no longer dead code; the flat
+> path is preserved as a fallback). A stability run produced the **first measured timeout-only-kill base rate for
+> Clojure: 3.7%**, with **0 false kills**. Separately, the hard case the field's timeouts only *paper over* — an
+> uninterruptible CPU-loop mutant — is genuinely reclaimed by the new forked-worker `:process` executor
+> (`destroyForcibly` the OS process); see `docs/executor-consolidation.md`.
 
 ---
 
