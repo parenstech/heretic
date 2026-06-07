@@ -296,6 +296,15 @@
    heretic.runner-process/child-spawn-spec. `index` is accepted for signature
    parity with the other executors but is unused (each child loads its own index)."
   [_index mutations config]
+  ;; The forked worker JVM(s) must load instrumented (ClojureStorm) code, so they
+  ;; need a storm classpath supplied via :child-aliases or :child-deps. Without
+  ;; one the child spawns a plain `clj -M` that can't load the index and exits 1
+  ;; ("no results"); fail fast with an actionable message instead.
+  (when-not (or (:child-aliases config) (:child-deps config))
+    (throw (ex-info (str ":executor :process needs a ClojureStorm classpath for its worker JVMs. "
+                         "Set :child-aliases (e.g. [:collect]) or :child-deps in heretic.edn.")
+                    {:executor :process
+                     :missing [:child-aliases :child-deps]})))
   (let [eval-process (requiring-resolve 'heretic.runner-process/evaluate-mutations-process)
         ;; runner-process returns {:mutation :status :killed-by :killed-by-all
         ;; :timed-out :eval-ms}; normalize to the MutationResult shape the rest of
