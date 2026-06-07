@@ -12,12 +12,12 @@
 
    Key Concepts:
    - Cluster: A group of related mutations with one representative
-   - Representative: The mutation selected to represent the cluster (hardest to kill)
+   - Representative: The mutation selected to represent the cluster (arbitrary/deterministic; see select-representative)
    - Inferred Results: Results for non-representative mutations derived from representative
 
    Main API:
    - `cluster-mutations` - Group mutations by strategy
-   - `select-representative` - Pick the hardest-to-kill mutation from cluster
+   - `select-representative` - Pick a representative mutation from a cluster
    - `infer-cluster-results` - Derive results for cluster from representative
    - `expand-cluster-results` - Expand clustered results to individual mutations
 
@@ -135,102 +135,21 @@
 ;; Representative Selection (Pure Functions)
 ;; =============================================================================
 
-(def ^:private operator-hardness
-  "Ranking of operators by difficulty to kill (higher = harder).
-
-   Based on mutation testing research:
-   - Boundary mutations are harder to kill than simple swaps
-   - Extreme replacements (true/false) are moderately difficult
-   - Simple operator swaps are easier to detect"
-  {;; Boundary mutations (hard)
-   :swap-lt-lte 90
-   :swap-gt-gte 90
-   :swap-lte-lt 90
-   :swap-gte-gt 90
-   ;; Nil-handling (hard - subtle bugs)
-   :swap-rest-next 85
-   :swap-next-rest 85
-   :swap-nil-some 85
-   :swap-some-nil 85
-   ;; RORG mutations (medium-hard)
-   :swap-lt-neq 80
-   :swap-gt-neq 80
-   :swap-lte-eq 80
-   :swap-gte-eq 80
-   :swap-eq-lte 80
-   :swap-eq-gte 80
-   :swap-neq-lt 80
-   :swap-neq-gt 80
-   ;; Extreme replacements (medium)
-   :replace-comparison-false 75
-   :replace-comparison-true 75
-   :replace-and-false 75
-   :replace-or-true 75
-   ;; Boolean swaps (medium)
-   :swap-and-or 70
-   :swap-or-and 70
-   :remove-not 70
-   ;; Collection operations (medium)
-   :swap-first-last 65
-   :swap-last-first 65
-   :swap-take-drop 65
-   :swap-drop-take 65
-   ;; Simple swaps (easier)
-   :swap-lt-gt 50
-   :swap-gt-lt 50
-   :swap-eq-neq 50
-   :swap-neq-eq 50
-   :swap-plus-minus 50
-   :swap-minus-plus 50
-   :swap-mult-div 50
-   :swap-div-mult 50
-   ;; Lazy/eager (easy to detect with side effects)
-   :swap-map-mapv 40
-   :swap-mapv-map 40
-   :swap-filter-filterv 40
-   :swap-filterv-filter 40
-   ;; Default for unknown operators
-   :default 50})
-
-(defn- operator-hardness-score
-  "Get the hardness score for an operator.
-   Higher scores indicate mutations that are harder to kill."
-  [operator]
-  (get operator-hardness operator (get operator-hardness :default)))
-
-(defn- dominator-score
-  "Calculate a score based on subsumption dominance.
-   Dominating operators should be preferred as representatives."
-  [operator]
-  (let [dominated-count (count (subsumption/dominated-operators operator))
-        dominating-count (count (subsumption/dominating-operators operator))]
-    ;; Prefer operators that dominate others and are not dominated
-    (+ (* 10 dominated-count)
-       (- (* 5 dominating-count)))))
-
-(defn mutation-difficulty-score
-  "Calculate overall difficulty score for a mutation.
-   Higher scores indicate mutations that are harder to kill.
-
-   Factors:
-   - Operator hardness (based on research)
-   - Subsumption dominance (dominators are harder to kill)
-
-   Arguments:
-   - mutation: Mutation record with :operator
-
-   Returns numeric score."
-  [mutation]
-  (let [op (:operator mutation)]
-    (+ (operator-hardness-score op)
-       (dominator-score op))))
-
 (defn select-representative
-  "Select the 'hardest to kill' mutation from a cluster.
+  "Select a representative mutation from a cluster.
 
-   The representative is chosen based on:
-   1. Operator hardness (boundary mutations are harder)
-   2. Subsumption relationships (dominators are preferred)
+   Returns the cluster's first member: an arbitrary but deterministic choice.
+
+   A static `operator-hardness` ranking was used here previously. The G3
+   validation (docs/validation-results.md §5.3) measured it as no better than a
+   *random* representative — it won on exactly 5 of 10 target×strategy pairs, a
+   coin flip — confirming that kill difficulty is a dynamic per-mutant property,
+   not a function of operator identity. The ranking was retired. Determinism is
+   kept (over true randomness) so mutation scores stay reproducible across runs;
+   per the 5/10 finding an arbitrary fixed pick is as good as a random one. If a
+   smarter representative is ever wanted, prefer observed-kill-vector clustering
+   off the runner's :killed-by-all (docs/validation-results.md §5.4), not a
+   re-introduced static table.
 
    If the representative is killed, all clustered mutants are assumed killed.
    If the representative survives, the cluster survives.
@@ -238,12 +157,9 @@
    Arguments:
    - cluster: Sequence of mutations in the cluster
 
-   Returns the selected representative mutation."
+   Returns the selected representative mutation (nil for an empty cluster)."
   [cluster]
-  (when (seq cluster)
-    (->> cluster
-         (sort-by mutation-difficulty-score >)
-         first)))
+  (first cluster))
 
 ;; =============================================================================
 ;; Result Inference (Pure Functions)

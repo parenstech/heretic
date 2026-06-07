@@ -1,10 +1,10 @@
 ---
 status: stable
 contributions:
-  - "Needs: benchmarks comparing equivalent detection effectiveness"
-  - "Needs: real-world subsumption reduction measurements"
-  - "Needs: clustering strategy validation on real codebases"
-  - "Needs: LLM mutation generation quality/cost benchmarks"
+  - "Done (#9, G1): equivalent filter audited — ~20/29 patterns were unsound; rewritten to 13 sound patterns. See docs/validation-results.md §1-2"
+  - "Done (#9, G2): real-world subsumption reduction measured across 5 targets — target-dependent (−11pp…+29pp), inconclusive. See docs/validation-results.md §5"
+  - "Done (#9, G3): clustering validated — static hardness ranking is no better than random (5/10), retired in heretic.clustering. See docs/validation-results.md §5.3"
+  - "Needs: LLM mutation generation quality/cost benchmarks (blocked on Phase 4 AI, unbuilt)"
 ---
 
 # Heretic: AI-Powered Mutation Testing for Clojure
@@ -1317,9 +1317,9 @@ Starting with 81 operators, empirical analysis revealed:
 
 | Preset | Operators | Use Case |
 |--------|-----------|----------|
-| `:minimal` | 30 | Recommended default (~99% fault detection) |
-| `:fast` | 15 | Quick feedback during development |
-| `:standard` | 50 | Balanced coverage |
+| `:minimal` | 31 | Recommended default (~99% fault detection) |
+| `:fast` | 16 | Quick feedback during development |
+| `:standard` | 36 | Balanced coverage |
 | `:comprehensive` | 81 | Calibration runs only |
 
 **Subsumption impact:** The formal dominance graph eliminates ~40% redundancy. For relational operators, only 2-3 mutations per operator are needed instead of all 5 replacements.
@@ -1333,29 +1333,21 @@ The pattern proved exceptionally effective:
 | `controller.clj` | ~95% | Config loading only |
 | `clustering.clj` | 100% | None |
 | `subsumption.clj` | 100% | None |
-| `schemata.clj` | ~80% | File I/O for schematization |
 | `worker.clj` | ~60% | Execution, timeout handling |
 | `core.clj` | ~20% | Entry point, orchestration |
 
 **Benefit:** Pure modules are trivially testable. `controller.clj` has 18 tests covering all orchestration logic without mocking.
 
-### 8.4 Mutant Schemata Trade-offs
+### 8.4 Mutant Schemata Trade-offs — REMOVED 2026-06-05
 
-The compile-once optimization using dynamic vars is elegant but has trade-offs:
-
-**Advantages:**
-- Single recompilation covers all mutations per file
-- O(1) mutation switching via `binding`
-- Natural thread isolation
-- No file I/O between mutation tests
-
-**Limitations:**
-- Increases compiled code size (all mutations embedded)
-- Not compatible with AOT compilation
-- Best when mutations/file ratio ≥ 3
-- Dynamic var lookup has small overhead
-
-**Heuristic:** Use schemata when `(/ mutation-count file-count) >= 3`.
+> **The `heretic.schemata` module was removed.** An empirical benchmark
+> (`docs/spec.md` §3.4; `docs/validation-results.md` §1) measured its payoff as
+> marginal — the saving is capped at ~`(2N−2)·t_reload` *independent of
+> covering-test cost*, so the speedup decays from ~6× at near-zero ms/test to
+> ~1.1× at 50 ms/test, while carrying a large per-site dispatch tax at high
+> mutant density — and it was dead code (never wired into the worker). The
+> compile-once / dynamic-var design and the former `mutations/file ≥ 3` heuristic
+> no longer apply; the traditional reload-per-mutant path is the only path.
 
 ### 8.5 Clustering Strategies (Needs Validation)
 

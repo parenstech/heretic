@@ -215,10 +215,10 @@ Full configuration options in `heretic.edn`:
 
 | Preset | Operators | Use Case |
 |--------|-----------|----------|
-| `:fast` | ~16 | Quick feedback during development |
-| `:standard` | ~35 | Balanced set for CI (default) |
-| `:minimal` | ~30 | Subsumption-optimized, ~99% fault detection |
-| `:comprehensive` | 80+ | Maximum coverage when time permits |
+| `:fast` | 16 | Quick feedback during development |
+| `:standard` | 36 | Balanced set for CI (default) |
+| `:minimal` | 31 | Subsumption-optimized, ~99% fault detection |
+| `:comprehensive` | 81 | Maximum coverage when time permits |
 
 ## How It Works
 
@@ -322,7 +322,9 @@ The following features are planned for future releases:
 - **AI equivalent detection** - Hybrid static/LLM filtering for surviving mutations
 - **Test generation** - LLM suggestions for tests that would kill survivors
 - **ClojureScript support** - shadow-cljs integration for browser/Node.js testing
-- **Process-level parallelism** - Pre-forked worker JVMs for maximum throughput
+
+Process-level parallelism (pre-forked worker JVMs for crash/infinite-loop
+isolation) shipped in #9 — see the `:executor :process` executor.
 
 ## Dependencies
 

@@ -190,34 +190,17 @@
                  (clustering/cluster-mutations mock-mutations :invalid)))))
 
 ;; =============================================================================
-;; mutation-difficulty-score Tests
-;; =============================================================================
-
-(deftest mutation-difficulty-score-boundary-harder-test
-  (testing "Boundary mutations have higher difficulty than simple swaps"
-    (let [boundary {:operator :swap-lt-lte}
-          simple {:operator :swap-lt-gt}]
-      (is (> (clustering/mutation-difficulty-score boundary)
-             (clustering/mutation-difficulty-score simple))))))
-
-(deftest mutation-difficulty-score-nil-handling-hard-test
-  (testing "Nil-handling mutations have high difficulty"
-    (let [nil-handling {:operator :swap-nil-some}
-          simple {:operator :swap-plus-minus}]
-      (is (> (clustering/mutation-difficulty-score nil-handling)
-             (clustering/mutation-difficulty-score simple))))))
-
-;; =============================================================================
 ;; select-representative Tests
 ;; =============================================================================
 
-(deftest select-representative-chooses-hardest-test
-  (testing "Selects mutation with highest difficulty score"
-    (let [cluster [{:id 1 :operator :swap-lt-gt}    ; easier
-                   {:id 2 :operator :swap-lt-lte}]  ; harder (boundary)
+(deftest select-representative-returns-first-member-test
+  (testing "Returns the cluster's first member (G3: the static hardness ranking
+            was retired — measured no better than random, validation-results.md §5.3)"
+    (let [cluster [{:id 1 :operator :swap-lt-gt}
+                   {:id 2 :operator :swap-lt-lte}]
           rep (clustering/select-representative cluster)]
-      (is (= :swap-lt-lte (:operator rep))
-          "Should select boundary mutation as representative"))))
+      (is (= 1 (:id rep))
+          "Representative is the arbitrary-but-deterministic first member"))))
 
 (deftest select-representative-single-mutation-test
   (testing "Single mutation cluster returns that mutation"
@@ -389,14 +372,15 @@
       (is (every? :representative (vals reps)))
       (is (every? :cluster (vals reps))))))
 
-(deftest extract-representatives-selects-hardest-test
-  (testing "Representatives are the hardest-to-kill mutations"
-    (let [clusters {"c1" [{:id 1 :operator :swap-lt-gt}     ; easier
-                          {:id 2 :operator :swap-lt-lte}]}  ; harder
+(deftest extract-representatives-picks-first-member-test
+  (testing "Representative is each cluster's first member (G3: hardness ranking
+            retired, no better than random — validation-results.md §5.3)"
+    (let [clusters {"c1" [{:id 1 :operator :swap-lt-gt}
+                          {:id 2 :operator :swap-lt-lte}]}
           reps (clustering/extract-representatives clusters)
           c1-rep (get-in reps ["c1" :representative])]
-      (is (= 2 (:id c1-rep))
-          "Should select the boundary mutation as representative"))))
+      (is (= 1 (:id c1-rep))
+          "Arbitrary-but-deterministic: the cluster's first member"))))
 
 ;; =============================================================================
 ;; prepare-clustered-mutations Tests

@@ -1,6 +1,6 @@
 # Worker Supervision Architecture for Heretic
 
-**Status:** Design Document
+**Status:** Implemented — see `src/heretic/worker.clj` (Missionary file-level pool) and, for process isolation, `src/heretic/process_worker.clj` / `process_pool.clj` / `runner_process.clj` (shipped in #9). This document is retained as the design rationale.
 **Date:** 2025-12-29
 
 ## Problem Statement
@@ -498,7 +498,7 @@ missionary/missionary {:mvn/version "b.40"}
 1. **Process isolation**: Should workers run in separate JVM processes for complete isolation?
    - Pro: True isolation, can kill hung processes
    - Con: More complex, slower startup, harder debugging
-   - **Decision**: Start with thread-based, add process isolation later if needed
+   - **Decision**: Started thread-based (Missionary file-level pool, `worker.clj`). ~~add process isolation later if needed~~ — **RESOLVED, shipped in #9**: process isolation is implemented as `:executor :process` (`heretic.process-worker` / `process-pool` / `runner-process`), which forks worker JVMs and `destroyForcibly()`s them on timeout — the only reliable way to reclaim an uninterruptible infinite-loop mutant on the JVM. See this document's header.
 
 2. **State pollution**: Mutated code might pollute global state
    - Current approach: Reload namespace after each mutation
