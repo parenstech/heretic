@@ -90,10 +90,14 @@
 ;; ---------------------------------------------------------------------------
 
 (defn evaluate-one
-  "Evaluate a single mutation in kill-matrix mode. `snapshots` maps a source file
-   path to its pristine content (so revert restores even if :backup is absent).
+  "Evaluate a single mutation. `snapshots` maps a source file path to its pristine
+   content (so revert restores even if :backup is absent). When `kill-matrix-mode?`
+   is true, runs ALL covering tests and returns the full :killed-by-all set (for
+   dominator/subsumption analysis); otherwise EARLY-EXITS on the first killing test
+   (the normal mutation-score run — avoids running every covering test per mutant,
+   which on slow suites turns fast kills into per-mutant-deadline timeouts).
    Returns a verdict map (no :tag) carrying :status / :killed-by / :killed-by-all."
-  [index mutation timeout-ms snapshots]
+  [index mutation timeout-ms snapshots kill-matrix-mode?]
   (let [file (:file mutation)
         snapshot (get snapshots file)
         start (System/currentTimeMillis)]
@@ -102,7 +106,7 @@
             reload-result (reloader/reload-mutated-file! (:file applied))]
         (if (:success reload-result)
           (let [r (runner/evaluate-mutation index applied
-                                            {:kill-matrix-mode true
+                                            {:kill-matrix-mode kill-matrix-mode?
                                              :timeout-ms timeout-ms})]
             {:status (:status r)
              :killed-by (:killed-by r)
@@ -163,7 +167,11 @@
                                  (or (get key->mut (:key req))
                                      (:mutation req)))
               rdr (java.io.BufferedReader. (java.io.InputStreamReader. System/in))
-              timeout-ms (:timeout-ms config 5000)]
+              timeout-ms (:timeout-ms config 5000)
+              ;; Normal :process score run early-exits (false). Kill-matrix /
+              ;; dominator analysis sets :kill-matrix-mode true to get the full
+              ;; :killed-by-all set (at the cost of running every covering test).
+              kill-matrix-mode? (boolean (:kill-matrix-mode config))]
           (loop []
             (when-let [line (.readLine rdr)]
               (let [req (try (edn/read-string line) (catch Exception _ nil))]
@@ -176,7 +184,7 @@
                                   (do
                                     (snapshot-file! (:file m))
                                     (try
-                                      (evaluate-one index m timeout-ms @snapshots)
+                                      (evaluate-one index m timeout-ms @snapshots kill-matrix-mode?)
                                       (catch Throwable e
                                         {:status :error
                                          :killed-by nil :killed-by-all nil

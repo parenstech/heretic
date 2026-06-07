@@ -1,6 +1,6 @@
 # Worker Supervision Architecture for Heretic
 
-**Status:** Implemented — see `src/heretic/worker.clj` (Missionary file-level pool) and, for process isolation, `src/heretic/process_worker.clj` / `process_pool.clj` / `runner_process.clj` (shipped in #9). This document is retained as the design rationale.
+**Status:** Superseded (2026-06-07) — the Missionary `:missionary` executor this document designed (`src/heretic/worker.clj`) was **removed**; a full benchmark showed it strictly dominated by `:legacy`. See `docs/executor-consolidation.md`. Process isolation lives in `src/heretic/process_worker.clj` / `process_pool.clj` / `runner_process.clj` (the `:process` executor, #9); file-level parallelism is in `:legacy`. Retained as historical design rationale only.
 **Date:** 2025-12-29
 
 ## Problem Statement

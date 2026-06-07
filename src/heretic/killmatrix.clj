@@ -38,7 +38,12 @@
 ;; UUID — the same fields `subsumption/mutation-identity` selects — so the log key
 ;; and the analysis key agree.
 
-(def ^:private identity-keys [:file :form-id :coord :operator :line])
+;; A mutation's identity is its source LOCATION plus what it BECOMES. :coord can
+;; repeat for sibling literals in one form (e.g. three `0`s under one "…,V48"
+;; path), so :column is required to tell them apart; :replacement guards the case
+;; of one operator emitting several replacements at a single column. Omitting
+;; either lets assert-unique-keys! reject a valid run (distinct sites → one key).
+(def ^:private identity-keys [:file :form-id :coord :operator :line :column :replacement])
 
 (defn mutation-key
   "Stable, restart-independent string key for a mutation record (no UUID)."

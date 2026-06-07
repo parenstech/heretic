@@ -74,6 +74,32 @@
     (let [collide (conj mutations (assoc (first mutations) :id "dup"))]
       (is (thrown? clojure.lang.ExceptionInfo (km/assert-unique-keys! collide))))))
 
+(deftest mutation-key-distinguishes-same-coord-different-column-test
+  (testing "sibling literals share a :coord but differ by :column — distinct keys, no false collision"
+    ;; Regression: three `0`s under one coord path (e.g. runner.clj `0`s at one
+    ;; "…,V48" coord, columns 33/41/50) all match on file/form-id/coord/operator/line.
+    ;; Keying without :column collapsed them and assert-unique-keys! wrongly rejected
+    ;; a valid run through the :process executor.
+    (let [base {:file "a.clj" :form-id 1 :coord "4,1,V48" :operator :replace-0-to-1
+                :original "0" :replacement "1" :line 90}
+          siblings [(assoc base :column 30)
+                    (assoc base :column 38)
+                    (assoc base :column 47)]]
+      (is (= 3 (count (distinct (map km/mutation-key siblings))))
+          "each sibling literal gets a distinct key")
+      (is (= siblings (km/assert-unique-keys! siblings))
+          "assert-unique-keys! accepts the distinct sites")))
+  (testing "one operator emitting different replacements at one column stays distinct"
+    (let [at {:file "a.clj" :form-id 1 :coord "2,1" :operator :replace-nil-x
+              :line 5 :column 7 :original ""}]
+      (is (not= (km/mutation-key (assoc at :replacement "0"))
+                (km/mutation-key (assoc at :replacement "false"))))))
+  (testing "still collides on a genuine duplicate (identical location + replacement)"
+    (let [m {:file "a.clj" :form-id 1 :coord "1" :operator :swap-plus-minus
+             :line 1 :column 3 :original "+" :replacement "-"}]
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (km/assert-unique-keys! [m (assoc m :id "other-uuid")]))))))
+
 ;; =============================================================================
 ;; Chunking
 ;; =============================================================================
