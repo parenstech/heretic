@@ -213,10 +213,36 @@
 ;; Utility Functions
 ;; =============================================================================
 
+(defn find-form-by-id
+  "Navigate to the top-level form whose hash matches form-id.
+
+   form-id is `(hash (z/string form))` of a top-level form, as stamped by
+   `find-mutation-sites` and `heretic.mutation-engine/apply-mutation!`.
+   Returns the zloc at the matching form, or nil if none matches.
+
+   This is the navigation half that `apply-mutation!` performs before applying
+   a form-relative coord; `mutation-site->zloc` reuses it so the read-back path
+   anchors identically to the apply path."
+  [zloc form-id]
+  (->> (top-level-forms zloc)
+       (filter #(= form-id (hash (z/string %))))
+       first))
+
 (defn mutation-site->zloc
   "Navigate to the mutation site location in a zipper.
 
-   Given a mutation site record and the source zipper, returns
-   the zipper positioned at the mutation site."
+   A mutation site's :coord is RELATIVE to its top-level form (identified by
+   :form-id) — `make-mutation-site` and `apply-mutation!` both compute and
+   consume coords this way. So when the site carries a :form-id we must first
+   anchor to that form, then apply the form-relative coord; navigating the
+   coord straight from the file root resolves only for single-form sources and
+   returns nil for any mutation outside the first top-level form.
+
+   Falls back to navigating from the given zloc directly when the site has no
+   :form-id (e.g. a hand-built single-form site)."
   [site zloc]
-  (coord-mapper/coord->zloc zloc (:coord site)))
+  (let [form-zloc (if-let [fid (:form-id site)]
+                    (find-form-by-id zloc fid)
+                    zloc)]
+    (when form-zloc
+      (coord-mapper/coord->zloc form-zloc (:coord site)))))
