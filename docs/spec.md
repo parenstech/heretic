@@ -1400,7 +1400,7 @@ Research shows subsumption can reduce mutation testing time by 30-50%.
 
 **Implementation:**
 - [x] Uses `future` for test timeout handling in `runner.clj`
-- [x] File-level parallelism via Missionary (`worker.clj`)
+- [x] File-level parallelism via in-process `ExecutorService` (`core.clj/run-mutations-parallel`, `:executor :legacy`)
 - [x] Process-level worker pool (#9: `heretic.process-pool`, `:executor :process`)
 
 **Controller + Worker Model (Implemented):**
@@ -1416,16 +1416,15 @@ Research shows subsumption can reduce mutation testing time by 30-50%.
        ┌───────────┼───────────┐
        ▼           ▼           ▼
   ┌─────────┐ ┌─────────┐ ┌─────────┐
-  │ File 1  │ │ File 2  │ │ File N  │  (Missionary m/ap)
+  │ File 1  │ │ File 2  │ │ File N  │  (ExecutorService pool)
   │ Worker  │ │ Worker  │ │ Worker  │
   └─────────┘ └─────────┘ └─────────┘
 ```
 
-**File-Level Parallelism (Implemented in `worker.clj`):**
-- [x] Parallel across source files using Missionary `m/ap` + `m/amb=`
+**File-Level Parallelism (Implemented in `core.clj/run-mutations-parallel`):**
+- [x] Parallel across source files via a fixed `ExecutorService` thread pool (one thread per file)
 - [x] Each file's mutations run sequentially (file-level locking)
 - [x] Configurable parallelism via `:parallel-workers`
-- [x] Supervision policies: `:skip`, `:retry`, `:abort`
 
 **Process-Level Parallelism (shipped in #9 — `:executor :process`):**
 - [x] Pre-fork worker JVMs (`heretic.process-worker` / `heretic.process-pool`)
@@ -1486,7 +1485,7 @@ Phase 3 adds parallelism and watch mode to leverage this.
 **Acceptance Criteria:**
 - [x] All Clojure-specific operators implemented and tested (81 operators)
 - [x] Equivalent mutant detection reduces false survivors (7 pattern categories)
-- [x] File-level parallelism via Missionary workers
+- [x] File-level parallelism via in-process worker threads (`ExecutorService`)
 - [x] Mutant clustering with 4 strategies
 - [x] HTML/JSON/EDN reports provide actionable insights
 - [x] Watch mode enables feedback on incremental changes

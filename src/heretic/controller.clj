@@ -12,8 +12,10 @@
 
    Architecture:
    - controller.clj: Pure orchestration functions
-   - core.clj: Entry point with side effects (IO, execution)
-   - worker.clj: Missionary-based execution (alternative executor)
+   - core.clj: Entry point with side effects (IO + execution: the :legacy
+     in-process ExecutorService file-level parallelism, run-mutations-parallel)
+   - runner-process.clj / process-pool.clj: the :process executor (forked worker
+     JVMs; the only platform-correct infinite-loop reclaim)
 
    Key functions:
    - `resolve-operators` - Resolve operators from config
