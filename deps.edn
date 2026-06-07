@@ -14,10 +14,7 @@
   hiccup/hiccup {:mvn/version "2.0.0"}
 
   ;; File watching for watch mode (used by Kaocha, better Mac support)
-  com.nextjournal/beholder {:mvn/version "1.0.3"}
-
-  ;; Reactive programming for worker supervision
-  missionary/missionary {:mvn/version "b.47"}}
+  com.nextjournal/beholder {:mvn/version "1.0.3"}}
 
  :aliases
  {:dev
