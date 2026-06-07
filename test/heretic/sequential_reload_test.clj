@@ -8,7 +8,7 @@
    test passes against the original code, and the mutant is falsely scored
    `survived` (observed as a 0% score on small/fast projects). The sequential
    path therefore force-reloads via `reloader/reload-mutated-file!`, bypassing
-   the mtime gate — mirroring the parallel path in `heretic.worker`.
+   the mtime gate.
 
    This namespace had NO coverage of the reload step before; the parallel path
    was fixed but the sequential path's regression slipped through.

@@ -17,11 +17,8 @@
    Architecture:
    - core.clj: Entry point, CLI interface, side-effectful execution
    - controller.clj: Pure orchestration functions (mutation prep, result aggregation)
-   - worker.clj: Missionary-based execution with supervision (alternative executor)
-
    Executor selection:
-   - :executor :legacy - Uses Java ExecutorService (default, backwards compatible)
-   - :executor :missionary - Uses Missionary-based worker supervision with reliable timeout
+   - :executor :legacy - Uses Java ExecutorService (default, in-process)
    - :executor :process - Forked worker JVM(s) (B3): the ONLY platform-correct fix
      for an uninterruptible infinite-loop mutant (kill the OS process). Honors
      :parallel-workers = N (N>1 = the per-worker-copy pool, full filesystem
@@ -39,9 +36,7 @@
             [heretic.persistence :as persist]
             [heretic.reloader :as reloader]
             [heretic.reporter :as reporter]
-            [heretic.runner :as runner]
-            [heretic.worker :as worker]
-            [missionary.core :as m])
+            [heretic.runner :as runner])
   (:import [java.util.concurrent Executors ExecutorService]))
 
 ;; =============================================================================
@@ -66,7 +61,7 @@
    :skip-forms #{'comment}
    ;; Timeout configuration
    :timeout-ms 5000           ; Per-test timeout in milliseconds
-   :mutation-timeout-ms 30000 ; Per-mutation timeout (Missionary executor)
+   :mutation-timeout-ms 30000 ; Per-mutation timeout (:process executor)
    :budget-ms nil             ; Optional total time budget per mutation (nil = unlimited)
    ;; Parallel mutation testing
    :parallel-mutate false     ; Enable file-level parallelism
@@ -77,8 +72,7 @@
    :report-format :terminal
    :output-path "target/heretic-report"
    ;; Executor selection
-   :executor :legacy          ; :legacy (ExecutorService) or :missionary (Missionary workers)
-   :supervision-policy :skip  ; :skip, :retry, or :abort (Missionary executor only)
+   :executor :legacy          ; :legacy (in-process ExecutorService) or :process (forked worker JVMs)
    })
 
 (defn resolve-operators
@@ -191,8 +185,7 @@
     ;; Force-reload the mutated namespace, bypassing clj-reload's mtime gate.
     ;; Consecutive sub-millisecond spits (apply → revert) collide on the same
     ;; mtime, so plain reload! silently skips the reload and the mutant is falsely
-    ;; scored `survived` (0% on fast/small projects). Mirrors heretic.worker's
-    ;; parallel path.
+    ;; scored `survived` (0% on fast/small projects).
     (let [reload-result (reloader/reload-mutated-file! (:file applied))]
       (if (:success reload-result)
         ;; Run tests for this mutation
@@ -284,47 +277,6 @@
         (.shutdown executor)))))
 
 ;; =============================================================================
-;; Missionary Executor
-;; =============================================================================
-
-(defn- run-mutations-missionary
-  "Run mutations using Missionary-based worker supervision.
-
-   Uses worker/?run-mutation-testing with:
-   - Reliable timeout via Missionary task cancellation
-   - Configurable supervision policy (:skip, :retry, :abort)
-   - Progress reporting via callbacks
-
-   Arguments:
-   - index: Coverage index
-   - mutations: Sequence of mutations to test
-   - config: Configuration map with :parallel?, :parallelism, :supervision-policy, etc.
-
-   Returns vector of mutation results."
-  [index mutations config]
-  (let [total (count mutations)
-        results-atom (atom [])
-        on-progress (fn [progress result]
-                      (swap! results-atom conj result)
-                      (let [current (:completed progress)]
-                        (locking *out*
-                          (reporter/print-mutation-progress current total (:status result)))))
-        worker-config {:index index
-                       :mutations mutations
-                       :parallel? (:parallel-mutate config true)
-                       :parallelism (controller/get-worker-count config)
-                       :mutation-timeout-ms (or (:mutation-timeout-ms config) 30000)
-                       :timeout-ms (or (:timeout-ms config) 5000)
-                       :supervision (or (:supervision-policy config) :skip)
-                       :timing-data (:timing-data config)
-                       :on-progress on-progress}]
-    ;; Run the Missionary-based mutation testing
-    ;; The worker returns a summary, but we collect results via progress callback
-    ;; to get the raw results needed for timing data extraction
-    (m/? (worker/?run-mutation-testing worker-config))
-    @results-atom))
-
-;; =============================================================================
 ;; Process Executor (B3 — forked worker JVM(s))
 ;; =============================================================================
 
@@ -377,9 +329,8 @@
    - :verbose - Print detailed progress
 
    Configuration:
-   - :executor - :legacy (ExecutorService) or :missionary (Missionary workers)
-   - :supervision-policy - :skip, :retry, or :abort (Missionary executor only)
-   - :mutation-timeout-ms - Per-mutation timeout in ms (Missionary executor, default: 30000)
+   - :executor - :legacy (in-process ExecutorService) or :process (forked worker JVMs)
+   - :mutation-timeout-ms - Per-mutation timeout in ms (:process executor, default: 30000)
 
    Returns mutation testing results including:
    {:total, :killed, :survived, :no-coverage, :mutation-score, :survivors}
@@ -438,12 +389,8 @@
         (do
           (println)
           (let [parallel? (:parallel-mutate config)
-                worker-count (controller/get-worker-count config)
-                executor (or (:executor config) :legacy)]
-            (reporter/print-parallel-mode parallel? worker-count)
-            (when (= executor :missionary)
-              (reporter/print-phase (format "Using Missionary executor (supervision: %s)"
-                                            (name (or (:supervision-policy config) :skip))))))
+                worker-count (controller/get-worker-count config)]
+            (reporter/print-parallel-mode parallel? worker-count))
 
           (let [heretic-dir (:heretic-dir config)
                 ;; Load timing data via controller
@@ -460,14 +407,6 @@
 
                 ;; Run mutations using selected executor
                 all-results (case executor
-                              :missionary
-                              (run-mutations-missionary index mutations
-                                                        (assoc test-config
-                                                               :parallel-mutate parallel?
-                                                               :parallel-workers worker-count
-                                                               :mutation-timeout-ms (:mutation-timeout-ms config 30000)
-                                                               :supervision-policy (:supervision-policy config :skip)))
-
                               :process
                               ;; Forked worker JVM(s) — its OWN isolation (per-worker
                               ;; copies when :parallel-workers > 1); a direct core
