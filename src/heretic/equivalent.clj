@@ -256,6 +256,27 @@
      :filtered-count (count (get grouped :equivalent []))}))
 
 ;; =============================================================================
+;; Sound dead-branch detection (read-identity)
+;; =============================================================================
+
+(defn read-identical?
+  "SOUND (FP=0) equivalence: true when the original and mutated top-level forms
+   READ to = data under the JVM reader (`:read-cond :allow`). The compiler loads a
+   `.cljc` file with exactly this feature set (#{:clj}), so identical reads mean
+   identical compiler input — i.e. the mutation lives in JVM-dead code (a
+   `#?(:cljs …)` / non-:clj reader-conditional branch) and cannot change a single
+   compiled byte. This is the one equivalent class that actually occurs in real
+   Clojure (docs/validation-results.md §2.2); the static patterns above match
+   contrived shapes that effectively never appear.
+
+   Conservative: any read error ⇒ false (can't prove ⇒ don't claim equivalent)."
+  [orig-str mut-str]
+  (try
+    (= (read-string {:read-cond :allow} orig-str)
+       (read-string {:read-cond :allow} mut-str))
+    (catch Exception _ false)))
+
+;; =============================================================================
 ;; Simple Heuristic Detection (No Zipper Required)
 ;; =============================================================================
 

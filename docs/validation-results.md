@@ -9,6 +9,7 @@ any result can be checked.
 |-----|--------|-----------------|----------|
 | **G1** soundness | **✅ FIXED** | ~20 unsound patterns removed/tightened; sound-only filter; tests green | this doc §2 + `validation-plan.md` §2 |
 | **G1** wiring + recall | **🐞 FIXED + MEASURED** (5 targets) | filter was a **silent no-op** in prod (`mutation-site->zloc` ignored `:form-id` → 0% site resolution); fixed (0%→**100%**); measured recall **0 / 635 mutants** (158 on covered ops) — sound but ~zero recall on idiomatic Clojure | this doc §2.1 |
+| **G1** true-equivalent rate | **MEASURED** (medley) | sound lower bound + suite-seeded differential oracle + suite cross-check: true-equivalent **bracket [4.7%, 13.3%]** (7/150 *proven* by read-identity — dead `.cljc` branches; +13 unproven joint survivors), **operator-concentrated**; suite-seeding took the Phase-1 gate **50%→100%** (0 generator misses); soundness invariant 0 violations; +8 sound coverage gaps | this doc §2.2 |
 | **G4** schemata crossover | **done → module DELETED** | Marginal (speedup→1 as test cost grows); `heretic.schemata` removed | this doc §1 |
 | G2 subsumption | **measured** (5 targets) | **target-dependent** (Δ −11pp … +29pp vs random); beats random on non-degenerate honeysql/data.csv, loses on uri → inconclusive, do NOT retire | this doc §5 |
 | G3 clustering | **measured** (5 targets) | hardness-rep beats random on exactly **5/10** target×strategy pairs = a coin flip, no reliable signal → retire the hardness table | this doc §5 |
@@ -262,6 +263,127 @@ cheap insurance (it adds one parse per mutant but is provably safe); (b) demote 
 nothing on idiomatic code; (c) invest in a **TCE-style bytecode-identity** detector for real, sound recall — the
 G1 Half-2/Half-3 work in `validation-plan.md` §3-G1, which this result re-motivates (static pattern recall is 0,
 so dynamic/bytecode equivalence is the only path to non-trivial G1 payoff in Clojure).
+
+---
+
+## 2.2 G1 — the true equivalent-mutant rate (differential oracle + suite cross-check)
+
+§2.1 measured the filter's *output* (0 flagged). This measures the **denominator** PR #16 left open: of all
+mutants, how many are *actually* equivalent? Built per `docs/g1-recall-measurement-plan.md` (planreview Ready, PR #18).
+
+**What was built (`src/heretic/oracle/*`).** Three small, mostly-pure namespaces, run with no ClojureStorm:
+- `gen.clj` — a **seeded** (`java.util.Random` as a value, not an ambient RNG — the planreview guardrail),
+  dependency-free structural generator. Small numeric ranges + short collections so `<`/`<=`, arithmetic, and
+  `first`/`rest`/`take` distinctions are probable.
+- `differential.clj` — the **differential oracle**. Extracts the mutant's top-level form IN MEMORY (no file write,
+  no clj-reload), evals the mutated form to rebind the target var, observes original vs mutant on the same inputs
+  (each call under a hard timeout — mutants introduce infinite loops; **realized via `pr-str`** so lazy-seq errors
+  are caught AND type differences are observable, e.g. `map`→`mapv` prints `(…)` vs `[…]`), short-circuits at the
+  first **witness**, then restores. A witness ⇒ **provably KILLABLE** (sound). No witness in N=200 trials ⇒
+  *candidate-equivalent* (upper bound only). First-order **pure** fns only — a conservative static purity gate
+  (`pure-defn?`) excludes interop/IO/atoms/nondeterminism; HOF / impure are `:oracle-not-applicable`.
+- `suite.clj` + `harness.clj` — the **suite cross-check**: run the target's REAL test suite against each mutant
+  in memory (var indirection means the suite picks up the rebound mutant), joined with the oracle verdict into a
+  confusion matrix. No file mutation.
+
+**Strengthened with the trio** (a naive first cut measured a weak **50%** Phase-1 gate — see the before/after below):
+- `sound.clj` — the **sound (FP=0) lower bound**. `read-identity`: the JVM reader (`:read-cond :allow`) collapses a
+  `.cljc` form exactly as the compiler does, so if the original and mutant READ to `=` data the mutation is in
+  JVM-dead code (a `#?(:cljs …)` branch) and is *provably* equivalent. Plus `macroexpand-identity`. Every verdict
+  is a proof of equivalence, not a failure-to-find.
+- `harvest.clj` — **suite-seeded fuzzing**. Spy the target fns during one suite run to capture the REAL argument
+  tuples (which reach the mutation site by construction), then feed those + small structural perturbations to the
+  oracle. Reach is solved; the search only has to find infection nearby.
+- `suite/verdict-selected` — **covering-test selection**. Run only the tests the coverage index maps to each
+  mutant (`runner/tests-for-mutation`), not the whole suite — the scaling lever for large suites.
+
+**Result on medley** (150 mutants, full operator set; deterministic, seed 42, N=200; `bb test:fast` 535/0).
+The trio's effect, naive → strengthened:
+
+| metric | naive oracle | **with the trio** |
+|---|--:|--:|
+| Phase-1 gate (oracle recall on suite-killed) | 50% (32/64) | **100% (64/64)** |
+| generator misses (candidate-equiv the suite kills) | 32 | **0** |
+| oracle killable (sound witnesses) | 38 | **72** |
+| candidate-equivalent | 49 | **13** |
+| sound lower bound (proven equivalent) | — | **7** |
+| **true-equivalent bracket** | [0, ≤11.3%] | **[4.7%, 13.3%]** |
+
+Strengthened confusion matrix (the 85 oracle-judged ∩ suite-clean mutants):
+
+| | suite KILLED | suite SURVIVED |
+|---|--:|--:|
+| **oracle killable** | 64 | **8** ← coverage gaps |
+| **oracle candidate-equiv** | **0** ← no generator misses | **13** ← joint survivors |
+
+- **Suite-seeded fuzzing fixed the generator** — the Phase-1 gate went **50% → 100%** (zero generator misses):
+  feeding the oracle the suite's real reaching arguments + perturbations makes it as strong as the curated suite
+  at killing. The naive 50% is the recorded "before," and the reason input generation must be reach-aware.
+- **The bracket is now closed and trustworthy: [4.7%, 13.3%].** The **lower** bound is **sound** — 7/150 mutants
+  *proven* equivalent by `read-identity`, all `#?(:cljs …)` dead branches (e.g. `medley.core.cljc:195`, `:100`).
+  The **upper** bound is 7 proven + 13 *unproven joint survivors* (killed by neither a 100%-gate oracle nor the
+  suite) — concentrated, as the survey predicted, in `map`↔`mapv` via `apply` (`:125`,`:356`), terminal
+  `rest`↔`next` (`join :259`, `:350`,`:356`), `keep`↔`filter` (`:354`), and `replace-nil-*` (`:200`–`:238`).
+- **Soundness invariant holds: 0 violations.** No `read-identity`-proven mutant was killed by the suite (it never
+  could be — the code is JVM-dead), empirically confirming the sound detector on 150 real mutants.
+- **Byproduct (sound): 8 coverage gaps** — mutants medley's suite *survives* but the oracle *proves killable*
+  (the stronger inputs found 2 more than the naive run). Real test holes; the equivalent-vs-coverage-gap split is
+  the principled survivor triage `interpreting-survivors.md` assumes.
+
+**Scope + limitation.** medley is the headline because its suite is fast plain `clojure.test`. Covering-test
+selection (`verdict-selected`) is **built and mechanism-validated** (a 3-mutant uri slice runs correctly through
+the coverage index), but a *full* generative (`test.check`) target still doesn't complete in budget: selection
+cuts the test *count* per mutant, yet each covering **property** test is itself expensive, so generative targets
+need test.check **trial-capping** *on top of* selection (uri full did not finish; the slowness is generative
+covering tests + leaked CPU-loop threads from non-terminating mutants). That capping is the remaining lever for
+uri/honeysql. The sound lower bound here is read/macroexpand-identity; full **TCE bytecode-identity** (Half-3)
+would tighten it further but is not built.
+
+**What it means for G1.** There *is* a small, real equivalent population in idiomatic Clojure — bracketed
+**[4.7%, 13.3%]** on medley, with the proven floor entirely **dead `.cljc` platform branches**. It is dominated by
+classes the current static filter (`equivalent.clj`) **cannot** match — dead `.cljc` branches above all, plus
+realization-context `map`/`mapv` and terminal `rest`/`next` whose idiomatic forms the filter's narrow syntactic
+guards miss (PR #16: 0/635 caught). The filter's zero recall is not because equivalents are absent — its patterns
+don't model the equivalents that occur. The cheapest sound win is a **`.cljc` dead-branch detector** (now built as
+`sound/read-identity` — it proves the single largest class); TCE (Half-3) would extend the floor.
+
+### Reproduce
+
+```bash
+# medley — full pipeline (sound + suite-seeded oracle + whole-suite cross-check); fast plain-clojure.test:
+clojure -Sdeps '{:paths ["src" "validation/medley/src" "validation/medley/test"]}' \
+  -M -e "(require 'heretic.oracle.harness)
+         (heretic.oracle.harness/-main \"validation/medley/src\" \"medley.core-test\")"
+# with covering-test selection (3rd arg = .heretic dir) — needs flow-storm on the classpath to load the
+# coverage index, instrumentation OFF (we only READ the pre-collected index):
+clojure -J-Dclojure.storm.instrumentEnable=false -J-Dclojure.storm.instrumentAutoPrefixes=false \
+  -Sdeps '{:paths ["src" "validation/uri/src" "validation/uri/test"]
+           :deps {com.github.flow-storm/clojure {:mvn/version "1.12.0-9"}
+                  org.clojure/test.check {:mvn/version "1.1.1"}}
+           :classpath-overrides {org.clojure/clojure nil}}' \
+  -M -e "(require 'heretic.oracle.harness)
+         (heretic.oracle.harness/-main \"validation/uri/src\" \"lambdaisland.uri-test\" \"validation/uri/.heretic\")"
+```
+
+### Acted on the finding — `read-identity` wired into the default filter
+
+This measurement found that the shipping equivalent filter caught **0** of the real
+equivalents, and that the only equivalent class which actually occurs is JVM-dead
+`.cljc` branches. So we **wired `read-identity` into the production filter** rather
+than demote it: `equiv/read-identical?` (sound, FP=0) is now a second pass in
+`controller/filter-equivalent-mutations`, after the static patterns, using the
+in-memory form extraction promoted to `mutation-engine` (`original-form-string` /
+`mutated-form-string`, shared with the oracle). `:filter-equivalent` stays
+**default-on** — now justified, because it finally removes something.
+
+**Verified in the production pipeline (medley, all operators):** `prepare-mutations`
+with the filter **off** drops 0/150; with the filter **on** drops **7/150** — exactly
+the `read-identity`-proven dead-branch equivalents. Before this change both were 0.
+So the default filter went from inert to soundly removing the real equivalent class.
+(The static 13 patterns still run first; they continue to contribute ~0 on idiomatic
+code, kept only because they're sound and cheap.) Tests: `equiv/read-identical?` +
+`engine/original-form-string`/`mutated-form-string` + a `.cljc` dead-branch
+integration test; `bb test:fast` 538/0.
 
 ---
 

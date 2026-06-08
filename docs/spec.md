@@ -1373,16 +1373,22 @@ for test targeting.
 
 #### 3.2 Equivalent Mutant Detection ✅ COMPLETE
 
-Implemented in `equivalent.clj` with 7 pattern categories:
+`equivalent.clj` is **sound by construction** (FP=0): it flags a mutant only when no
+test could ever kill it. The original heuristic set was unsound and was rewritten to
+sound-only patterns (`validation-results.md` §2/§2.1); the empirical study (§2.2)
+then showed those static patterns catch ~0 on idiomatic code and that the equivalent
+class which *actually occurs* is JVM-dead `.cljc` branches. So detection is:
 
-- [x] **Boundary comparisons**: `(>= (count x) 0)` always true, `(neg? (count x))` always false
-- [x] **Multiply-by-zero**: `(* x 0)` → `0` is equivalent
-- [x] **Function contracts**: `(nil? (str x))` always false (str never returns nil)
-- [x] **Lazy/eager equivalences**: `(vec (map f xs))` ≡ `(vec (mapv f xs))` in realizing context
-- [x] **Collection literals**: `(empty? [])` always true, `(first [x])` → `x`
-- [x] **Threading macros**: `(-> x f)` ≡ `(f x)` for single-arity functions
-- [x] **Nil/some swap**: `(not (nil? x))` ≡ `(not (not (some? x)))` detection
-- [ ] **ML-based detection** (Phase 4): Train classifier on labeled mutants
+- [x] **read-identity (dead branch)** — a mutation whose top-level form READs
+  identically under the JVM reader (`:read-cond :allow`) lives in JVM-dead code
+  (`#?(:cljs …)`) and is provably equivalent. This is the pass with real recall
+  (~5% on medley); wired into `controller/filter-equivalent-mutations`.
+- [x] **Sound static patterns** — arithmetic identity in tail position (`(+ x 0)`),
+  `rest`/`next` as the collection arg of `some`, `first`/`last` on a 1-element vector
+  literal, lazy/eager swap inside a type-normalizing realizer, single-value threading.
+  Sound, but rarely fire on idiomatic code.
+- [ ] **TCE bytecode-identity** (Half-3, `validation-plan.md` §3-G1) — would extend the sound floor.
+- [ ] **ML-based detection** (Phase 4) — train a classifier on labeled mutants.
 
 #### 3.3 Subsumption Analysis ✅ COMPLETE
 
@@ -1484,7 +1490,7 @@ Phase 3 adds parallelism and watch mode to leverage this.
 
 **Acceptance Criteria:**
 - [x] All Clojure-specific operators implemented and tested (81 operators)
-- [x] Equivalent mutant detection reduces false survivors (7 pattern categories)
+- [x] Equivalent mutant detection (sound-only: read-identity dead-branch + sound static patterns)
 - [x] File-level parallelism via in-process worker threads (`ExecutorService`)
 - [x] Mutant clustering with 4 strategies
 - [x] HTML/JSON/EDN reports provide actionable insights
