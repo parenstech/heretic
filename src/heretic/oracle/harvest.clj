@@ -32,7 +32,9 @@
                                  (swap! recorded update sym (fnil conj #{}) (vec args))))
                              (apply orig args))))))
     (try
-      (let [fut (future (binding [test/*test-out* (StringWriter.)] (test/run-tests test-ns)))]
+      ;; test-ns may be a single ns symbol or a collection of them (a multi-ns suite).
+      (let [test-nses (if (coll? test-ns) test-ns [test-ns])
+            fut (future (binding [test/*test-out* (StringWriter.)] (apply test/run-tests test-nses)))]
         (deref fut suite-timeout-ms ::timeout))
       (finally
         (doseq [[sym _] fn-vars]

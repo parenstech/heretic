@@ -39,6 +39,7 @@ Heretic solves this with **test-to-code mapping**: it knows exactly which tests 
 - **Clojure-specific mutations** like `->` vs `->>`, `map` vs `mapv`, keyword case conversion
 - **Subsumption analysis** to reduce redundant mutations while maintaining fault detection
 - **Equivalent mutation detection** to filter out mutations that can't be killed
+- **Survivor triage** - classifies each survivor as a real coverage-gap (with the witnessing input your tests miss) vs an unkillable equivalent mutant
 - **Incremental testing** - only re-test when source or tests change
 - **Watch mode** for continuous feedback during development
 - **Parallel execution** across source files
@@ -195,6 +196,10 @@ Full configuration options in `heretic.edn`:
                         ;   worker JVMs that survive infinite-loop/crash mutants)
  :timeout-ms 5000       ; Per-mutant timeout
  :parallel-workers 4    ; Number of parallel workers
+
+ ;; Survivor triage — classify each survivor as a real coverage-gap (with the
+ ;; witnessing input your tests miss) vs an unkillable equivalent mutant.
+ :triage-survivors true ; default on; false to skip the post-run triage pass
 
  ;; Sandbox — mutate/watch run against a disposable copy; your tree is never written
  :sandbox-aliases ["heretic"]    ; deps.edn aliases the child JVM runs with — must put
