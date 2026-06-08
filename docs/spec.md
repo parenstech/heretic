@@ -19,7 +19,7 @@ Heretic is a mutation testing tool for Clojure that leverages ClojureStorm's ins
 1. **Test-to-code mapping**: Know which tests exercise which code
 2. **Targeted mutation testing**: Run only relevant tests per mutation
 3. **Mutation operators**: Apply semantic mutations to Clojure code
-4. **Reporting**: Show which mutations survived (indicating weak tests)
+4. **Reporting**: Show which mutations survived (a weak test — *or* an equivalent mutant; ~5–13% of survivors are unkillable, not gaps — see `validation-results.md` §2.2 + survivor triage)
 
 ## Architecture
 
@@ -988,7 +988,7 @@ Generate mutation testing reports.
       iv.  Call clj-reload/reload to reload affected namespaces
       v.   Run targeted tests with timeout
       vi.  If any test fails → :killed
-      vii. If all tests pass → :survived (weak tests!)
+      vii. If all tests pass → :survived (weak test — or an equivalent mutant; see survivor triage)
       viii. Revert mutation file
       ix.  Call clj-reload/reload to restore original code
    e. Generate report
