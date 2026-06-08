@@ -25,7 +25,7 @@
   (:import [java.util Random]))
 
 (defn- mutant-fn-sym [m]
-  (some-> (diff/original-form-string m) diff/form-def-info :name))
+  (some-> (engine/original-form-string m) diff/form-def-info :name))
 
 (defn run
   "Full pipeline. opts: {:source-paths :test-ns :heretic-dir :operators :n-trials

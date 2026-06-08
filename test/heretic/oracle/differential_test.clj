@@ -56,10 +56,10 @@
       (spit f "(ns ofx)\n(defn add [a b] (+ a b))\n")
       (let [muts (engine/mutations-for-file (.getPath f) ops/all-operators)
             plus (first (filter #(= :swap-plus-minus (:operator %)) muts))
-            orig (diff/original-form-string plus)]
+            orig (engine/original-form-string plus)]
         (is (some? plus) "engine generates a +→- mutation")
         (is (= "(defn add [a b] (+ a b))" orig))
-        (is (= "(defn add [a b] (- a b))" (diff/mutated-form-string plus orig))))
+        (is (= "(defn add [a b] (- a b))" (engine/mutated-form-string plus orig))))
       (finally (.delete f)))))
 
 (deftest classify-end-to-end

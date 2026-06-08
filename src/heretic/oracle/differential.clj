@@ -20,38 +20,12 @@
      {:label :oracle-not-applicable :reason <keyword>}"
   (:require [clojure.java.io :as io]
             [clojure.walk :as walk]
-            [heretic.coord-mapper :as coord]
-            [heretic.operators :as ops]
-            [heretic.oracle.gen :as gen]
-            [heretic.parser :as parser]
-            [rewrite-clj.node :as n]
-            [rewrite-clj.zip :as z])
+            [heretic.mutation-engine :as engine]
+            [heretic.oracle.gen :as gen])
   (:import [java.io PushbackReader]))
 
-;; ---------------------------------------------------------------------------
-;; In-memory original / mutated top-level form extraction
-;; ---------------------------------------------------------------------------
-
-(defn original-form-string
-  "The mutant's whole top-level form (the def/defn it lives in), as a string."
-  [mutant]
-  (some-> (parser/parse-file (:file mutant))
-          (parser/find-form-by-id (:form-id mutant))
-          z/string))
-
-(defn mutated-form-string
-  "The same top-level form with the operator applied — produced in memory by
-   re-parsing just the form (the :coord is form-relative) and replacing the one
-   target node, exactly as engine/apply-mutation! does, minus the file write."
-  [mutant orig-str]
-  (let [op-def (get ops/operators-by-id (:operator mutant))]
-    (when (and orig-str op-def)
-      (let [form-zloc (z/of-string orig-str {:track-position? true})
-            target (coord/coord->zloc form-zloc (:coord mutant))]
-        (when target
-          (let [replacement (ops/apply-operator op-def target)]
-            (z/root-string
-             (z/replace target (n/token-node (symbol replacement))))))))))
+;; Form extraction (original-form-string / mutated-form-string) lives in
+;; heretic.mutation-engine — shared with the production equivalent filter.
 
 ;; ---------------------------------------------------------------------------
 ;; Target identification + purity gate
@@ -184,7 +158,7 @@
    re-evaluates the mutated form in `ns-sym` and always restores the original."
   [mutant {:keys [n-trials seed ns-sym timeout-ms inputs]
            :or {n-trials 200 seed 42 timeout-ms 300}}]
-  (let [orig-str (original-form-string mutant)
+  (let [orig-str (engine/original-form-string mutant)
         the-ns (some-> ns-sym find-ns)]
     (cond
       (nil? orig-str) {:label :oracle-not-applicable :reason :no-form}
@@ -202,7 +176,7 @@
           (let [v (ns-resolve the-ns (:name info))]
             (if-not (and v (fn? (deref v)))
               {:label :oracle-not-applicable :reason :not-a-fn}
-              (let [mut-str (mutated-form-string mutant orig-str)]
+              (let [mut-str (engine/mutated-form-string mutant orig-str)]
                 (if (nil? mut-str)
                   {:label :oracle-not-applicable :reason :no-mutated-form}
                   (let [f-orig (deref v)

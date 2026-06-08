@@ -426,3 +426,21 @@
       (is (= 50 (:filtered-count stats)))
       (is (= 0 (:remaining-count stats)))
       (is (= 100.0 (:filtered-percentage stats))))))
+
+;; =============================================================================
+;; read-identity — sound dead-branch detection
+;; =============================================================================
+
+(deftest read-identical-sound-dead-branch-test
+  (testing "a #?(:cljs …)-branch mutation reads identically under the JVM reader ⇒ equivalent"
+    (is (true? (equiv/read-identical?
+                "(defn f [x] #?(:clj (+ x 1) :cljs (- x 1)))"
+                "(defn f [x] #?(:clj (+ x 1) :cljs (+ x 1)))"))))
+  (testing "a :clj-branch mutation is live ⇒ NOT read-identical"
+    (is (false? (equiv/read-identical?
+                 "(defn f [x] #?(:clj (+ x 1) :cljs (- x 1)))"
+                 "(defn f [x] #?(:clj (- x 1) :cljs (- x 1)))"))))
+  (testing "a plain-Clojure live mutation is NOT read-identical"
+    (is (false? (equiv/read-identical? "(defn f [x] (+ x 1))" "(defn f [x] (- x 1))"))))
+  (testing "a read error ⇒ false (never a false positive)"
+    (is (false? (equiv/read-identical? "(defn f [" "(defn g [")))))

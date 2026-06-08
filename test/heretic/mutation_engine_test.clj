@@ -9,6 +9,7 @@
    - generate-mutations scans source directories"
   (:require [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing use-fixtures]]
+            [heretic.equivalent :as equiv]
             [heretic.mutation-engine :as engine]
             [heretic.operators :as ops]))
 
@@ -429,3 +430,31 @@
               "Single form mutation should work with exact form-id match")
           (finally
             (engine/revert-mutation! applied)))))))
+
+;; =============================================================================
+;; In-memory form extraction + read-identity dead-branch detection
+;; =============================================================================
+
+(deftest test-form-string-extraction
+  (testing "original-form-string + mutated-form-string render the whole top-level form"
+    (let [file (create-test-file! "fs.clj" "(ns fsx)\n(defn add [a b] (+ a b))\n")
+          plus (first (filter #(= :swap-plus-minus (:operator %))
+                              (engine/mutations-for-file file ops/all-operators)))
+          orig (engine/original-form-string plus)]
+      (is (= "(defn add [a b] (+ a b))" orig))
+      (is (= "(defn add [a b] (- a b))" (engine/mutated-form-string plus orig))))))
+
+(deftest test-read-identity-detects-cljc-dead-branch
+  (testing "a #?(:cljs …)-branch mutation reads identically on the JVM (dead-branch
+            equivalent); a :clj-branch mutation does not"
+    (let [file (create-test-file! "dbx.cljc"
+                                  "(ns dbx)\n(defn f [a] #?(:clj (+ a 1) :cljs (- a 1)))\n")
+          muts (engine/mutations-for-file file ops/all-operators)
+          read-id? (fn [m] (let [o (engine/original-form-string m)]
+                             (equiv/read-identical? o (engine/mutated-form-string m o))))
+          cljs-mut (first (filter #(= "-" (:original %)) muts))   ; the (- a 1) in :cljs
+          clj-mut  (first (filter #(= "+" (:original %)) muts))]  ; the (+ a 1) in :clj
+      (is (some? cljs-mut) "engine generates a mutation inside the :cljs branch")
+      (is (some? clj-mut)  "engine generates a mutation inside the :clj branch")
+      (is (true?  (read-id? cljs-mut)) ":cljs-branch mutation is JVM-dead ⇒ read-identical (sound equivalent)")
+      (is (false? (read-id? clj-mut))  ":clj-branch mutation is live ⇒ not read-identical"))))

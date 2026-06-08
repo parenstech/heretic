@@ -9,7 +9,7 @@
    joined with the differential-oracle verdict it yields the confusion matrix that
    separates true equivalents from generator misses and surfaces coverage gaps."
   (:require [clojure.test :as test]
-            [heretic.oracle.differential :as diff])
+            [heretic.mutation-engine :as engine])
   (:import [java.io StringWriter]))
 
 (defn verdict
@@ -19,8 +19,8 @@
    fail CI). opts: {:suite-timeout-ms}."
   [mutant ns-sym test-ns {:keys [suite-timeout-ms] :or {suite-timeout-ms 10000}}]
   (let [the-ns   (some-> ns-sym find-ns)
-        orig-str (diff/original-form-string mutant)
-        mut-str  (when orig-str (diff/mutated-form-string mutant orig-str))]
+        orig-str (engine/original-form-string mutant)
+        mut-str  (when orig-str (engine/mutated-form-string mutant orig-str))]
     (cond
       (nil? the-ns)                       :ns-not-loaded
       (or (nil? orig-str) (nil? mut-str)) :no-form
@@ -69,8 +69,8 @@
                        (keep (fn [s] (try (requiring-resolve s) (catch Throwable _ nil))))
                        vec)
         the-ns   (some-> ns-sym find-ns)
-        orig-str (diff/original-form-string mutant)
-        mut-str  (when orig-str (diff/mutated-form-string mutant orig-str))]
+        orig-str (engine/original-form-string mutant)
+        mut-str  (when orig-str (engine/mutated-form-string mutant orig-str))]
     (cond
       (empty? test-vars)                  :no-coverage
       (nil? the-ns)                       :ns-not-loaded

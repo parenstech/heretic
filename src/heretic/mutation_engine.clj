@@ -194,6 +194,33 @@
     (dissoc mutation :backup)))
 
 ;; =============================================================================
+;; In-memory form extraction (no file write)
+;; =============================================================================
+
+(defn original-form-string
+  "The mutant's whole top-level form (the def/defn it lives in), as a string —
+   read straight from the source file, no mutation applied."
+  [mutation]
+  (some-> (parser/parse-file (:file mutation))
+          (parser/find-form-by-id (:form-id mutation))
+          z/string))
+
+(defn mutated-form-string
+  "The same top-level form with the operator applied, produced IN MEMORY (no file
+   write): re-parse just the form (the :coord is form-relative) and replace the
+   one target node, exactly as `apply-mutation!` does minus the spit. `orig-str`
+   is the result of `original-form-string` for the same mutation."
+  [mutation orig-str]
+  (let [op-def (get ops/operators-by-id (:operator mutation))]
+    (when (and orig-str op-def)
+      (let [form-zloc (z/of-string orig-str {:track-position? true})
+            target    (coord/coord->zloc form-zloc (:coord mutation))]
+        (when target
+          (let [replacement (ops/apply-operator op-def target)]
+            (z/root-string
+             (z/replace target (n/token-node (symbol replacement))))))))))
+
+;; =============================================================================
 ;; Safe Mutation Execution
 ;; =============================================================================
 

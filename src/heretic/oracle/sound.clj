@@ -18,7 +18,7 @@
    Both are conservative: a false NEGATIVE (failing to prove an equivalent) only
    loosens the lower bound; neither can ever call a killable mutant equivalent."
   (:require [clojure.walk :as walk]
-            [heretic.oracle.differential :as diff]))
+            [heretic.mutation-engine :as engine]))
 
 (defn read-identical?
   "True when orig-str and mut-str read to = data under the JVM reader. Sound:
@@ -45,8 +45,8 @@
   "Return the proof tag (:read-identity | :macroexpand-identity) if `mutant` is
    PROVABLY equivalent, else nil. Cheap: no test run, no input generation."
   [mutant ns-sym]
-  (let [orig (diff/original-form-string mutant)
-        mut  (when orig (diff/mutated-form-string mutant orig))]
+  (let [orig (engine/original-form-string mutant)
+        mut  (when orig (engine/mutated-form-string mutant orig))]
     (when (and orig mut)
       (cond
         (read-identical? orig mut)                  :read-identity

@@ -365,6 +365,26 @@ clojure -J-Dclojure.storm.instrumentEnable=false -J-Dclojure.storm.instrumentAut
          (heretic.oracle.harness/-main \"validation/uri/src\" \"lambdaisland.uri-test\" \"validation/uri/.heretic\")"
 ```
 
+### Acted on the finding — `read-identity` wired into the default filter
+
+This measurement found that the shipping equivalent filter caught **0** of the real
+equivalents, and that the only equivalent class which actually occurs is JVM-dead
+`.cljc` branches. So we **wired `read-identity` into the production filter** rather
+than demote it: `equiv/read-identical?` (sound, FP=0) is now a second pass in
+`controller/filter-equivalent-mutations`, after the static patterns, using the
+in-memory form extraction promoted to `mutation-engine` (`original-form-string` /
+`mutated-form-string`, shared with the oracle). `:filter-equivalent` stays
+**default-on** — now justified, because it finally removes something.
+
+**Verified in the production pipeline (medley, all operators):** `prepare-mutations`
+with the filter **off** drops 0/150; with the filter **on** drops **7/150** — exactly
+the `read-identity`-proven dead-branch equivalents. Before this change both were 0.
+So the default filter went from inert to soundly removing the real equivalent class.
+(The static 13 patterns still run first; they continue to contribute ~0 on idiomatic
+code, kept only because they're sound and cheap.) Tests: `equiv/read-identical?` +
+`engine/original-form-string`/`mutated-form-string` + a `.cljc` dead-branch
+integration test; `bb test:fast` 538/0.
+
 ---
 
 ## 3. Kill-matrix runner — the G2/G3/G5 blocker (BUILT)

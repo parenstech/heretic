@@ -127,8 +127,25 @@
       (mapcat #(engine/mutations-for-file % operators) files-to-mutate))
     (engine/generate-mutations source-paths operators exclude-files)))
 
+(defn- read-identity-equivalent?
+  "SOUND dead-branch check for one mutation: does the mutated top-level form READ
+   identically to the original under the JVM reader? (i.e. the mutation is in
+   JVM-dead `.cljc` code). Extracts the forms in memory via the mutation engine."
+  [mutation]
+  (try
+    (let [orig (engine/original-form-string mutation)
+          mut  (when orig (engine/mutated-form-string mutation orig))]
+      (boolean (and orig mut (equiv/read-identical? orig mut))))
+    (catch Exception _ false)))
+
 (defn filter-equivalent-mutations
-  "Filter out likely equivalent mutations.
+  "Filter out provably/likely equivalent mutations (sound — only drops mutants no
+   test could ever kill).
+
+   Two sound passes: (1) the static pattern set (`equivalent.clj`, rarely fires on
+   idiomatic code), then (2) read-identity dead-branch detection — the equivalent
+   class that actually occurs in Clojure (`#?(:cljs …)` etc.), which gives the
+   filter its real recall (docs/validation-results.md §2.2).
 
    Arguments:
    - mutations: Sequence of mutations to filter
@@ -144,9 +161,10 @@
                       (when-let [zloc (parser/parse-file (:file m))]
                         (parser/mutation-site->zloc m zloc))
                       (catch Exception _ nil)))
-          result (equiv/filter-equivalent-mutations (vec mutations) zloc-fn)]
-      {:mutations (vec (:mutations result))
-       :filtered-count (:filtered-count result)})
+          pat (equiv/filter-equivalent-mutations (vec mutations) zloc-fn)
+          db  (group-by read-identity-equivalent? (:mutations pat))]
+      {:mutations (vec (get db false []))
+       :filtered-count (+ (:filtered-count pat) (count (get db true [])))})
     {:mutations (vec mutations)
      :filtered-count 0}))
 
