@@ -1,0 +1,233 @@
+(ns heretic.oracle.differential
+  "Differential property-based oracle (docs/g1-recall-measurement-plan.md §5).
+
+   Decides whether a mutant is KILLABLE — some input distinguishes it from the
+   original, a SOUND witness — or a CANDIDATE-EQUIVALENT — no witness in N trials,
+   an UPPER bound on equivalence only. First-order PURE fns; everything else is
+   :oracle-not-applicable.
+
+   The mutant's top-level form is evaluated IN MEMORY — no file write, no
+   clj-reload, no ClojureStorm. We extract the original and mutated top-level
+   form as strings, eval the mutated form to rebind the target var, observe both
+   functions on the SAME generated inputs (each call under a hard timeout, since
+   a mutant can introduce an infinite loop), short-circuiting at the first
+   witness, then (in a finally) eval the original form to restore the namespace.
+
+   The verdict is a TAGGED shape (planreview): exactly one arm, each carrying
+   only its valid fields —
+     {:label :killable             :witness <args|keyword> :arity n}
+     {:label :candidate-equivalent :trials  n}
+     {:label :oracle-not-applicable :reason <keyword>}"
+  (:require [clojure.java.io :as io]
+            [clojure.walk :as walk]
+            [heretic.coord-mapper :as coord]
+            [heretic.operators :as ops]
+            [heretic.oracle.gen :as gen]
+            [heretic.parser :as parser]
+            [rewrite-clj.node :as n]
+            [rewrite-clj.zip :as z])
+  (:import [java.io PushbackReader]))
+
+;; ---------------------------------------------------------------------------
+;; In-memory original / mutated top-level form extraction
+;; ---------------------------------------------------------------------------
+
+(defn original-form-string
+  "The mutant's whole top-level form (the def/defn it lives in), as a string."
+  [mutant]
+  (some-> (parser/parse-file (:file mutant))
+          (parser/find-form-by-id (:form-id mutant))
+          z/string))
+
+(defn mutated-form-string
+  "The same top-level form with the operator applied — produced in memory by
+   re-parsing just the form (the :coord is form-relative) and replacing the one
+   target node, exactly as engine/apply-mutation! does, minus the file write."
+  [mutant orig-str]
+  (let [op-def (get ops/operators-by-id (:operator mutant))]
+    (when (and orig-str op-def)
+      (let [form-zloc (z/of-string orig-str {:track-position? true})
+            target (coord/coord->zloc form-zloc (:coord mutant))]
+        (when target
+          (let [replacement (ops/apply-operator op-def target)]
+            (z/root-string
+             (z/replace target (n/token-node (symbol replacement))))))))))
+
+;; ---------------------------------------------------------------------------
+;; Target identification + purity gate
+;; ---------------------------------------------------------------------------
+
+(defn file->ns-sym
+  "Read the first `(ns …)` form of a source file and return its namespace symbol.
+   Reads with :read-cond :allow so .cljc files resolve."
+  [file]
+  (with-open [r (PushbackReader. (io/reader file))]
+    (binding [*read-eval* false]
+      (loop []
+        (let [form (read {:read-cond :allow :eof ::eof} r)]
+          (cond
+            (= form ::eof) nil
+            (and (seq? form) (= 'ns (first form))) (second form)
+            :else (recur)))))))
+
+(def ^:private impure-markers
+  "Core symbols whose presence makes a fn body unreplayable by a pure differential
+   oracle (side effects, IO, nondeterminism, mutable refs)."
+  '#{atom swap! reset! swap-vals! reset-vals! compare-and-set!
+     volatile! vreset! vswap! ref alter commute ref-set dosync
+     rand rand-int rand-nth shuffle
+     println print pr prn print-str printf newline flush
+     read read-line read-string slurp spit with-open
+     send send-off deliver promise future agent alter-var-root
+     time})
+
+(defn- impure-symbol? [x]
+  (and (symbol? x)
+       (let [s (name x)
+             nsp (namespace x)]
+         (or (contains? impure-markers (symbol s))
+             (.startsWith s ".")                       ; interop method call (.write …)
+             (and (> (count s) 1) (.endsWith s "."))   ; constructor (Writer. …)
+             (and nsp (Character/isUpperCase (char (first nsp))))  ; Class/static
+             (and nsp (#{"System" "Thread" "Math"} nsp))))))
+
+(defn pure-defn?
+  "Conservative purity check on a defn form (as data): reject any interop, class
+   reference, or known side-effecting/nondeterministic core fn. False negatives
+   (calling a pure fn impure) only shrink applicability; they never make an
+   impure fn look pure, which is the direction that matters for soundness."
+  [form]
+  (let [bad (volatile! false)]
+    (walk/postwalk (fn [x] (when (impure-symbol? x) (vreset! bad true)) x) form)
+    (not @bad)))
+
+(defn form-def-info
+  "Classify a top-level form string: {:kind :defn|:def|:other :name sym :pure? bool}."
+  [form-str]
+  (try
+    (let [form (read-string {:read-cond :allow} form-str)]
+      (if (and (seq? form) (symbol? (first form)) (symbol? (second form)))
+        (let [h (first form)]
+          (cond
+            (#{'defn 'defn-} h) {:kind :defn :name (second form) :pure? (pure-defn? form)}
+            (= 'def h) {:kind :def :name (second form)}
+            :else {:kind :other :name (second form)}))
+        {:kind :other :name nil}))
+    (catch Exception _ {:kind :other :name nil})))
+
+(defn arities
+  "Fixed arities implied by :arglists; a variadic arglist contributes its
+   required count + 2 (a heuristic so we still exercise the variadic body)."
+  [arglists]
+  (->> arglists
+       (map (fn [al]
+              (let [v (vec al)
+                    amp (.indexOf v '&)]
+                (if (neg? amp) (count v) (+ amp 2)))))
+       distinct
+       (remove zero?)))
+
+;; ---------------------------------------------------------------------------
+;; Observation + short-circuiting witness search
+;; ---------------------------------------------------------------------------
+
+(defn observe-one
+  "Apply f to args under a hard timeout (a mutant may loop forever), fully
+   REALIZING the result with pr-str inside the guarded thread. Returns
+   [:value <printed>] | [:throw class] | [:timeout].
+
+   pr-str matters for safety AND fidelity: it forces lazy seqs (so a realization
+   error is caught here, not later in the comparison) and makes the observation
+   TYPE-sensitive — `(map f xs)` prints `(…)` while `(mapv f xs)` prints `[…]`,
+   so a `map`↔`mapv` swap is correctly distinguishable (a test can tell a seq
+   from a vector) where Clojure `=` would call them equal. An infinite/huge
+   realization is caught by the deref-timeout. A timed-out call leaks its thread
+   (an uninterruptible CPU loop can't be cancelled) — acceptable for a bounded
+   research run."
+  [f args timeout-ms]
+  (let [fut (future (try [:value (pr-str (apply f args))]
+                         (catch Throwable t [:throw (class t)])))
+        res (deref fut timeout-ms ::timeout)]
+    (if (= res ::timeout)
+      (do (future-cancel fut) [:timeout])
+      res)))
+
+(defn find-witness
+  "Walk inputs; return {:witness args :arity a} at the first input whose two
+   observations differ, else {:witness nil :applicable bool}. `applicable?` is
+   true once the ORIGINAL returns a value on some input (so a fn that throws on
+   every generated input — wrong shape / HOF — is reported not-applicable rather
+   than a false equivalent). Distinguishing = the two observations are not=
+   (one throws/loops & the other returns; unequal values; different thrown
+   classes). Same throw/timeout on both ⇒ not distinguishing (conservative)."
+  [f-orig f-mut inputs arity timeout-ms]
+  (loop [in (seq inputs) applicable? false]
+    (if-not in
+      {:witness nil :applicable applicable?}
+      (let [args (first in)
+            o (observe-one f-orig args timeout-ms)
+            m (observe-one f-mut args timeout-ms)]
+        (if (not= o m)
+          {:witness args :arity arity}
+          (recur (next in) (or applicable? (= :value (first o)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Classification
+;; ---------------------------------------------------------------------------
+
+(defn classify-mutant
+  "Classify one mutant. opts: {:n-trials :seed :ns-sym :timeout-ms}. Temporarily
+   re-evaluates the mutated form in `ns-sym` and always restores the original."
+  [mutant {:keys [n-trials seed ns-sym timeout-ms]
+           :or {n-trials 200 seed 42 timeout-ms 300}}]
+  (let [orig-str (original-form-string mutant)
+        the-ns (some-> ns-sym find-ns)]
+    (cond
+      (nil? orig-str) {:label :oracle-not-applicable :reason :no-form}
+      (nil? the-ns) {:label :oracle-not-applicable :reason :ns-not-loaded}
+      :else
+      (let [info (form-def-info orig-str)]
+        (cond
+          (not= :defn (:kind info))
+          {:label :oracle-not-applicable :reason (keyword (str "kind-" (name (:kind info))))}
+
+          (not (:pure? info))
+          {:label :oracle-not-applicable :reason :impure}
+
+          :else
+          (let [v (ns-resolve the-ns (:name info))]
+            (if-not (and v (fn? (deref v)))
+              {:label :oracle-not-applicable :reason :not-a-fn}
+              (let [mut-str (mutated-form-string mutant orig-str)]
+                (if (nil? mut-str)
+                  {:label :oracle-not-applicable :reason :no-mutated-form}
+                  (let [f-orig (deref v)
+                        ars (seq (arities (:arglists (meta v))))
+                        mut-form (try (read-string {:read-cond :allow} mut-str)
+                                      (catch Exception _ ::read-error))]
+                    (if (= mut-form ::read-error)
+                      {:label :killable :witness :unreadable}
+                      (try
+                        (let [ev (try (binding [*ns* the-ns] (eval mut-form)) :ok
+                                      (catch Throwable t t))]
+                          (if (instance? Throwable ev)
+                            {:label :killable :witness :compile-error}
+                            (let [f-mut (deref (ns-resolve the-ns (:name info)))]
+                              (loop [arl ars trials 0 applicable? false]
+                                (if-not arl
+                                  (if applicable?
+                                    {:label :candidate-equivalent :trials trials}
+                                    {:label :oracle-not-applicable :reason :orig-threw-all})
+                                  (let [ar (first arl)
+                                        inputs (gen/inputs ar n-trials seed)
+                                        {:keys [witness applicable]}
+                                        (find-witness f-orig f-mut inputs ar timeout-ms)]
+                                    (if witness
+                                      {:label :killable :witness witness :arity ar}
+                                      (recur (next arl)
+                                             (+ trials n-trials)
+                                             (or applicable? applicable)))))))))
+                        (finally
+                          (binding [*ns* the-ns]
+                            (try (eval (read-string {:read-cond :allow} orig-str))
+                                 (catch Throwable _ nil))))))))))))))))
