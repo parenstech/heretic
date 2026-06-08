@@ -18,16 +18,12 @@
    Both are conservative: a false NEGATIVE (failing to prove an equivalent) only
    loosens the lower bound; neither can ever call a killable mutant equivalent."
   (:require [clojure.walk :as walk]
+            [heretic.equivalent :as equiv]
             [heretic.mutation-engine :as engine]))
 
-(defn read-identical?
-  "True when orig-str and mut-str read to = data under the JVM reader. Sound:
-   identical read ⇒ identical compiler input ⇒ equivalent."
-  [orig-str mut-str]
-  (try
-    (= (read-string {:read-cond :allow} orig-str)
-       (read-string {:read-cond :allow} mut-str))
-    (catch Exception _ false)))
+;; read-identity is the production sound predicate (heretic.equivalent/read-identical?);
+;; the oracle delegates to it rather than re-defining the one FP=0 rule — a second
+;; copy could silently drift from what the filter actually ships.
 
 (defn macroexpand-identical?
   "True when orig-str and mut-str macroexpand-all to = code in ns-sym. Sound:
@@ -49,6 +45,6 @@
         mut  (when orig (engine/mutated-form-string mutant orig))]
     (when (and orig mut)
       (cond
-        (read-identical? orig mut)                  :read-identity
+        (equiv/read-identical? orig mut)            :read-identity
         (macroexpand-identical? ns-sym orig mut)    :macroexpand-identity
         :else                                       nil))))

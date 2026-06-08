@@ -83,3 +83,21 @@
       (finally
         (remove-ns (symbol nm))
         (.delete f)))))
+
+(deftest observe-one-classifies-value-throw-timeout
+  (testing ":value carries the pr-str'd result"
+    (is (= [:value "3"] (diff/observe-one + [1 2] 300))))
+  (testing ":throw carries the exception class"
+    (let [[tag cls] (diff/observe-one (fn [_] (throw (RuntimeException. "boom"))) [1] 300)]
+      (is (= :throw tag))
+      (is (= RuntimeException cls))))
+  (testing ":timeout when a call exceeds the budget (a mutant's infinite loop / hang)"
+    (is (= [:timeout] (diff/observe-one (fn [_] (Thread/sleep 5000) :never) [1] 100)))))
+
+(deftest find-witness-applicable-false-when-orig-throws-all
+  (testing "a fn that throws on EVERY input ⇒ applicable false (guards against
+            labelling a wrong-arity/HOF fn a false equivalent)"
+    (let [throwy (fn [& _] (throw (ex-info "nope" {})))
+          r (diff/find-witness throwy throwy (gen/inputs 1 30 5) 300)]
+      (is (nil? (:witness r)))
+      (is (false? (:applicable r))))))

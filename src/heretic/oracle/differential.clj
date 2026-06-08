@@ -15,7 +15,7 @@
 
    The verdict is a TAGGED shape (planreview): exactly one arm, each carrying
    only its valid fields —
-     {:label :killable             :witness <args|keyword> :arity n}
+     {:label :killable             :witness <args|keyword>}
      {:label :candidate-equivalent :trials  n}
      {:label :oracle-not-applicable :reason <keyword>}"
   (:require [clojure.java.io :as io]
@@ -127,7 +127,7 @@
       res)))
 
 (defn find-witness
-  "Walk inputs; return {:witness args :arity a} at the first input whose two
+  "Walk inputs; return {:witness args} at the first input whose two
    observations differ, else {:witness nil :applicable bool}. `applicable?` is
    true once the ORIGINAL returns a value on some input (so a fn that throws on
    every generated input — wrong shape / HOF — is reported not-applicable rather
