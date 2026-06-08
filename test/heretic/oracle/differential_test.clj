@@ -100,7 +100,8 @@
     (let [throwy (fn [& _] (throw (ex-info "nope" {})))
           r (diff/find-witness throwy throwy (gen/inputs 1 30 5) 300)]
       (is (nil? (:witness r)))
-      (is (false? (:applicable r))))))
+      (is (false? (:applicable r)))
+      (is (false? (:saw-timeout? r)) "threw on all — not a timeout (→ :orig-threw-all, not :inconclusive-timeout)"))))
 
 (deftest find-witness-ignores-one-sided-timeout
   (testing "a slow-but-correct original timing out is NOT a witness (no false coverage-gap)"
@@ -111,7 +112,12 @@
       (is (nil? (:witness (diff/find-witness slow fast [[1]] 300))))
       (is (nil? (:witness (diff/find-witness fast slow [[1]] 300))) "symmetric: mutant-side timeout too")))
   (testing "a genuine value difference is still found when neither times out"
-    (is (some? (:witness (diff/find-witness (fn [_] 1) (fn [_] 2) [[1]] 300))))))
+    (is (some? (:witness (diff/find-witness (fn [_] 1) (fn [_] 2) [[1]] 300)))))
+  (testing "timeouts are reported via :saw-timeout? so the caller can tell them from throws"
+    (let [r (diff/find-witness (fn [_] (Thread/sleep 400) 1) (fn [_] 1) [[1]] 200)]
+      (is (nil? (:witness r)))
+      (is (false? (:applicable r)) "orig never produced an observable value")
+      (is (true? (:saw-timeout? r)) "…because it timed out, not because it threw"))))
 
 (deftest observe-one-collapses-opaque-results
   (testing "fn-valued results collapse to ::opaque — identity-hash diffs are not witnesses"

@@ -149,19 +149,24 @@
    would otherwise look 'different' from a fast mutant and manufacture a false
    coverage-gap. In the triage context this is also harmless to recall — a mutant
    that genuinely diverges into an infinite loop would have hung the test suite
-   and so would not be a SURVIVOR reaching this oracle in the first place."
+   and so would not be a SURVIVOR reaching this oracle in the first place.
+
+   The terminal map also reports `:saw-timeout?` so the caller can tell apart
+   'original produced no observable value because it THREW on everything' from
+   '…because calls timed out' (the latter is inconclusive, not a wrong shape)."
   [f-orig f-mut inputs timeout-ms]
-  (loop [in (seq inputs) applicable? false]
+  (loop [in (seq inputs) applicable? false saw-timeout? false]
     (if-not in
-      {:witness nil :applicable applicable?}
+      {:witness nil :applicable applicable? :saw-timeout? saw-timeout?}
       (let [args (first in)
             o (observe-one f-orig args timeout-ms)
             m (observe-one f-mut args timeout-ms)
-            timed-out? (or (= :timeout (first o)) (= :timeout (first m)))]
+            timed-out?  (or (= :timeout (first o)) (= :timeout (first m)))
+            applicable? (or applicable? (= :value (first o)))]
         (cond
-          timed-out? (recur (next in) applicable?)          ; inconclusive — skip
+          timed-out? (recur (next in) applicable? true)     ; inconclusive — skip
           (not= o m) {:witness args}
-          :else      (recur (next in) (or applicable? (= :value (first o)))))))))
+          :else      (recur (next in) applicable? saw-timeout?))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Classification
@@ -214,12 +219,13 @@
                             (let [f-mut (deref (ns-resolve the-ns (:name info)))]
                               (if (empty? input-set)
                                 {:label :oracle-not-applicable :reason :no-inputs}
-                                (let [{:keys [witness applicable]}
+                                (let [{:keys [witness applicable saw-timeout?]}
                                       (find-witness f-orig f-mut input-set timeout-ms)]
                                   (cond
-                                    witness    {:label :killable :witness witness}
-                                    applicable {:label :candidate-equivalent :trials (count input-set)}
-                                    :else      {:label :oracle-not-applicable :reason :orig-threw-all}))))))
+                                    witness      {:label :killable :witness witness}
+                                    applicable   {:label :candidate-equivalent :trials (count input-set)}
+                                    saw-timeout? {:label :oracle-not-applicable :reason :inconclusive-timeout}
+                                    :else        {:label :oracle-not-applicable :reason :orig-threw-all}))))))
                         (finally
                           (binding [*ns* the-ns]
                             (try (eval (read-string {:read-cond :allow} orig-str))

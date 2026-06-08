@@ -63,5 +63,11 @@
           (is (= #{[2]} (set (get h 'twice))))))
       (testing "the target var is RESTORED after harvesting (no leaked spy wrapper)"
         (is (= 10 ((deref (ns-resolve (symbol tgt) 'twice)) 5))))
+      (testing "the suite runs EXACTLY ONCE across all target nses (the point of the refactor)"
+        (let [calls (atom 0)
+              orig  clojure.test/run-tests]
+          (with-redefs [clojure.test/run-tests (fn [& nses] (swap! calls inc) (apply orig nses))]
+            (harvest/harvest-args-across [(symbol tgt)] [(symbol ta) (symbol tb)] {}))
+          (is (= 1 @calls) "one run, not one per target ns")))
       (finally
         (remove-ns (symbol tgt)) (remove-ns (symbol ta)) (remove-ns (symbol tb))))))
