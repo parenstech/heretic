@@ -343,7 +343,6 @@ isolation) shipped in #9 — see the `:executor :process` executor.
 - [rewrite-clj](https://github.com/clj-commons/rewrite-clj) - Source code manipulation
 - [clj-reload](https://github.com/tonsky/clj-reload) - Namespace reloading
 - [Malli](https://github.com/metosin/malli) - Schema validation
-- [Missionary](https://github.com/leonoel/missionary) - Reactive programming for worker supervision
 
 ### System tools
 
