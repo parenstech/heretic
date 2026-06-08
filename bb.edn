@@ -150,7 +150,9 @@
                      "heretic.process-pool-test"
                      "heretic.sandbox-test"
                      "heretic.trends-test"
-                     "heretic.oracle.differential-test"]
+                     "heretic.oracle.differential-test"
+                     "heretic.oracle.sound-test"
+                     "heretic.oracle.harvest-test"]
          quote-ns (fn [ns] (str "(quote " ns ")"))
          require-forms (str/join " " (map quote-ns namespaces))
          run-forms (str/join " " (map quote-ns namespaces))

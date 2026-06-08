@@ -41,14 +41,14 @@
 (deftest find-witness-soundness
   (testing "distinct fns ⇒ a witness; identical fns ⇒ none"
     (let [inputs (gen/inputs 2 100 3)]
-      (is (some? (:witness (diff/find-witness + - inputs 2 300))))
-      (is (nil?  (:witness (diff/find-witness + + inputs 2 300))))
-      (is (true? (:applicable (diff/find-witness + + inputs 2 300))))))
+      (is (some? (:witness (diff/find-witness + - inputs 300))))
+      (is (nil?  (:witness (diff/find-witness + + inputs 300))))
+      (is (true? (:applicable (diff/find-witness + + inputs 300))))))
   (testing "type difference is distinguishing (pr-str fidelity): map vs mapv"
     (let [inputs (gen/inputs 1 60 4)
           mp  (fn [c] (when (sequential? c) (map inc c)))
           mpv (fn [c] (when (sequential? c) (mapv inc c)))]
-      (is (some? (:witness (diff/find-witness mp mpv inputs 1 300)))))))
+      (is (some? (:witness (diff/find-witness mp mpv inputs 300)))))))
 
 (deftest form-string-extraction
   (let [f (File/createTempFile "ora" ".clj")]

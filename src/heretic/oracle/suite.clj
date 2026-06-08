@@ -44,3 +44,51 @@
           (binding [*ns* the-ns]
             (try (eval (read-string {:read-cond :allow} orig-str))
                  (catch Throwable _ nil))))))))
+
+(defn- run-test-vars
+  "Run exactly `test-vars` (with their namespaces' fixtures), capturing fail+error
+   counts. Returns {:fail n :error n} or ::timeout."
+  [test-vars suite-timeout-ms]
+  (let [fut (future
+              (binding [test/*report-counters* (ref test/*initial-report-counters*)
+                        test/*test-out* (StringWriter.)]
+                (test/test-vars test-vars)
+                (select-keys @test/*report-counters* [:fail :error])))]
+    (deref fut suite-timeout-ms ::timeout)))
+
+(defn verdict-selected
+  "Like `verdict` but runs only the COVERING tests for `mutant` (looked up in the
+   coverage `index` via heretic.runner/tests-for-mutation) instead of the whole
+   suite — the scaling fix for large / generative suites. :no-coverage when the
+   index maps the mutant to no tests. The runner is resolved lazily so this ns
+   stays loadable without ClojureStorm; pass an `index` only under a classpath
+   where heretic.coverage-map loads (the :heretic alias). opts: {:suite-timeout-ms}."
+  [mutant ns-sym index {:keys [suite-timeout-ms] :or {suite-timeout-ms 10000}}]
+  (let [tests-for-mutation (requiring-resolve 'heretic.runner/tests-for-mutation)
+        test-vars (->> (tests-for-mutation index mutant)
+                       (keep (fn [s] (try (requiring-resolve s) (catch Throwable _ nil))))
+                       vec)
+        the-ns   (some-> ns-sym find-ns)
+        orig-str (diff/original-form-string mutant)
+        mut-str  (when orig-str (diff/mutated-form-string mutant orig-str))]
+    (cond
+      (empty? test-vars)                  :no-coverage
+      (nil? the-ns)                       :ns-not-loaded
+      (or (nil? orig-str) (nil? mut-str)) :no-form
+      :else
+      (try
+        (let [ev (try (binding [*ns* the-ns]
+                        (eval (read-string {:read-cond :allow} mut-str)))
+                      :ok
+                      (catch Throwable t t))]
+          (if (instance? Throwable ev)
+            :killed
+            (let [r (run-test-vars test-vars suite-timeout-ms)]
+              (cond
+                (= r ::timeout)                     :killed
+                (pos? (+ (:fail r 0) (:error r 0))) :killed
+                :else                               :survived))))
+        (finally
+          (binding [*ns* the-ns]
+            (try (eval (read-string {:read-cond :allow} orig-str))
+                 (catch Throwable _ nil))))))))

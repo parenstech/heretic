@@ -160,7 +160,7 @@
    than a false equivalent). Distinguishing = the two observations are not=
    (one throws/loops & the other returns; unequal values; different thrown
    classes). Same throw/timeout on both ⇒ not distinguishing (conservative)."
-  [f-orig f-mut inputs arity timeout-ms]
+  [f-orig f-mut inputs timeout-ms]
   (loop [in (seq inputs) applicable? false]
     (if-not in
       {:witness nil :applicable applicable?}
@@ -168,7 +168,7 @@
             o (observe-one f-orig args timeout-ms)
             m (observe-one f-mut args timeout-ms)]
         (if (not= o m)
-          {:witness args :arity arity}
+          {:witness args}
           (recur (next in) (or applicable? (= :value (first o)))))))))
 
 ;; ---------------------------------------------------------------------------
@@ -176,9 +176,13 @@
 ;; ---------------------------------------------------------------------------
 
 (defn classify-mutant
-  "Classify one mutant. opts: {:n-trials :seed :ns-sym :timeout-ms}. Temporarily
+  "Classify one mutant. opts: {:n-trials :seed :ns-sym :timeout-ms :inputs}.
+   When :inputs (a seq of real arg-tuples, e.g. suite-harvested + perturbed) is
+   given it is used verbatim — these reach the mutation site by construction, so
+   the witness search is far stronger than blind random generation; otherwise
+   N=n-trials random tuples per declared arity are generated. Temporarily
    re-evaluates the mutated form in `ns-sym` and always restores the original."
-  [mutant {:keys [n-trials seed ns-sym timeout-ms]
+  [mutant {:keys [n-trials seed ns-sym timeout-ms inputs]
            :or {n-trials 200 seed 42 timeout-ms 300}}]
   (let [orig-str (original-form-string mutant)
         the-ns (some-> ns-sym find-ns)]
@@ -203,6 +207,9 @@
                   {:label :oracle-not-applicable :reason :no-mutated-form}
                   (let [f-orig (deref v)
                         ars (seq (arities (:arglists (meta v))))
+                        input-set (if (seq inputs)
+                                    (vec inputs)
+                                    (vec (mapcat #(gen/inputs % n-trials seed) ars)))
                         mut-form (try (read-string {:read-cond :allow} mut-str)
                                       (catch Exception _ ::read-error))]
                     (if (= mut-form ::read-error)
@@ -213,20 +220,14 @@
                           (if (instance? Throwable ev)
                             {:label :killable :witness :compile-error}
                             (let [f-mut (deref (ns-resolve the-ns (:name info)))]
-                              (loop [arl ars trials 0 applicable? false]
-                                (if-not arl
-                                  (if applicable?
-                                    {:label :candidate-equivalent :trials trials}
-                                    {:label :oracle-not-applicable :reason :orig-threw-all})
-                                  (let [ar (first arl)
-                                        inputs (gen/inputs ar n-trials seed)
-                                        {:keys [witness applicable]}
-                                        (find-witness f-orig f-mut inputs ar timeout-ms)]
-                                    (if witness
-                                      {:label :killable :witness witness :arity ar}
-                                      (recur (next arl)
-                                             (+ trials n-trials)
-                                             (or applicable? applicable)))))))))
+                              (if (empty? input-set)
+                                {:label :oracle-not-applicable :reason :no-inputs}
+                                (let [{:keys [witness applicable]}
+                                      (find-witness f-orig f-mut input-set timeout-ms)]
+                                  (cond
+                                    witness    {:label :killable :witness witness}
+                                    applicable {:label :candidate-equivalent :trials (count input-set)}
+                                    :else      {:label :oracle-not-applicable :reason :orig-threw-all}))))))
                         (finally
                           (binding [*ns* the-ns]
                             (try (eval (read-string {:read-cond :allow} orig-str))
