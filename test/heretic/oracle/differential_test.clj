@@ -101,3 +101,13 @@
           r (diff/find-witness throwy throwy (gen/inputs 1 30 5) 300)]
       (is (nil? (:witness r)))
       (is (false? (:applicable r))))))
+
+(deftest observe-one-collapses-opaque-results
+  (testing "fn-valued results collapse to ::opaque — identity-hash diffs are not witnesses"
+    (let [a (diff/observe-one (fn [_] (fn [x] x)) [1] 300)
+          b (diff/observe-one (fn [_] (fn [x] x)) [1] 300)]
+      (is (= a b) "two distinct fn instances must NOT distinguish (sound: no false witness)")
+      (is (= [:value :heretic.oracle.differential/opaque] (diff/observe-one (fn [_] +) [1] 300)))))
+  (testing "a value vs a fn is still distinguishing (real type difference)"
+    (is (not= (diff/observe-one (fn [_] 5) [1] 300)
+              (diff/observe-one (fn [_] +) [1] 300)))))

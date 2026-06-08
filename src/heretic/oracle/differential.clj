@@ -117,9 +117,18 @@
    from a vector) where Clojure `=` would call them equal. An infinite/huge
    realization is caught by the deref-timeout. A timed-out call leaks its thread
    (an uninterruptible CPU loop can't be cancelled) — acceptable for a bounded
-   research run."
+   research run.
+
+   A result printed by IDENTITY (`#object[…@hash]` — a function, or any opaque
+   value) is NOT reliably value-comparable: re-evaluating the mutant mints fresh
+   class names / identity hashes, so two behaviourally-identical results (e.g. two
+   transducers a fn returns) would compare unequal and manufacture a FALSE witness.
+   Such results are collapsed to a single `::opaque` token so they never
+   distinguish — sound (no false `:killable`), at the cost of conservatively
+   missing a genuine difference between two opaque values."
   [f args timeout-ms]
-  (let [fut (future (try [:value (pr-str (apply f args))]
+  (let [fut (future (try (let [s (pr-str (apply f args))]
+                           [:value (if (.contains ^String s "#object[") ::opaque s)])
                          (catch Throwable t [:throw (class t)])))
         res (deref fut timeout-ms ::timeout)]
     (if (= res ::timeout)
