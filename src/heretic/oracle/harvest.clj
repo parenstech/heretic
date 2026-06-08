@@ -13,33 +13,47 @@
   (:import [java.io StringWriter]
            [java.util Random]))
 
-(defn harvest-args
-  "Run `test-ns` with every interned fn of `ns-sym` wrapped to record the argument
-   tuples it is called with (deduped, capped at `cap` per fn), then restore.
-   Returns {fn-sym -> [arg-tuple …]}. No ClojureStorm; pure var-indirection spying."
-  [ns-sym test-ns {:keys [cap suite-timeout-ms] :or {cap 60 suite-timeout-ms 30000}}]
-  (let [the-ns    (find-ns ns-sym)
-        fn-vars   (filter (fn [[_ v]] (and (var? v) (fn? (deref v)))) (ns-interns the-ns))
-        recorded  (atom {})
-        originals (atom {})]
-    (doseq [[sym v] fn-vars]
-      (let [orig (deref v)]
-        (swap! originals assoc sym orig)
-        (alter-var-root v (constantly
-                           (fn [& args]
-                             (let [seen (get @recorded sym [])]
-                               (when (< (count seen) cap)
-                                 (swap! recorded update sym (fnil conj #{}) (vec args))))
-                             (apply orig args))))))
+(defn harvest-args-across
+  "Like `harvest-args` but for MANY target namespaces at once: wrap the interned
+   fns of every namespace in `ns-syms` simultaneously and run the suite ONCE, then
+   restore. Returns {ns-sym -> {fn-sym -> [arg-tuple …]}}. This is the primitive —
+   harvesting per target ns separately would re-run the whole suite once per ns
+   (O(target-nses) full suite runs); here the suite runs a single time regardless
+   of how many source files have survivors. `test-ns` may be a single ns symbol or
+   a collection of them (a multi-ns suite). Namespaces not currently loaded are
+   silently skipped. No ClojureStorm; pure var-indirection spying."
+  [ns-syms test-ns {:keys [cap suite-timeout-ms] :or {cap 60 suite-timeout-ms 30000}}]
+  (let [targets  (vec (for [ns-sym ns-syms
+                            :let [the-ns (find-ns ns-sym)]
+                            :when the-ns
+                            [sym v] (ns-interns the-ns)
+                            :when (and (var? v) (fn? (deref v)))]
+                        [ns-sym sym v (deref v)]))
+        recorded (atom {})]   ; {ns-sym {fn-sym #{tuple …}}}
+    (doseq [[ns-sym sym v orig] targets]
+      (alter-var-root v (constantly
+                         (fn [& args]
+                           (when (< (count (get-in @recorded [ns-sym sym] #{})) cap)
+                             (swap! recorded update-in [ns-sym sym] (fnil conj #{}) (vec args)))
+                           (apply orig args)))))
     (try
-      ;; test-ns may be a single ns symbol or a collection of them (a multi-ns suite).
       (let [test-nses (if (coll? test-ns) test-ns [test-ns])
             fut (future (binding [test/*test-out* (StringWriter.)] (apply test/run-tests test-nses)))]
         (deref fut suite-timeout-ms ::timeout))
       (finally
-        (doseq [[sym _] fn-vars]
-          (alter-var-root (ns-resolve the-ns sym) (constantly (get @originals sym))))))
-    (into {} (map (fn [[k s]] [k (vec s)]) @recorded))))
+        (doseq [[_ _ v orig] targets]
+          (alter-var-root v (constantly orig)))))
+    (into {} (map (fn [[ns-sym fns]]
+                    [ns-sym (into {} (map (fn [[k s]] [k (vec s)]) fns))])
+                  @recorded))))
+
+(defn harvest-args
+  "Run `test-ns` with every interned fn of `ns-sym` wrapped to record the argument
+   tuples it is called with (deduped, capped at `cap` per fn), then restore.
+   Returns {fn-sym -> [arg-tuple …]}. Thin wrapper over `harvest-args-across` for
+   the single-target-ns case. `test-ns` may be a single ns symbol or a collection."
+  [ns-sym test-ns opts]
+  (get (harvest-args-across [ns-sym] test-ns opts) ns-sym {}))
 
 (defn- perturb-coll [^Random r v add-fn]
   (let [v (vec v)]

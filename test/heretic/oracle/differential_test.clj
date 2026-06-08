@@ -102,6 +102,17 @@
       (is (nil? (:witness r)))
       (is (false? (:applicable r))))))
 
+(deftest find-witness-ignores-one-sided-timeout
+  (testing "a slow-but-correct original timing out is NOT a witness (no false coverage-gap)"
+    ;; orig sleeps past the 300ms budget → [:timeout]; mut returns fast → [:value 42];
+    ;; both compute 42, so this must NOT be reported as a distinguishing witness.
+    (let [slow (fn [_] (Thread/sleep 400) 42)
+          fast (fn [_] 42)]
+      (is (nil? (:witness (diff/find-witness slow fast [[1]] 300))))
+      (is (nil? (:witness (diff/find-witness fast slow [[1]] 300))) "symmetric: mutant-side timeout too")))
+  (testing "a genuine value difference is still found when neither times out"
+    (is (some? (:witness (diff/find-witness (fn [_] 1) (fn [_] 2) [[1]] 300))))))
+
 (deftest observe-one-collapses-opaque-results
   (testing "fn-valued results collapse to ::opaque — identity-hash diffs are not witnesses"
     (let [a (diff/observe-one (fn [_] (fn [x] x)) [1] 300)

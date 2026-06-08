@@ -1,6 +1,10 @@
 # Survivor Triage (coverage-gap detection) — Implementation Plan
 
-**Status:** Design (pre-build). Builds on the G1 recall measurement
+**Status:** Phase 0 + Phase 1 shipped (PR #22) — the `oracle.triage` module,
+`core.clj` wiring behind `:triage-survivors`, and the `survivors`-command
+surface. **Phase 2 (rendering the `:triage`/`:witness`/`:proof` verdict in the
+JSON/EDN/HTML reports + a golden-file test) is deferred** — those reports are
+still generated from un-triaged results. Builds on the G1 recall measurement
 (`validation-results.md` §2.2) and reuses its oracle (`src/heretic/oracle/*`).
 Companion to `interpreting-survivors.md`, whose central assumption this feature
 makes *decidable*. This doc is the buildable plan: architecture, resolved
@@ -45,9 +49,9 @@ not this post-run *triage*). It is a reporting/leverage feature.
   `undetermined` / `not-applicable`.
 - **Sound** coverage-gap labels: a coverage-gap is only emitted with a concrete
   witnessing input (a proof the mutant is killable).
-- Surfacing the classification in the `survivors` command and the JSON/EDN/HTML
-  reports — coverage gaps first (actionable), with the witness; equivalents
-  de-emphasised.
+- Surfacing the classification in the `survivors` command — coverage gaps first
+  (actionable), with the witness; equivalents de-emphasised. (Rendering it in the
+  JSON/EDN/HTML reports is Phase 2, **deferred** — see Status.)
 - Reuse of the existing oracle (`sound`, `differential`, `harvest`) with
   suite-seeded inputs (the §2.2 trio).
 

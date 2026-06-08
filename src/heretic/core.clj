@@ -71,6 +71,9 @@
    :parallel-workers nil      ; Number of worker threads (nil = CPU count)
    ;; Equivalent mutant detection
    :filter-equivalent true    ; Filter likely equivalent mutants
+   ;; Survivor triage (coverage-gap vs equivalent) — reporting-only, opt-out
+   :triage-survivors true       ; Classify survivors + ship witnesses
+   :triage-call-timeout-ms 300  ; Per-call budget for the differential oracle (ms)
    ;; Report output
    :report-format :terminal
    :output-path "target/heretic-report"
@@ -346,19 +349,24 @@
           files       (distinct (map :file muts))
           file->ns    (into {} (map (fn [f] [f (oracle-diff/file->ns-sym f)]) files))
           target-nses (distinct (remove nil? (vals file->ns)))
+          ;; Honour :exclude-test-namespaces for the explicit-seq case too (the
+          ;; :all branch is already post-exclusion via :included-test-ns), matching
+          ;; collector/resolve-test-namespaces — an excluded ns is often one that
+          ;; cannot run under instrumentation.
+          excl        (set (map symbol (:exclude-test-namespaces config)))
           test-nses   (let [tns (:test-namespaces config)]
                         (->> (if (= :all tns) (:included-test-ns index) tns)
-                             (remove nil?) (map symbol) distinct vec))
+                             (remove nil?) (map symbol) (remove excl) distinct vec))
           _           (doseq [ns-sym (concat target-nses test-nses)]
                         (try (require ns-sym) (catch Throwable _ nil)))
-          ;; Harvest real suite args per target ns (reach-aware oracle inputs, §2.2);
-          ;; falls back to random generation when no test ns / harvest fails.
+          ;; Harvest real suite args (reach-aware oracle inputs, §2.2) in ONE suite
+          ;; run across all target nses; falls back to random generation when no
+          ;; test ns / harvest fails.
           harvested   (when (seq test-nses)
-                        (into {} (map (fn [ns-sym]
-                                        [ns-sym (try (harvest/harvest-args ns-sym test-nses {})
-                                                     (catch Throwable _ {}))])
-                                      target-nses)))
-          triaged     (triage/triage-survivors muts {:file->ns file->ns :harvested harvested})]
+                        (try (harvest/harvest-args-across target-nses test-nses {})
+                             (catch Throwable _ {})))
+          triaged     (triage/triage-survivors muts {:file->ns file->ns :harvested harvested
+                                                     :timeout-ms (:triage-call-timeout-ms config)})]
       (mapv (fn [r t] (merge r (select-keys t [:triage :witness :proof :reason :trials])))
             survivor-results triaged))
     (catch Throwable t
@@ -494,12 +502,13 @@
 
               ;; Step 6.5: Save mutation results for survivors command
               (let [results-file (io/file heretic-dir "mutation-results.edn")
-                    survivors-data (mapv (fn [{:keys [mutation triage witness proof reason]}]
+                    survivors-data (mapv (fn [{:keys [mutation triage witness proof reason trials]}]
                                            (cond-> (select-keys mutation [:file :line :column :operator :original :replacement])
                                              triage  (assoc :triage triage)
                                              witness (assoc :witness (pr-str witness))
                                              proof   (assoc :proof proof)
-                                             reason  (assoc :reason reason)))
+                                             reason  (assoc :reason reason)
+                                             trials  (assoc :trials trials)))
                                          survivor-list)]
                 (spit results-file (pr-str {:survivors survivors-data
                                             :summary final-result
@@ -589,8 +598,8 @@
           (println (format "COVERAGE GAPS (%d) — killable; your tests miss these. `witness` = an input that distinguishes the mutant:" (count gaps)))
           (doseq [s gaps] (println (line s) " | witness:" (:witness s))))
         (when-let [cand (seq (:candidate-equivalent by))]
-          (println (format "%nLIKELY EQUIVALENT (%d) — no distinguishing input found in N trials (unproven):" (count cand)))
-          (doseq [s cand] (println (line s))))
+          (println (format "%nLIKELY EQUIVALENT (%d) — no distinguishing input found in the trials run (unproven):" (count cand)))
+          (doseq [s cand] (println (str (line s) (when (:trials s) (str " | trials: " (:trials s)))))))
         (when-let [un (seq (concat (:not-applicable by) (:undetermined by)))]
           (println (format "%nUNCLASSIFIED (%d) — oracle could not decide (impure / higher-order / no test ns):" (count un)))
           (doseq [s un] (println (line s))))

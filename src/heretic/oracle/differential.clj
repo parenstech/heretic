@@ -141,18 +141,27 @@
    true once the ORIGINAL returns a value on some input (so a fn that throws on
    every generated input — wrong shape / HOF — is reported not-applicable rather
    than a false equivalent). Distinguishing = the two observations are not=
-   (one throws/loops & the other returns; unequal values; different thrown
-   classes). Same throw/timeout on both ⇒ not distinguishing (conservative)."
+   (one throws & the other returns; unequal values; different thrown classes).
+   Same throw on both ⇒ not distinguishing (conservative).
+
+   A :timeout on EITHER side is INCONCLUSIVE, never a witness: the per-call
+   budget is small, so a merely-slow original (or an expensive lazy realization)
+   would otherwise look 'different' from a fast mutant and manufacture a false
+   coverage-gap. In the triage context this is also harmless to recall — a mutant
+   that genuinely diverges into an infinite loop would have hung the test suite
+   and so would not be a SURVIVOR reaching this oracle in the first place."
   [f-orig f-mut inputs timeout-ms]
   (loop [in (seq inputs) applicable? false]
     (if-not in
       {:witness nil :applicable applicable?}
       (let [args (first in)
             o (observe-one f-orig args timeout-ms)
-            m (observe-one f-mut args timeout-ms)]
-        (if (not= o m)
-          {:witness args}
-          (recur (next in) (or applicable? (= :value (first o)))))))))
+            m (observe-one f-mut args timeout-ms)
+            timed-out? (or (= :timeout (first o)) (= :timeout (first m)))]
+        (cond
+          timed-out? (recur (next in) applicable?)          ; inconclusive — skip
+          (not= o m) {:witness args}
+          :else      (recur (next in) (or applicable? (= :value (first o)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Classification

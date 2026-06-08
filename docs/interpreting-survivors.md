@@ -6,8 +6,9 @@ always mean a weak test. A surviving mutant is one of two things:
 - a **coverage gap** — killable, but your tests miss the input that would catch it
   (the real test gap, and what this guide is about); or
 - an **equivalent mutant** — semantically identical to the original, so *no* test
-  could ever kill it (~5–13% of survivors, measured — see `validation-results.md`
-  §2.2). Writing a test for one is wasted effort.
+  could ever kill it (~5–13% of *all* mutants, measured on medley — see
+  `validation-results.md` §2.2 — and, since equivalents survive by definition, a
+  substantial share of the survivor list). Writing a test for one is wasted effort.
 
 **First, ask: is it even a gap?** Heretic answers this for you. **Survivor triage**
 (on by default; `:triage-survivors false` to disable) classifies each survivor and,
