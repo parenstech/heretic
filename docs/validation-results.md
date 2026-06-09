@@ -12,7 +12,7 @@ any result can be checked.
 | **G1** true-equivalent rate | **MEASURED** (medley) | sound lower bound + suite-seeded differential oracle + suite cross-check: true-equivalent **bracket [4.7%, 13.3%]** (7/150 *proven* by read-identity — dead `.cljc` branches; +13 unproven joint survivors), **operator-concentrated**; suite-seeding took the Phase-1 gate **50%→100%** (0 generator misses); soundness invariant 0 violations; +8 sound coverage gaps | this doc §2.2 |
 | **G4** schemata crossover | **done → module DELETED** | Marginal (speedup→1 as test cost grows); `heretic.schemata` removed | this doc §1 |
 | G2 subsumption | **measured** (5 targets) | **target-dependent** (Δ −11pp … +29pp vs random); beats random on non-degenerate honeysql/data.csv, loses on uri → inconclusive, do NOT retire | this doc §5 |
-| G3 clustering | **measured** (5 targets) | hardness-rep beats random on exactly **5/10** target×strategy pairs = a coin flip, no reliable signal → retire the hardness table | this doc §5 |
+| G3 clustering | **measured → RETIRED** | hardness table = coin flip (5/10), retired `3b3c6db`; powered re-measurement (208 clusters) showed the clustering *feature* misclassifies **16–30%** of mutants (≤19pp score error) for ~65% eval saving → **feature removed** | this doc §5.3 + §5.3.1 |
 | G5 timeout | **wired + stability run** | per-test adaptive timeout + additive constant landed; **0 false kills**, timeout-only-kill base rate **3.7%** (first for Clojure) | this doc §4 + §6 |
 
 ---
@@ -526,6 +526,36 @@ representative from the same cluster on **exactly 5 of 10** pairs:
 **no reliable signal** over picking a random representative. This supports the survey's G3 critique (hardness is a
 *dynamic* per-mutant property, not operator identity). Aggregate cluster score-error stays low (0.06–0.14) but
 masks **12–46% per-mutant inference error** (cancellation), strongest on honeysql's operator strategy (46%).
+**Acted (2026-06-05, commit `3b3c6db`): the static `operator-hardness` table was retired** — `select-representative`
+is now `(first cluster)`.
+
+### 5.3.1 Powered re-measurement (2026-06-09) — the clustering FEATURE itself is too lossy → RETIRED
+
+The 5/10 above is a coarse win/loss over 10 (target×strategy) outcomes; it settled *hardness-vs-random* but not the
+real question for the clustering feature: **how accurate is "test one representative, infer the rest" — and how much
+work does it save?** Re-measured per-cluster across all 5 targets (status-only / early-exit; reproducer
+`validation/*/experiments/g3_soundness.clj`), pooling **208 clusters of size ≥2 / 841 mutants** — properly powered,
+not 10 outcomes.
+
+| strategy | runs saved | per-mutant misclassification | worst score-error | impure clusters | per-cluster err (median / p90 / max) |
+|---|---:|---:|---:|---:|---|
+| `:operator` | **69.5%** | **29.9%** (130/435) | 0.192 (uri) | 47% | 0% / 71% / 83% |
+| `:location` | **59.9%** | **16.3%** (66/406) | 0.169 (honeysql) | 35% | 0% / 50% / 75% |
+| **grand pooled** | ~65% | **23.3%** (196/841) | — | 41% | — |
+
+**Finding:** per-cluster error is **bimodal** — median **0%** (many clusters genuinely share fate) but **p90 = 50–71%**
+(the bad clusters are catastrophic — most members get the wrong verdict), and you cannot tell which is which a priori.
+That is exactly why static (operator/location) clustering is unsound: it groups by syntax, not by shared kill-fate.
+The aggregate cost is a mutation-score distortion of **up to ~19 percentage points** (uri/`:operator`). The ~65%
+eval-time saving does **not** justify a 16–30% per-mutant misclassification for a tool whose entire value is
+accurately reporting which code is verified — and heretic already gets speed from coverage-based test selection, the
+`:process` executor, and subsumption, none of which sacrifice per-mutant accuracy.
+
+**Decision (2026-06-09): the clustering feature was REMOVED** — `src/heretic/clustering.clj`, its controller wiring
+(`prepare-clustered-mutations` / `expand-clustered-results` / `aggregate-clustered-results` / `resolve-clustering-strategy`),
+`:clustering-strategy`, and `clustering_test.clj`. It was opt-in (default `:none`) and never wired into `core/mutate!`,
+so removal is behavior-neutral. The only *sound* clustering would key on **observed kill-vectors** (post-hoc, no
+first-run speedup — §5.4); a future feature, not a re-introduced static table.
 
 ### 5.4 Verdict (revised across 5 targets)
 
@@ -533,10 +563,11 @@ masks **12–46% per-mutant inference error** (cancellation), strongest on honey
   suggested: with real subsumption structure the `:minimal` preset can clearly help (honeysql +21.5pp, data.csv
   +29pp) *or* hurt (uri −10.7pp). A firm verdict needs more **large, non-degenerate** targets and the suite-size
   control. **Do not retire the subsumption preset on the strength of these numbers** — they don't support it.
-- **G3 — the hardness ranking is no better than random** (5/10, a wash). This *does* support **plan §6 #5** for
-  G3 specifically: replace the static `operator-hardness` table with random representative selection or
-  *observed-kill-vector* clustering (the runner already collects `:killed-by-all`, so kill-vector clustering is
-  now cheap to try).
+- **G3 — the hardness ranking is no better than random** (5/10, a wash) → table retired (`3b3c6db`). The **powered
+  re-measurement (§5.3.1)** went further: the clustering *feature itself* (test one rep, infer the rest)
+  misclassifies **16–30%** of mutants (≤19pp score error) for a ~65% eval saving → **the feature was removed**
+  (2026-06-09). The only sound clustering keys on *observed kill-vectors* (the runner already collects
+  `:killed-by-all`), a future feature, not a static table.
 - **Methodological headline:** matrix **degeneracy** (disjoint singleton kills on clean small libs) is the
   dominant confound — any subsumption/clustering study must report it and prefer targets where mutants share
   killers. All numbers remain *illustrative single-file targets*, not a powered study.
