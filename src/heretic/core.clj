@@ -592,7 +592,14 @@
 ;; CLI Entry Point
 ;; =============================================================================
 
-(defn- print-survivors [config]
+(defn print-survivors
+  "Print the last run's surviving mutations from `.heretic/mutation-results.edn`,
+   triage-aware: coverage gaps first (each with its witnessing input), then the
+   likely/unclassified middle, then proven-equivalents collapsed. Falls back to a
+   flat list when the results predate triage. The canonical survivors printer —
+   external callers (e.g. a `bb` task) should call this rather than re-deriving
+   the grouping from `survivors`."
+  [config]
   (let [survs (survivors config)
         line  (fn [s] (format "  %s:%s  %s -> %s" (:file s) (:line s) (:original s) (:replacement s)))]
     (cond
