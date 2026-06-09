@@ -818,3 +818,47 @@
             (is (= 1 (n "Proof: ")) "only the proven-equivalent arm")
             (is (= 2 (n "Reason: ")) "the not-applicable + undetermined arms")))
         (finally (.delete tmp))))))
+
+;; =============================================================================
+;; No-coverage in reports (uncovered sites grouped by file)
+;; =============================================================================
+
+(def no-coverage-results
+  "Uncovered sites across 2 files, incl. a duplicate site (same file+line+column)
+   that must dedup, plus a killed result that must be excluded."
+  [(make-result :no-coverage {:file "src/a.clj" :line 20 :column 0 :operator :swap :original "a" :replacement "b"})
+   (make-result :no-coverage {:file "src/a.clj" :line 10 :column 2 :operator :swap :original "c" :replacement "d"})
+   (make-result :no-coverage {:file "src/a.clj" :line 10 :column 2 :operator :neg  :original "e" :replacement "f"})
+   (make-result :no-coverage {:file "src/b.clj" :line 5  :column 1 :operator :swap :original "g" :replacement "h"})
+   (make-result :killed)])
+
+(def expected-no-coverage
+  [{:file "src/a.clj" :sites 2 :lines [10 20]}
+   {:file "src/b.clj" :sites 1 :lines [5]}])
+
+(deftest no-coverage-by-file-dedups-groups-sorts
+  (testing "distinct file+line+column sites, grouped by file, lines sorted+deduped"
+    (is (= expected-no-coverage (reporter/no-coverage-by-file no-coverage-results))))
+  (testing "no uncovered sites → empty"
+    (is (= [] (reporter/no-coverage-by-file all-killed-results)))))
+
+(deftest json-and-edn-reports-carry-no-coverage
+  (is (= expected-no-coverage (:noCoverage (reporter/json-report-data no-coverage-results)))
+      "JSON top-level :noCoverage")
+  (is (= expected-no-coverage (:no-coverage (reporter/edn-report-data no-coverage-results)))
+      "EDN top-level :no-coverage")
+  (testing "summary count still reflects no-coverage independently"
+    (is (= 4 (get-in (reporter/json-report-data no-coverage-results) [:summary :noCoverage])))))
+
+(deftest html-report-renders-no-coverage-section
+  (let [tmp (java.io.File/createTempFile "heretic-report" ".html")]
+    (try
+      (reporter/generate-html-report no-coverage-results (.getPath tmp))
+      (let [html (slurp tmp) has? (fn [s] (str/includes? html s))]
+        (is (has? "No Coverage (3 sites in 2 files)") "header totals")
+        (is (has? "src/a.clj") "file listed")
+        (is (has? "lines 10, 20") "sorted deduped lines")
+        (is (has? "2 sites") "plural per-file count")
+        (is (has? "1 site") "singular per-file count")
+        (is (has? "lines 5")))
+      (finally (.delete tmp)))))

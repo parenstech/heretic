@@ -183,6 +183,24 @@
   [results]
   (filter #(= :no-coverage (:status %)) results))
 
+(defn no-coverage-by-file
+  "Distinct uncovered mutation sites grouped by file — forms no test in the indexed
+   suite reaches (so a mutation there is never run/killed), often the larger latent
+   gap than survivors. Returns a vector of {:file :sites :lines} sorted by file
+   (`:sites` = distinct file+line+column count; `:lines` = sorted distinct lines).
+   Shared by the JSON/EDN/HTML report surfaces."
+  [results]
+  (->> results
+       (filter #(= :no-coverage (:status %)))
+       (map #(select-keys (:mutation %) [:file :line :column]))
+       distinct
+       (group-by :file)
+       (sort-by key)
+       (mapv (fn [[file sites]]
+               {:file file
+                :sites (count sites)
+                :lines (vec (sort (distinct (map :line sites))))}))))
+
 (defn timeouts
   "Filter results to mutations that timed out."
   [results]
@@ -614,6 +632,7 @@
    Returns a map suitable for JSON serialization with:
    - :summary - Overall statistics
    - :survivors - List of surviving mutations
+   - :noCoverage - Uncovered mutation sites grouped by file (the larger latent gap)
    - :diagnosis - Analysis of survivor patterns
    - :byFile - Per-file breakdown"
   [results]
@@ -630,6 +649,7 @@
                :error (:error counts)
                :score score}
      :survivors (mapv survivor-to-json-map survivor-list)
+     :noCoverage (no-coverage-by-file results)
      :diagnosis (diagnosis/format-diagnosis-data diag)
      :byFile (json-stats-by-file results)}))
 
@@ -726,6 +746,17 @@
   .triage-candidate-equivalent { background: #fff3cd; color: #856404; }
   .triage-not-applicable, .triage-undetermined { background: #e9ecef; color: #495057; }
   .survivor-witness { font-size: 0.9em; color: #495057; margin-top: 2px; }
+  .no-coverage-note { color: #856404; font-size: 0.9em; }
+  .no-coverage-list { list-style: none; padding-left: 0; }
+  .no-coverage-item {
+    background: #fff3cd;
+    border-left: 4px solid var(--color-no-coverage);
+    padding: 10px 14px;
+    margin-bottom: 8px;
+    border-radius: 0 4px 4px 0;
+  }
+  .no-coverage-file { font-family: monospace; font-weight: bold; }
+  .no-coverage-lines { font-size: 0.85em; color: #6c757d; margin-top: 3px; }
   .score-box {
     font-size: 3em;
     font-weight: bold;
@@ -1016,6 +1047,26 @@
                 "(none)"
                 (str/join ", " (map str tests-run)))]]))]])))
 
+(defn- html-no-coverage-section
+  "Generate HTML for the uncovered-sites section — forms no test in the indexed
+   suite reaches (often the larger latent gap than survivors), grouped by file."
+  [results]
+  (let [by-file (no-coverage-by-file results)]
+    (when (seq by-file)
+      (let [total-sites (reduce + (map :sites by-file))]
+        [:div.card
+         [:h2 (format "No Coverage (%d sites in %d files)" total-sites (count by-file))]
+         [:p.no-coverage-note
+          "Forms no test in the indexed (keyless) suite exercises — a mutation there "
+          "is never run. Often the larger latent gap than survivors. Some may be reachable "
+          "only by excluded (e.g. key-gated) tests."]
+         [:ul.no-coverage-list
+          (for [{:keys [file sites lines]} by-file]
+            [:li.no-coverage-item
+             [:span.no-coverage-file file]
+             " — " (format "%d site%s" sites (if (= 1 sites) "" "s"))
+             [:div.no-coverage-lines "lines " (str/join ", " lines)]])]]))))
+
 (defn- html-diagnosis-section
   "Generate HTML for the survivor diagnosis section."
   [results]
@@ -1157,6 +1208,7 @@
               (html-heatmap-section results)
               (html-test-effectiveness-section results)
               (html-survivors-section results)
+              (html-no-coverage-section results)
               (html-diagnosis-section results)]]]))]
      ;; Ensure output directory exists
      (io/make-parents output-path)
@@ -1210,6 +1262,7 @@
    Returns a map with:
    - :summary - Overall statistics
    - :survivors - List of surviving mutations
+   - :no-coverage - Uncovered mutation sites grouped by file (the larger latent gap)
    - :diagnosis - Analysis of survivor patterns
    - :by-file - Per-file breakdown
 
@@ -1228,6 +1281,7 @@
                :error (:error counts)
                :score score}
      :survivors (mapv survivor-to-edn-map survivor-list)
+     :no-coverage (no-coverage-by-file results)
      :diagnosis (diagnosis/format-diagnosis-data diag)
      :by-file (edn-stats-by-file results)}))
 
