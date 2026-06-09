@@ -777,6 +777,21 @@
       (doseq [m [j e] k [:triage :witness :proof :reason :trials]]
         (is (not (contains? m k)) (str "no " k " when triage didn't run"))))))
 
+(deftest summarize-witness-elides-throwables
+  (testing "a normal witness prints unchanged"
+    (is (= "[1 2]" (reporter/summarize-witness [1 2])))
+    (is (= ":unreadable" (reporter/summarize-witness :unreadable))))
+  (testing "a Throwable witness is replaced by a compact tag — no stack trace, bounded"
+    (let [s (reporter/summarize-witness [(ex-info "boom" {:k 1})])]
+      (is (str/includes? s "heretic/error"))
+      (is (str/includes? s "clojure.lang.ExceptionInfo"))
+      (is (str/includes? s "boom"))
+      (is (< (count s) 200) "compact — not the full stack trace (the 5.8 MB bug)")))
+  (testing "an oversized witness is length-capped as a backstop"
+    (let [s (reporter/summarize-witness [(apply str (repeat 5000 \x))])]
+      (is (<= (count s) 2100))
+      (is (str/includes? s "truncated")))))
+
 (deftest html-report-renders-triage-badges-and-lines
   (testing "HTML carries a badge class + human label per arm, and each arm's own detail line"
     (let [tmp  (java.io.File/createTempFile "heretic-report" ".html")]

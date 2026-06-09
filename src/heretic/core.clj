@@ -517,7 +517,7 @@
                     survivors-data (mapv (fn [{:keys [mutation triage witness proof reason trials]}]
                                            (cond-> (select-keys mutation [:file :line :column :operator :original :replacement])
                                              triage  (assoc :triage triage)
-                                             witness (assoc :witness (pr-str witness))
+                                             witness (assoc :witness (reporter/summarize-witness witness))
                                              proof   (assoc :proof proof)
                                              reason  (assoc :reason reason)
                                              trials  (assoc :trials trials)))
