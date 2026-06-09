@@ -199,7 +199,9 @@
        (mapv (fn [[file sites]]
                {:file file
                 :sites (count sites)
-                :lines (vec (sort (distinct (map :line sites))))}))))
+                ;; drop nil lines (a site without position metadata) so they don't
+                ;; render as [null …] / "lines , 10"
+                :lines (vec (sort (distinct (remove nil? (map :line sites)))))}))))
 
 (defn timeouts
   "Filter results to mutations that timed out."
@@ -1053,9 +1055,12 @@
   [results]
   (let [by-file (no-coverage-by-file results)]
     (when (seq by-file)
-      (let [total-sites (reduce + (map :sites by-file))]
+      (let [total-sites (reduce + (map :sites by-file))
+            n-files (count by-file)]
         [:div.card
-         [:h2 (format "No Coverage (%d sites in %d files)" total-sites (count by-file))]
+         [:h2 (format "No Coverage (%d site%s in %d file%s)"
+                      total-sites (if (= 1 total-sites) "" "s")
+                      n-files (if (= 1 n-files) "" "s"))]
          [:p.no-coverage-note
           "Forms no test in the indexed (keyless) suite exercises — a mutation there "
           "is never run. Often the larger latent gap than survivors. Some may be reachable "

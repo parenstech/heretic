@@ -840,7 +840,11 @@
   (testing "distinct file+line+column sites, grouped by file, lines sorted+deduped"
     (is (= expected-no-coverage (reporter/no-coverage-by-file no-coverage-results))))
   (testing "no uncovered sites → empty"
-    (is (= [] (reporter/no-coverage-by-file all-killed-results)))))
+    (is (= [] (reporter/no-coverage-by-file all-killed-results))))
+  (testing "a site without position metadata (nil :line) is dropped, not rendered as null"
+    (let [r [(make-result :no-coverage {:file "src/c.clj" :line nil :column nil :operator :x :original "p" :replacement "q"})
+             (make-result :no-coverage {:file "src/c.clj" :line 8 :column 0 :operator :y :original "r" :replacement "s"})]]
+      (is (= [{:file "src/c.clj" :sites 2 :lines [8]}] (reporter/no-coverage-by-file r))))))
 
 (deftest json-and-edn-reports-carry-no-coverage
   (is (= expected-no-coverage (:noCoverage (reporter/json-report-data no-coverage-results)))
@@ -860,5 +864,18 @@
         (is (has? "lines 10, 20") "sorted deduped lines")
         (is (has? "2 sites") "plural per-file count")
         (is (has? "1 site") "singular per-file count")
+        (is (not (has? "1 sites")) "no wrong plural anywhere")
         (is (has? "lines 5")))
       (finally (.delete tmp)))))
+
+(deftest html-no-coverage-header-pluralizes-singular
+  (testing "a single uncovered site in a single file reads 'No Coverage (1 site in 1 file)'"
+    (let [tmp (java.io.File/createTempFile "heretic-report" ".html")]
+      (try
+        (reporter/generate-html-report
+         [(make-result :no-coverage {:file "src/solo.clj" :line 7 :column 0 :operator :x :original "a" :replacement "b"})]
+         (.getPath tmp))
+        (let [html (slurp tmp)]
+          (is (str/includes? html "No Coverage (1 site in 1 file)")
+              "header must pluralize correctly at the singular boundary"))
+        (finally (.delete tmp))))))

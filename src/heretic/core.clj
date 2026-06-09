@@ -679,7 +679,7 @@
           ;; and label the count as sites so "(N)" can't read as a line count.
           (println (format "  %s: lines %s (%s)"
                            file
-                           (str/join ", " (sort (distinct (map :line fsites))))
+                           (str/join ", " (sort (distinct (remove nil? (map :line fsites)))))
                            (plural (count fsites) "site"))))))))
 
 (defn- print-status [config]
