@@ -9,6 +9,7 @@
    - JSON report generation
    - EDN report generation"
   (:require [clojure.edn :as edn]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [heretic.reporter :as reporter]))
 
@@ -721,3 +722,84 @@
         (let [survivor-operator (:operator (first (:survivors data)))]
           (is (keyword? survivor-operator)
               "Operator should be a keyword in EDN format"))))))
+
+;; =============================================================================
+;; Survivor-triage verdict in reports (golden-shape) — coverage-gap-triage Phase 2
+;; =============================================================================
+
+(def triaged-survivor-results
+  "One survived result per triage arm (all five), with the verdict merged on (the
+   shape core/triage-survivors! produces)."
+  [(merge (make-result :survived) {:triage :coverage-gap         :witness [1 2]})
+   (merge (make-result :survived) {:triage :proven-equivalent    :proof   :read-identity})
+   (merge (make-result :survived) {:triage :candidate-equivalent :trials  200})
+   (merge (make-result :survived) {:triage :not-applicable       :reason  :impure})
+   (merge (make-result :survived) {:triage :undetermined         :reason  :ns-not-loaded})])
+
+(def ^:private base-json-entry
+  {:file "src/my/app.clj" :line 42 :column 10 :operator "swap-plus-minus"
+   :original "+" :replacement "-" :testsRun ["my.app-test/test-add"]})
+
+(deftest json-report-survivors-carry-triage-verdict
+  (testing "each JSON survivor entry carries its serialized triage verdict (pinned shape)"
+    (is (= [(assoc base-json-entry :triage "coverage-gap"         :witness "[1 2]")
+            (assoc base-json-entry :triage "proven-equivalent"    :proof   "read-identity")
+            (assoc base-json-entry :triage "candidate-equivalent" :trials  200)
+            (assoc base-json-entry :triage "not-applicable"       :reason  "impure")
+            (assoc base-json-entry :triage "undetermined"         :reason  "ns-not-loaded")]
+           (:survivors (reporter/json-report-data triaged-survivor-results))))))
+
+(deftest edn-report-survivors-carry-triage-verdict
+  (testing "EDN keeps the verdict labels as keywords (like :operator); witness is pr-str'd"
+    (let [survs (:survivors (reporter/edn-report-data triaged-survivor-results))]
+      (is (= [{:triage :coverage-gap         :witness "[1 2]"}
+              {:triage :proven-equivalent    :proof   :read-identity}
+              {:triage :candidate-equivalent :trials  200}
+              {:triage :not-applicable       :reason  :impure}
+              {:triage :undetermined         :reason  :ns-not-loaded}]
+             (mapv #(select-keys % [:triage :witness :proof :reason :trials]) survs))))))
+
+(deftest edn-report-round-trips-triage
+  (testing "generate-edn-report writes a file whose survivors carry the triage verdict"
+    (let [tmp (java.io.File/createTempFile "heretic-report" ".edn")]
+      (try
+        (reporter/generate-edn-report triaged-survivor-results (.getPath tmp))
+        (let [survs (:survivors (edn/read-string (slurp tmp)))]
+          (is (= :coverage-gap (:triage (first survs))))
+          (is (= "[1 2]" (:witness (first survs))))
+          (is (= :read-identity (:proof (second survs)))))
+        (finally (.delete tmp))))))
+
+(deftest reports-omit-triage-when-absent
+  (testing "a survivor without a triage verdict (triage disabled) gains no triage keys"
+    (let [j (first (:survivors (reporter/json-report-data [(make-result :survived)])))
+          e (first (:survivors (reporter/edn-report-data [(make-result :survived)])))]
+      (doseq [m [j e] k [:triage :witness :proof :reason :trials]]
+        (is (not (contains? m k)) (str "no " k " when triage didn't run"))))))
+
+(deftest html-report-renders-triage-badges-and-lines
+  (testing "HTML carries a badge class + human label per arm, and each arm's own detail line"
+    (let [tmp  (java.io.File/createTempFile "heretic-report" ".html")]
+      (try
+        (reporter/generate-html-report triaged-survivor-results (.getPath tmp))
+        (let [html (slurp tmp)
+              has? (fn [s] (str/includes? html s))
+              n    (fn [s] (count (re-seq (re-pattern (java.util.regex.Pattern/quote s)) html)))]
+          (testing "rendered badge class (not the CSS rule) + human label for every arm"
+            (doseq [[cls label] [["triage-coverage-gap" "COVERAGE GAP"]
+                                 ["triage-proven-equivalent" "EQUIVALENT"]
+                                 ["triage-candidate-equivalent" "LIKELY EQUIV"]
+                                 ["triage-not-applicable" "N/A"]
+                                 ["triage-undetermined" "UNDETERMINED"]]]
+              ;; "triage-badge <cls>" is the rendered <span> attribute — discriminating
+              ;; from the bare ".cls {" CSS rule, which is present even with no survivors.
+              (is (has? (str "triage-badge " cls)) (str "rendered badge class " cls))
+              (is (has? label) (str "badge label " label))))
+          (testing "each arm renders exactly its own detail line, no spurious extras"
+            ;; The tagged-verdict shape gives one arm field per survivor; pin that the
+            ;; counts match the fixture (1 witness, 1 proof, 2 reason-only arms) rather
+            ;; than claiming a suppression-precedence the valid shape never triggers.
+            (is (= 1 (n "Witness: ")) "only the coverage-gap arm")
+            (is (= 1 (n "Proof: ")) "only the proven-equivalent arm")
+            (is (= 2 (n "Reason: ")) "the not-applicable + undetermined arms")))
+        (finally (.delete tmp))))))

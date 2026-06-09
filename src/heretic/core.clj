@@ -497,6 +497,18 @@
                                   (do (reporter/print-phase "Triaging survivors (coverage-gap vs equivalent)...")
                                       (triage-survivors! raw-survivors index config))
                                   raw-survivors)
+                  ;; Carry the triage verdict into the file reports too (not just the
+                  ;; `survivors` command): replace each survived entry in all-results
+                  ;; with its triaged counterpart so JSON/EDN/HTML render :triage.
+                  enriched-results (if (some :triage survivor-list)
+                                     (let [mut-key (juxt :file :line :column :operator :replacement)
+                                           by-id (into {} (map (fn [s] [(mut-key (:mutation s)) s])) survivor-list)]
+                                       (mapv (fn [r]
+                                               (if (= :survived (:status r))
+                                                 (get by-id (mut-key (:mutation r)) r)
+                                                 r))
+                                             all-results))
+                                     all-results)
                   report-format (:report-format config)
                   output-path (:output-path config "target/heretic-report")]
 
@@ -518,18 +530,18 @@
               (when (seq survivor-list)
                 (reporter/print-survivor-hotspots all-results))
 
-              ;; Step 8: Generate file report based on config
+              ;; Step 8: Generate file report based on config (triage-enriched)
               (case report-format
                 :html (let [html-path (reporter/generate-html-report
-                                       all-results
+                                       enriched-results
                                        (str output-path "/index.html"))]
                         (reporter/print-html-report-written html-path))
                 :json (let [json-path (reporter/generate-json-report
-                                       all-results
+                                       enriched-results
                                        (str output-path "/report.json"))]
                         (reporter/print-json-report-written json-path))
                 :edn (let [edn-path (reporter/generate-edn-report
-                                     all-results
+                                     enriched-results
                                      (str output-path "/report.edn"))]
                        (reporter/print-edn-report-written edn-path))
                 ;; :terminal or default - no file output needed
