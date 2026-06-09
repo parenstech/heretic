@@ -4,7 +4,6 @@
    This module provides pure orchestration functions used by core.clj:
    - Operator resolution
    - Mutation preparation (generation + filtering)
-   - Mutation clustering for optimization
    - Result aggregation with analysis
 
    The controller separates pure logic from side effects, following
@@ -20,11 +19,9 @@
    Key functions:
    - `resolve-operators` - Resolve operators from config
    - `prepare-mutations` - Generate and filter mutations
-   - `prepare-clustered-mutations` - Prepare mutations with clustering
    - `aggregate-results` - Combine results with analysis
    - `build-test-config` - Build configuration for test runner"
-  (:require [heretic.clustering :as clustering]
-            [heretic.coverage-map :as coverage]
+  (:require [heretic.coverage-map :as coverage]
             [heretic.equivalent :as equiv]
             [heretic.mutation-engine :as engine]
             [heretic.operators :as ops]
@@ -396,100 +393,3 @@
   (let [all-test-durations (extract-test-durations results)]
     (when (seq all-test-durations)
       (timing/record-timing! heretic-dir all-test-durations))))
-
-;; =============================================================================
-;; Mutation Clustering (Pure)
-;; =============================================================================
-
-(defn resolve-clustering-strategy
-  "Resolve clustering strategy from config.
-
-   Arguments:
-   - config: Configuration map with :clustering-strategy
-
-   Returns clustering strategy keyword (:none, :operator, :location, :similarity)"
-  [config]
-  (let [strategy (or (:clustering-strategy config) :none)]
-    (clustering/validate-strategy strategy)))
-
-(defn prepare-clustered-mutations
-  "Prepare mutations with clustering optimization.
-
-   This function combines mutation preparation with clustering:
-   1. Generate and filter mutations (via prepare-mutations)
-   2. Apply clustering strategy
-   3. Select representatives for testing
-
-   Arguments:
-   - config: Configuration map with:
-     - :source-paths - Source directories
-     - :filter-equivalent - Filter equivalent mutations (default true)
-     - :use-subsumption - Use subsumption filtering (default false)
-     - :clustering-strategy - Clustering strategy (:none, :operator, :location, :similarity)
-   - operators: Resolved operators
-   - files: Optional specific files (nil = all)
-
-   Returns map with:
-   - :mutations - Vector of all mutations (for reporting)
-   - :to-test - Vector of representative mutations to actually test
-   - :clusters - Map of cluster-id -> [mutations]
-   - :representatives - Map of cluster-id -> {:representative ... :cluster ...}
-   - :clustering-stats - Statistics about clustering
-   - :total-found - Count before filtering
-   - :filtered-count - Count removed by equivalent filter
-   - :subsumed-count - Count removed by subsumption filter"
-  [config operators & {:keys [files]}]
-  (let [;; Step 1: Prepare mutations with existing filtering
-        {:keys [mutations total-found filtered-count subsumed-count]}
-        (prepare-mutations config operators :files files)
-
-        ;; Step 2: Apply clustering
-        strategy (resolve-clustering-strategy config)
-        {:keys [clusters representatives to-test stats]}
-        (clustering/prepare-clustered-mutations mutations strategy)]
-
-    {:mutations mutations
-     :to-test to-test
-     :clusters clusters
-     :representatives representatives
-     :clustering-stats stats
-     :clustering-strategy strategy
-     :total-found total-found
-     :filtered-count filtered-count
-     :subsumed-count subsumed-count}))
-
-(defn expand-clustered-results
-  "Expand results from testing representatives to all mutations.
-
-   Arguments:
-   - representatives: Map from prepare-clustered-mutations
-   - results: Sequence of results for representative mutations
-
-   Returns sequence of results for all mutations (including inferred)."
-  [representatives results]
-  (clustering/apply-results-to-clusters representatives results))
-
-(defn aggregate-clustered-results
-  "Aggregate results from clustered mutation testing.
-
-   Similar to aggregate-results but includes clustering statistics.
-
-   Arguments:
-   - results: Sequence of mutation result maps (including inferred)
-   - equivalent-filtered: Count of mutations filtered as equivalent
-   - start-time-ms: When testing started
-   - clustering-stats: Statistics from prepare-clustered-mutations
-   - subsumed-filtered: Count removed by subsumption (optional)
-
-   Returns comprehensive result map including clustering info."
-  [results equivalent-filtered start-time-ms clustering-stats
-   & {:keys [subsumed-filtered]}]
-  (let [base-results (aggregate-results results equivalent-filtered start-time-ms
-                                        :subsumed-filtered subsumed-filtered)
-        ;; Separate actual vs inferred results for stats
-        inferred-count (count (filter :inferred? results))
-        tested-count (- (count results) inferred-count)]
-    (assoc base-results
-           :clustering-stats clustering-stats
-           :tested-count tested-count
-           :inferred-count inferred-count)))

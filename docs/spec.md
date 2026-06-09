@@ -1447,11 +1447,9 @@ Research shows subsumption can reduce mutation testing time by 30-50%.
   - `:comprehensive` - All 81 operators
 - [x] **Incremental mutation**: Form-level hashing in `incremental.clj`
 - [x] **Test ordering**: Fastest-first ordering in `timing.clj`, proven-killers prioritized
-- [x] **Clustering**: 4 strategies in `clustering.clj`:
-  - `:none` - No clustering
-  - `:operator` - Group by operator type
-  - `:location` - Group by code location
-  - `:similarity` - Group by operator category + context
+- ~~**Clustering**~~: **RETIRED** — testing one representative per cluster and inferring
+  the rest mis-classified 16–30% of mutants (up to ~19pp mutation-score error) in a
+  powered re-measurement (`validation-results.md` §5.3); removed for an accuracy tool.
 
 #### 3.6 HTML Reports ✅ COMPLETE
 
@@ -1492,7 +1490,6 @@ Phase 3 adds parallelism and watch mode to leverage this.
 - [x] All Clojure-specific operators implemented and tested (81 operators)
 - [x] Equivalent mutant detection (sound-only: read-identity dead-branch + sound static patterns)
 - [x] File-level parallelism via in-process worker threads (`ExecutorService`)
-- [x] Mutant clustering with 4 strategies
 - [x] HTML/JSON/EDN reports provide actionable insights
 - [x] Watch mode enables feedback on incremental changes
 - [x] ~~Mutant schemata compile-once optimization~~ — implemented then **removed 2026-06-05** (benchmarked marginal; see `docs/validation-results.md` §1)
