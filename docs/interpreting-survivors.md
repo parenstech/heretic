@@ -1,6 +1,29 @@
 # Interpreting Surviving Mutations
 
-When mutations survive, it means your tests didn't detect the code change. This guide explains common survivor patterns and how to fix the underlying test gaps.
+When a mutation survives, your tests didn't detect the change — but that does **not**
+always mean a weak test. A surviving mutant is one of two things:
+
+- a **coverage gap** — killable, but your tests miss the input that would catch it
+  (the real test gap, and what this guide is about); or
+- an **equivalent mutant** — semantically identical to the original, so *no* test
+  could ever kill it (~5–13% of *all* mutants, measured on medley — see
+  `validation-results.md` §2.2 — and, since equivalents survive by definition, a
+  substantial share of the survivor list). Writing a test for one is wasted effort.
+
+**First, ask: is it even a gap?** Heretic answers this for you. **Survivor triage**
+(on by default; `:triage-survivors false` to disable) classifies each survivor and,
+for a coverage gap, hands you a **witness** — a concrete input on which the mutant
+and the original differ — so you know exactly what input to test. The `survivors`
+command groups its output:
+
+- **COVERAGE GAPS** — killable; each shows a `witness` input. Fix these (the patterns below).
+- **PROVEN EQUIVALENT** — unkillable by construction (e.g. a mutation in a `#?(:cljs …)`
+  branch). Not a gap; ignore.
+- **LIKELY EQUIVALENT** / **UNCLASSIFIED** — no distinguishing input found, or the
+  oracle couldn't replay the fn (impure / higher-order); use judgment.
+
+The patterns below apply to the **coverage-gap** bucket — survivors that are genuine
+test gaps.
 
 ## Quick Reference
 

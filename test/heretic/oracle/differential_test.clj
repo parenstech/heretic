@@ -100,4 +100,31 @@
     (let [throwy (fn [& _] (throw (ex-info "nope" {})))
           r (diff/find-witness throwy throwy (gen/inputs 1 30 5) 300)]
       (is (nil? (:witness r)))
-      (is (false? (:applicable r))))))
+      (is (false? (:applicable r)))
+      (is (false? (:saw-timeout? r)) "threw on all — not a timeout (→ :orig-threw-all, not :inconclusive-timeout)"))))
+
+(deftest find-witness-ignores-one-sided-timeout
+  (testing "a slow-but-correct original timing out is NOT a witness (no false coverage-gap)"
+    ;; orig sleeps past the 300ms budget → [:timeout]; mut returns fast → [:value 42];
+    ;; both compute 42, so this must NOT be reported as a distinguishing witness.
+    (let [slow (fn [_] (Thread/sleep 400) 42)
+          fast (fn [_] 42)]
+      (is (nil? (:witness (diff/find-witness slow fast [[1]] 300))))
+      (is (nil? (:witness (diff/find-witness fast slow [[1]] 300))) "symmetric: mutant-side timeout too")))
+  (testing "a genuine value difference is still found when neither times out"
+    (is (some? (:witness (diff/find-witness (fn [_] 1) (fn [_] 2) [[1]] 300)))))
+  (testing "timeouts are reported via :saw-timeout? so the caller can tell them from throws"
+    (let [r (diff/find-witness (fn [_] (Thread/sleep 400) 1) (fn [_] 1) [[1]] 200)]
+      (is (nil? (:witness r)))
+      (is (false? (:applicable r)) "orig never produced an observable value")
+      (is (true? (:saw-timeout? r)) "…because it timed out, not because it threw"))))
+
+(deftest observe-one-collapses-opaque-results
+  (testing "fn-valued results collapse to ::opaque — identity-hash diffs are not witnesses"
+    (let [a (diff/observe-one (fn [_] (fn [x] x)) [1] 300)
+          b (diff/observe-one (fn [_] (fn [x] x)) [1] 300)]
+      (is (= a b) "two distinct fn instances must NOT distinguish (sound: no false witness)")
+      (is (= [:value :heretic.oracle.differential/opaque] (diff/observe-one (fn [_] +) [1] 300)))))
+  (testing "a value vs a fn is still distinguishing (real type difference)"
+    (is (not= (diff/observe-one (fn [_] 5) [1] 300)
+              (diff/observe-one (fn [_] +) [1] 300)))))

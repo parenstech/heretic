@@ -330,6 +330,14 @@ Strengthened confusion matrix (the 85 oracle-judged ∩ suite-clean mutants):
   (the stronger inputs found 2 more than the naive run). Real test holes; the equivalent-vs-coverage-gap split is
   the principled survivor triage `interpreting-survivors.md` assumes.
 
+> **Note (post-PR #22):** these counts predate a soundness improvement to the
+> shared differential oracle — `find-witness` now treats a one-sided `:timeout`
+> as *inconclusive* rather than a distinguishing witness (a slow-but-correct
+> original is no longer a false coverage-gap; see `oracle/differential.clj`).
+> On medley's small pure fns no call approaches the budget, so the bracket above
+> is unaffected in practice, but the numbers should be re-measured under the new
+> semantics before being quoted as exact.
+
 **Scope + limitation.** medley is the headline because its suite is fast plain `clojure.test`. Covering-test
 selection (`verdict-selected`) is **built and mechanism-validated** (a 3-mutant uri slice runs correctly through
 the coverage index), but a *full* generative (`test.check`) target still doesn't complete in budget: selection

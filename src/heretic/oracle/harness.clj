@@ -43,7 +43,7 @@
         index    (when heretic-dir
                    ((requiring-resolve 'heretic.coverage-map/load-index) heretic-dir))
         harvested (when test-ns
-                    (into {} (map (fn [ns-sym] [ns-sym (harvest/harvest-args ns-sym test-ns {})]) nses)))
+                    (harvest/harvest-args-across (remove nil? nses) test-ns {}))
         results  (mapv
                   (fn [m]
                     (let [ns-sym (file->ns (:file m))

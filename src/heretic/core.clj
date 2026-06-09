@@ -33,6 +33,9 @@
             [heretic.controller :as controller]
             [heretic.coverage-map :as coverage]
             [heretic.mutation-engine :as engine]
+            [heretic.oracle.differential :as oracle-diff]
+            [heretic.oracle.harvest :as harvest]
+            [heretic.oracle.triage :as triage]
             [heretic.persistence :as persist]
             [heretic.reloader :as reloader]
             [heretic.reporter :as reporter]
@@ -68,6 +71,9 @@
    :parallel-workers nil      ; Number of worker threads (nil = CPU count)
    ;; Equivalent mutant detection
    :filter-equivalent true    ; Filter likely equivalent mutants
+   ;; Survivor triage (coverage-gap vs equivalent) — reporting-only, opt-out
+   :triage-survivors true       ; Classify survivors + ship witnesses
+   :triage-call-timeout-ms 300  ; Per-call budget for the differential oracle (ms)
    ;; Report output
    :report-format :terminal
    :output-path "target/heretic-report"
@@ -326,6 +332,48 @@
           results)))
 
 ;; =============================================================================
+;; Survivor triage (coverage-gap detection) — docs/coverage-gap-triage-plan.md
+;; =============================================================================
+
+(defn- triage-survivors!
+  "Post-run survivor triage: classify each surviving mutant as coverage-gap (with
+   the witnessing input the suite missed) / proven-equivalent / candidate-equivalent
+   / not-applicable / undetermined, and MERGE the tagged verdict onto each survivor
+   result. Reporting-only — does not touch the mutation score. Self-contained: it
+   requires the target + test namespaces and harvests suite args itself, so it works
+   under any executor. Best-effort: any failure leaves survivors unenriched rather
+   than failing the run."
+  [survivor-results index config]
+  (try
+    (let [muts        (mapv :mutation survivor-results)
+          files       (distinct (map :file muts))
+          file->ns    (into {} (map (fn [f] [f (oracle-diff/file->ns-sym f)]) files))
+          target-nses (distinct (remove nil? (vals file->ns)))
+          ;; Honour :exclude-test-namespaces for the explicit-seq case too (the
+          ;; :all branch is already post-exclusion via :included-test-ns), matching
+          ;; collector/resolve-test-namespaces — an excluded ns is often one that
+          ;; cannot run under instrumentation.
+          excl        (set (map symbol (:exclude-test-namespaces config)))
+          test-nses   (let [tns (:test-namespaces config)]
+                        (->> (if (= :all tns) (:included-test-ns index) tns)
+                             (remove nil?) (map symbol) (remove excl) distinct vec))
+          _           (doseq [ns-sym (concat target-nses test-nses)]
+                        (try (require ns-sym) (catch Throwable _ nil)))
+          ;; Harvest real suite args (reach-aware oracle inputs, §2.2) in ONE suite
+          ;; run across all target nses; falls back to random generation when no
+          ;; test ns / harvest fails.
+          harvested   (when (seq test-nses)
+                        (try (harvest/harvest-args-across target-nses test-nses {})
+                             (catch Throwable _ {})))
+          triaged     (triage/triage-survivors muts {:file->ns file->ns :harvested harvested
+                                                     :timeout-ms (:triage-call-timeout-ms config)})]
+      (mapv (fn [r t] (merge r (select-keys t [:triage :witness :proof :reason :trials])))
+            survivor-results triaged))
+    (catch Throwable t
+      (reporter/print-phase (str "Survivor triage skipped (" (.getMessage t) ")"))
+      survivor-results)))
+
+;; =============================================================================
 ;; Main Entry Point
 ;; =============================================================================
 
@@ -441,14 +489,26 @@
 
             ;; Step 6: Aggregate results via controller
             (let [final-result (controller/aggregate-results all-results filtered-count start-time)
-                  survivor-list (filter #(= :survived (:status %)) all-results)
+                  raw-survivors (filter #(= :survived (:status %)) all-results)
+                  ;; Step 6.4: Survivor triage (coverage-gap vs equivalent) — opt-out
+                  ;; via :triage-survivors false. Reporting-only; merges :triage onto
+                  ;; each survivor result. (docs/coverage-gap-triage-plan.md)
+                  survivor-list (if (and (seq raw-survivors) (:triage-survivors config true))
+                                  (do (reporter/print-phase "Triaging survivors (coverage-gap vs equivalent)...")
+                                      (triage-survivors! raw-survivors index config))
+                                  raw-survivors)
                   report-format (:report-format config)
                   output-path (:output-path config "target/heretic-report")]
 
               ;; Step 6.5: Save mutation results for survivors command
               (let [results-file (io/file heretic-dir "mutation-results.edn")
-                    survivors-data (mapv (fn [{:keys [mutation]}]
-                                           (select-keys mutation [:file :line :column :operator :original :replacement]))
+                    survivors-data (mapv (fn [{:keys [mutation triage witness proof reason trials]}]
+                                           (cond-> (select-keys mutation [:file :line :column :operator :original :replacement])
+                                             triage  (assoc :triage triage)
+                                             witness (assoc :witness (pr-str witness))
+                                             proof   (assoc :proof proof)
+                                             reason  (assoc :reason reason)
+                                             trials  (assoc :trials trials)))
                                          survivor-list)]
                 (spit results-file (pr-str {:survivors survivors-data
                                             :summary final-result
@@ -521,12 +581,31 @@
 ;; =============================================================================
 
 (defn- print-survivors [config]
-  (let [survs (survivors config)]
-    (if (seq survs)
-      (doseq [s survs]
-        (println (format "  %s:%s  %s -> %s"
-                         (:file s) (:line s) (:original s) (:replacement s))))
-      (println "No surviving mutations."))))
+  (let [survs (survivors config)
+        line  (fn [s] (format "  %s:%s  %s -> %s" (:file s) (:line s) (:original s) (:replacement s)))]
+    (cond
+      (not (seq survs)) (println "No surviving mutations.")
+
+      ;; No triage data (triage disabled, or a pre-triage run) — flat list, unchanged.
+      (not (some :triage survs))
+      (doseq [s survs] (println (line s)))
+
+      ;; Triage-aware: actionable coverage gaps first (with the witnessing input the
+      ;; tests miss), then the unproven middle, then proven equivalents collapsed.
+      :else
+      (let [by (group-by :triage survs)]
+        (when-let [gaps (seq (:coverage-gap by))]
+          (println (format "COVERAGE GAPS (%d) — killable; your tests miss these. `witness` = an input that distinguishes the mutant:" (count gaps)))
+          (doseq [s gaps] (println (line s) " | witness:" (:witness s))))
+        (when-let [cand (seq (:candidate-equivalent by))]
+          (println (format "%nLIKELY EQUIVALENT (%d) — no distinguishing input found in the trials run (unproven):" (count cand)))
+          (doseq [s cand] (println (str (line s) (when (:trials s) (str " | trials: " (:trials s)))))))
+        (when-let [un (seq (concat (:not-applicable by) (:undetermined by)))]
+          (println (format "%nUNCLASSIFIED (%d) — oracle could not decide (impure / higher-order / no test ns):" (count un)))
+          (doseq [s un] (println (line s))))
+        (when-let [eq (seq (:proven-equivalent by))]
+          (println (format "%nPROVEN EQUIVALENT (%d) — unkillable by construction; NOT test gaps:" (count eq)))
+          (doseq [s eq] (println (line s) " | proof:" (name (:proof s)))))))))
 
 (defn- print-status [config]
   (let [{:keys [stale-namespaces fresh-namespaces index-exists?]} (status config)]
