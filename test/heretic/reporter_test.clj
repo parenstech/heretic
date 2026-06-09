@@ -9,6 +9,7 @@
    - JSON report generation
    - EDN report generation"
   (:require [clojure.edn :as edn]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [heretic.reporter :as reporter]))
 
@@ -727,12 +728,13 @@
 ;; =============================================================================
 
 (def triaged-survivor-results
-  "One survived result per triage arm, with the verdict merged on (the shape
-   core/triage-survivors! produces)."
+  "One survived result per triage arm (all five), with the verdict merged on (the
+   shape core/triage-survivors! produces)."
   [(merge (make-result :survived) {:triage :coverage-gap         :witness [1 2]})
    (merge (make-result :survived) {:triage :proven-equivalent    :proof   :read-identity})
    (merge (make-result :survived) {:triage :candidate-equivalent :trials  200})
-   (merge (make-result :survived) {:triage :not-applicable       :reason  :impure})])
+   (merge (make-result :survived) {:triage :not-applicable       :reason  :impure})
+   (merge (make-result :survived) {:triage :undetermined         :reason  :ns-not-loaded})])
 
 (def ^:private base-json-entry
   {:file "src/my/app.clj" :line 42 :column 10 :operator "swap-plus-minus"
@@ -743,7 +745,8 @@
     (is (= [(assoc base-json-entry :triage "coverage-gap"         :witness "[1 2]")
             (assoc base-json-entry :triage "proven-equivalent"    :proof   "read-identity")
             (assoc base-json-entry :triage "candidate-equivalent" :trials  200)
-            (assoc base-json-entry :triage "not-applicable"       :reason  "impure")]
+            (assoc base-json-entry :triage "not-applicable"       :reason  "impure")
+            (assoc base-json-entry :triage "undetermined"         :reason  "ns-not-loaded")]
            (:survivors (reporter/json-report-data triaged-survivor-results))))))
 
 (deftest edn-report-survivors-carry-triage-verdict
@@ -752,7 +755,8 @@
       (is (= [{:triage :coverage-gap         :witness "[1 2]"}
               {:triage :proven-equivalent    :proof   :read-identity}
               {:triage :candidate-equivalent :trials  200}
-              {:triage :not-applicable       :reason  :impure}]
+              {:triage :not-applicable       :reason  :impure}
+              {:triage :undetermined         :reason  :ns-not-loaded}]
              (mapv #(select-keys % [:triage :witness :proof :reason :trials]) survs))))))
 
 (deftest edn-report-round-trips-triage
@@ -772,3 +776,25 @@
           e (first (:survivors (reporter/edn-report-data [(make-result :survived)])))]
       (doseq [m [j e] k [:triage :witness :proof :reason :trials]]
         (is (not (contains? m k)) (str "no " k " when triage didn't run"))))))
+
+(deftest html-report-renders-triage-badges-and-lines
+  (testing "HTML carries a badge class + human label per arm, and the right detail line"
+    (let [tmp  (java.io.File/createTempFile "heretic-report" ".html")]
+      (try
+        (reporter/generate-html-report triaged-survivor-results (.getPath tmp))
+        (let [html (slurp tmp)
+              has? (fn [s] (str/includes? html s))]
+          (testing "badge class + label for every arm"
+            (doseq [[cls label] [["triage-coverage-gap" "COVERAGE GAP"]
+                                 ["triage-proven-equivalent" "EQUIVALENT"]
+                                 ["triage-candidate-equivalent" "LIKELY EQUIV"]
+                                 ["triage-not-applicable" "N/A"]
+                                 ["triage-undetermined" "UNDETERMINED"]]]
+              (is (has? cls) (str "badge class " cls))
+              (is (has? label) (str "badge label " label))))
+          (testing "detail line precedence: witness for the gap, proof for the equivalent, reason otherwise"
+            (is (has? "Witness: ") "coverage-gap shows the witness")
+            (is (has? "Proof: ") "proven-equivalent shows the proof")
+            ;; not-applicable / undetermined carry only :reason (no witness/proof)
+            (is (has? "Reason: ") "the reason-only arms show their reason")))
+        (finally (.delete tmp))))))
