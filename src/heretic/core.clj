@@ -622,9 +622,12 @@
   "Print the last run's surviving mutations from `.heretic/mutation-results.edn`,
    triage-aware: coverage gaps first (each with its witnessing input), then the
    likely/unclassified middle, then proven-equivalents collapsed. Falls back to a
-   flat list when the results predate triage. The canonical survivors printer —
-   external callers (e.g. a `bb` task) should call this rather than re-deriving
-   the grouping from `survivors`."
+   flat list when the results predate triage. The canonical printer for the
+   PERSISTED last-run results (the `survivors` CLI command reading
+   `.heretic/mutation-results.edn`); external callers (e.g. a `bb` task) should
+   call this rather than re-deriving the grouping from `survivors`. Distinct from
+   `reporter/print-survivors`, which renders an in-memory results collection
+   during a `mutate` run."
   [config]
   (let [survs (survivors config)
         line  (fn [s] (format "  %s:%s  %s -> %s" (:file s) (:line s) (:original s) (:replacement s)))]
@@ -656,22 +659,28 @@
   "Print the last run's uncovered mutation sites grouped by file — the forms no test
    in the indexed (keyless) suite exercises (so a mutation there is never run/killed).
    Reads .heretic/mutation-results.edn (see `no-coverage-sites`); often the larger
-   latent gap than the survivor list. The canonical no-coverage printer — external
-   callers (e.g. a `bb` task) should call this rather than re-deriving the grouping."
+   latent gap than the survivor list. The canonical printer for the persisted
+   last-run results (the `no-coverage` CLI command); call this from external
+   callers (e.g. a `bb` task). Distinct from `reporter/print-no-coverage`, which
+   renders an in-memory results collection during a `mutate` run."
   [config]
   (let [sites   (no-coverage-sites config)
-        by-file (->> sites (group-by :file) (sort-by key))]
+        by-file (->> sites (group-by :file) (sort-by key))
+        plural  (fn [n one] (str n " " one (when (not= 1 n) "s")))]
     (if-not (seq sites)
       (println "No uncovered mutation sites.")
       (do
-        (println (format "NO COVERAGE (%d sites in %d files) — no test in the indexed (keyless)"
-                         (count sites) (count by-file)))
+        (println (format "NO COVERAGE (%s in %s) — no test in the indexed (keyless)"
+                         (plural (count sites) "site") (plural (count by-file) "file")))
         (println "suite exercises these forms, so a mutation there is never run. Some may be reachable")
         (println "only by excluded (e.g. key-gated) tests; add covering tests or adjust :exclude-test-namespaces.")
         (doseq [[file fsites] by-file]
-          (println (format "  %s (%d): lines %s"
-                           file (count fsites)
-                           (str/join ", " (sort (distinct (map :line fsites)))))))))))
+          ;; sites are file+line+column; collapse to distinct lines for display,
+          ;; and label the count as sites so "(N)" can't read as a line count.
+          (println (format "  %s: lines %s (%s)"
+                           file
+                           (str/join ", " (sort (distinct (map :line fsites))))
+                           (plural (count fsites) "site"))))))))
 
 (defn- print-status [config]
   (let [{:keys [stale-namespaces fresh-namespaces index-exists?]} (status config)]
@@ -693,6 +702,7 @@
      watch                    Continuous sandboxed mutation testing on file changes
      status                   Show which test namespaces need recollection
      survivors                Show surviving mutations from the last run
+     no-coverage              Show uncovered mutation sites from the last run
      clean                    Remove cached coverage data
 
    `mutate` and `watch` run against an isolated sandbox copy via heretic.sandbox

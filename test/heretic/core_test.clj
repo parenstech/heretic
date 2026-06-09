@@ -419,8 +419,8 @@
     (spit-results! {:survivors [] :no-coverage nc-sites :summary {} :timestamp 0})
     (let [out (with-out-str (core/print-no-coverage {:heretic-dir *test-dir*}))]
       (is (re-find #"NO COVERAGE \(3 sites in 2 files\)" out))
-      (is (re-find #"src/a\.clj \(2\): lines 10, 20" out) "lines sorted + deduped per file")
-      (is (re-find #"src/b\.clj \(1\): lines 5" out))
+      (is (re-find #"src/a\.clj: lines 10, 20 \(2 sites\)" out) "lines sorted + deduped; site count labeled")
+      (is (re-find #"src/b\.clj: lines 5 \(1 site\)" out) "singular pluralization")
       (is (re-find #"excluded|key-gated" out) "carries the no-coverage caveat"))))
 
 (deftest print-no-coverage-empty-test
