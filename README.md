@@ -138,7 +138,8 @@ For projects whose tests need extra files or dependencies inside the sandbox:
 | `status` | Show which test namespaces need recollection |
 | `mutate` | Run mutation testing |
 | `mutate --files src/my_app/core.clj` | Mutate specific files |
-| `survivors` | Show surviving mutations from last run |
+| `survivors` | Show surviving mutations from last run (triage-aware: coverage gaps first, with witnesses) |
+| `no-coverage` | Show uncovered mutation sites — forms no test in the indexed suite reaches (often the larger latent gap than survivors) |
 | `watch` | Continuous mutation testing on file changes |
 | `clean` | Remove cached coverage data |
 

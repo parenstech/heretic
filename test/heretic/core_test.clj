@@ -391,3 +391,40 @@
         (is (= :process (:executor config)))
         (is (= 60000 (:mutation-timeout-ms config)))
         (is (= 4 (:parallel-workers config)))))))
+
+;; =============================================================================
+;; no-coverage surfacing
+;; =============================================================================
+
+(def ^:private nc-sites
+  [{:file "src/a.clj" :line 20 :column 0}
+   {:file "src/a.clj" :line 10 :column 2}
+   {:file "src/b.clj" :line 5 :column 1}])
+
+(defn- spit-results! [m]
+  (spit (io/file *test-dir* "mutation-results.edn") (pr-str m)))
+
+(deftest no-coverage-sites-reads-persisted-sites-test
+  (testing "no-coverage-sites returns the persisted :no-coverage sites verbatim"
+    (spit-results! {:survivors [] :no-coverage nc-sites :summary {} :timestamp 0})
+    (is (= nc-sites (core/no-coverage-sites {:heretic-dir *test-dir*})))))
+
+(deftest no-coverage-sites-missing-results-throws-test
+  (testing "no-coverage-sites throws when no results file exists (like survivors)"
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (core/no-coverage-sites {:heretic-dir *test-dir*})))))
+
+(deftest print-no-coverage-groups-by-file-test
+  (testing "groups sites by file, dedup+sorted lines, per-file counts, with the caveat"
+    (spit-results! {:survivors [] :no-coverage nc-sites :summary {} :timestamp 0})
+    (let [out (with-out-str (core/print-no-coverage {:heretic-dir *test-dir*}))]
+      (is (re-find #"NO COVERAGE \(3 sites in 2 files\)" out))
+      (is (re-find #"src/a\.clj \(2\): lines 10, 20" out) "lines sorted + deduped per file")
+      (is (re-find #"src/b\.clj \(1\): lines 5" out))
+      (is (re-find #"excluded|key-gated" out) "carries the no-coverage caveat"))))
+
+(deftest print-no-coverage-empty-test
+  (testing "no uncovered sites prints a clear message, not an empty section"
+    (spit-results! {:survivors [] :no-coverage [] :summary {} :timestamp 0})
+    (is (re-find #"No uncovered mutation sites"
+                 (with-out-str (core/print-no-coverage {:heretic-dir *test-dir*}))))))

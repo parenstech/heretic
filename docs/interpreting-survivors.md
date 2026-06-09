@@ -25,6 +25,14 @@ command groups its output:
 The patterns below apply to the **coverage-gap** bucket — survivors that are genuine
 test gaps.
 
+> **Survivors aren't the whole story — also check `no-coverage`.** A *survivor* was
+> at least run by a test (it just wasn't killed). A **no-coverage** mutation site is
+> code no test in the indexed suite reaches at all, so it never got a chance to be
+> killed — usually the *larger* latent gap. Triage only classifies survivors; the
+> `no-coverage` command lists the uncovered sites grouped by file. (Caveat: a form
+> reachable only by an *excluded* test — e.g. a key-gated integration suite — also
+> shows as no-coverage; it's "untested by the indexed suite", not necessarily dead.)
+
 ## Quick Reference
 
 | Survivor Pattern | Root Cause | Fix |
