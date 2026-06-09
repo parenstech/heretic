@@ -1,10 +1,12 @@
 # Survivor Triage (coverage-gap detection) — Implementation Plan
 
-**Status:** Phase 0 + Phase 1 shipped (PR #22) — the `oracle.triage` module,
-`core.clj` wiring behind `:triage-survivors`, and the `survivors`-command
-surface. **Phase 2 (rendering the `:triage`/`:witness`/`:proof` verdict in the
-JSON/EDN/HTML reports + a golden-file test) is deferred** — those reports are
-still generated from un-triaged results. Builds on the G1 recall measurement
+**Status:** Phases 0–2 shipped. Phase 0 + 1 (PR #22) — the `oracle.triage`
+module, `core.clj` wiring behind `:triage-survivors`, and the `survivors`-command
+surface. **Phase 2** — the `:triage`/`:witness`/`:proof` verdict now renders in
+the JSON/EDN/HTML reports too (`core/mutate!` enriches the survived results before
+the report step; `reporter` serializes the verdict — strings for JSON, keywords
+for EDN, a badge + witness/proof for HTML; a golden-shape test pins it). Builds on
+the G1 recall measurement
 (`validation-results.md` §2.2) and reuses its oracle (`src/heretic/oracle/*`).
 Companion to `interpreting-survivors.md`, whose central assumption this feature
 makes *decidable*. This doc is the buildable plan: architecture, resolved
@@ -50,8 +52,8 @@ not this post-run *triage*). It is a reporting/leverage feature.
 - **Sound** coverage-gap labels: a coverage-gap is only emitted with a concrete
   witnessing input (a proof the mutant is killable).
 - Surfacing the classification in the `survivors` command — coverage gaps first
-  (actionable), with the witness; equivalents de-emphasised. (Rendering it in the
-  JSON/EDN/HTML reports is Phase 2, **deferred** — see Status.)
+  (actionable), with the witness; equivalents de-emphasised — and in the
+  JSON/EDN/HTML reports (Phase 2, shipped).
 - Reuse of the existing oracle (`sound`, `differential`, `harvest`) with
   suite-seeded inputs (the §2.2 trio).
 
@@ -177,9 +179,10 @@ N-trials/seed — assembled once from the run config, threaded per survivor.
   survivors classify `proven-equivalent`; a seeded known coverage-gap classifies
   `coverage-gap` with a replayable witness; impure/HOF survivors → `undetermined`
   (no crash).
-- **Phase 2 — report surface.** `survivors` command + JSON/EDN/HTML render the
-  label + witness, gaps first. *Gate:* `survivors` output shows the three buckets;
-  the JSON carries `:triage`/`:witness`/`:proof`; a golden-file test pins the shape.
+- **Phase 2 — report surface. ✅ shipped.** `survivors` command + JSON/EDN/HTML
+  render the label + witness, gaps first. *Gate met:* `survivors` output shows the
+  buckets; the JSON/EDN reports carry `:triage`/`:witness`/`:proof` (HTML a badge);
+  `reporter_test` golden-shape tests pin the serialization.
 - **Phase 3 — docs.** Reframe `interpreting-survivors.md` around the triage; note
   the generative-suite degradation.
 

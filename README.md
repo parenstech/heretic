@@ -314,18 +314,23 @@ Heretic requires ClojureStorm to collect coverage. Configure it via JVM options:
 The HTML report includes:
 - Mutation score summary
 - Source file heatmap (visual killed/survived ratio per file)
-- Detailed survivor list with code snippets
+- Detailed survivor list with code snippets — each tagged with its triage badge
+  (coverage-gap / equivalent / …) plus the witnessing input or equivalence proof
 - Test effectiveness ranking
 - Historical trends
 
 ### JSON/EDN Export
 
-Machine-readable output for CI integration:
+Machine-readable output for CI integration. Each survivor carries its triage
+verdict (`:triage` + the one arm field — `:witness` for a coverage-gap, `:proof`
+for a proven-equivalent, `:trials` / `:reason` otherwise; JSON uses strings, EDN
+keeps keywords):
 
 ```clojure
 {:summary {:total 127 :killed 98 :survived 24 :score 0.803}
  :by-file {"src/my_app/core.clj" {:total 45 :killed 38}}
- :survivors [{:file "..." :line 42 :operator :swap-plus-minus ...}]}
+ :survivors [{:file "..." :line 42 :operator :swap-plus-minus
+              :triage :coverage-gap :witness "[1 2]"}]}
 ```
 
 ## Future Work

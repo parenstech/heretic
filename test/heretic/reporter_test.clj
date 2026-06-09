@@ -721,3 +721,54 @@
         (let [survivor-operator (:operator (first (:survivors data)))]
           (is (keyword? survivor-operator)
               "Operator should be a keyword in EDN format"))))))
+
+;; =============================================================================
+;; Survivor-triage verdict in reports (golden-shape) — coverage-gap-triage Phase 2
+;; =============================================================================
+
+(def triaged-survivor-results
+  "One survived result per triage arm, with the verdict merged on (the shape
+   core/triage-survivors! produces)."
+  [(merge (make-result :survived) {:triage :coverage-gap         :witness [1 2]})
+   (merge (make-result :survived) {:triage :proven-equivalent    :proof   :read-identity})
+   (merge (make-result :survived) {:triage :candidate-equivalent :trials  200})
+   (merge (make-result :survived) {:triage :not-applicable       :reason  :impure})])
+
+(def ^:private base-json-entry
+  {:file "src/my/app.clj" :line 42 :column 10 :operator "swap-plus-minus"
+   :original "+" :replacement "-" :testsRun ["my.app-test/test-add"]})
+
+(deftest json-report-survivors-carry-triage-verdict
+  (testing "each JSON survivor entry carries its serialized triage verdict (pinned shape)"
+    (is (= [(assoc base-json-entry :triage "coverage-gap"         :witness "[1 2]")
+            (assoc base-json-entry :triage "proven-equivalent"    :proof   "read-identity")
+            (assoc base-json-entry :triage "candidate-equivalent" :trials  200)
+            (assoc base-json-entry :triage "not-applicable"       :reason  "impure")]
+           (:survivors (reporter/json-report-data triaged-survivor-results))))))
+
+(deftest edn-report-survivors-carry-triage-verdict
+  (testing "EDN keeps the verdict labels as keywords (like :operator); witness is pr-str'd"
+    (let [survs (:survivors (reporter/edn-report-data triaged-survivor-results))]
+      (is (= [{:triage :coverage-gap         :witness "[1 2]"}
+              {:triage :proven-equivalent    :proof   :read-identity}
+              {:triage :candidate-equivalent :trials  200}
+              {:triage :not-applicable       :reason  :impure}]
+             (mapv #(select-keys % [:triage :witness :proof :reason :trials]) survs))))))
+
+(deftest edn-report-round-trips-triage
+  (testing "generate-edn-report writes a file whose survivors carry the triage verdict"
+    (let [tmp (java.io.File/createTempFile "heretic-report" ".edn")]
+      (try
+        (reporter/generate-edn-report triaged-survivor-results (.getPath tmp))
+        (let [survs (:survivors (edn/read-string (slurp tmp)))]
+          (is (= :coverage-gap (:triage (first survs))))
+          (is (= "[1 2]" (:witness (first survs))))
+          (is (= :read-identity (:proof (second survs)))))
+        (finally (.delete tmp))))))
+
+(deftest reports-omit-triage-when-absent
+  (testing "a survivor without a triage verdict (triage disabled) gains no triage keys"
+    (let [j (first (:survivors (reporter/json-report-data [(make-result :survived)])))
+          e (first (:survivors (reporter/edn-report-data [(make-result :survived)])))]
+      (doseq [m [j e] k [:triage :witness :proof :reason :trials]]
+        (is (not (contains? m k)) (str "no " k " when triage didn't run"))))))

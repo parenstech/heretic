@@ -558,17 +558,32 @@
                     :score score})))
         {})))
 
+(defn- triage-report-fields
+  "Report-serialized survivor-triage verdict for a result, or {} when triage did
+   not run. `kw` controls how the label keywords serialize — `name` (string) for
+   JSON, `identity` (keyword) for EDN, matching how each report renders :operator.
+   The witness (arbitrary data) is always pr-str'd to a string, matching
+   mutation-results.edn. See `heretic.oracle.triage` for the tagged-verdict shape."
+  [{:keys [triage witness proof reason trials]} kw]
+  (cond-> {}
+    triage  (assoc :triage (kw triage))
+    witness (assoc :witness (pr-str witness))
+    proof   (assoc :proof (kw proof))
+    reason  (assoc :reason (kw reason))
+    trials  (assoc :trials trials)))
+
 (defn- survivor-to-json-map
-  "Convert a survivor result to a JSON-friendly map."
-  [{:keys [mutation tests-run]}]
+  "Convert a survivor result to a JSON-friendly map (incl. its triage verdict)."
+  [{:keys [mutation tests-run] :as result}]
   (let [{:keys [file line operator original replacement column]} mutation]
-    {:file file
-     :line line
-     :column column
-     :operator (name operator)
-     :original (str original)
-     :replacement (str replacement)
-     :testsRun (vec (map str tests-run))}))
+    (merge {:file file
+            :line line
+            :column column
+            :operator (name operator)
+            :original (str original)
+            :replacement (str replacement)
+            :testsRun (vec (map str tests-run))}
+           (triage-report-fields result name))))
 
 (defn json-report-data
   "Generate JSON report data structure.
@@ -674,6 +689,20 @@
   .no-coverage { background: #fff3cd; color: #856404; }
   .timeout { background: #e2e3e5; color: #383d41; }
   .error { background: #ffe5d0; color: #8a4000; }
+  .triage-badge {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 0.72em;
+    font-weight: bold;
+    vertical-align: middle;
+  }
+  .triage-coverage-gap { background: #f8d7da; color: #721c24; }
+  .triage-proven-equivalent { background: #e2e3e5; color: #383d41; }
+  .triage-candidate-equivalent { background: #fff3cd; color: #856404; }
+  .triage-not-applicable, .triage-undetermined { background: #e9ecef; color: #495057; }
+  .survivor-witness { font-size: 0.9em; color: #495057; margin-top: 2px; }
   .score-box {
     font-size: 3em;
     font-weight: bold;
@@ -919,18 +948,32 @@
         [:span.heatmap-stats
          (format "%d/%d (%.0f%%)" killed (+ killed survived) (* score 100))]])]))
 
+(def ^:private triage-badge-labels
+  "Short human label per triage verdict, for the HTML badge."
+  {:coverage-gap "COVERAGE GAP"
+   :proven-equivalent "EQUIVALENT"
+   :candidate-equivalent "LIKELY EQUIV"
+   :not-applicable "N/A"
+   :undetermined "UNDETERMINED"})
+
 (defn- html-survivors-section
-  "Generate HTML for the surviving mutations section."
+  "Generate HTML for the surviving mutations section (with the triage verdict:
+   a per-survivor badge, plus the witness for a coverage-gap / proof for a
+   proven-equivalent)."
   [results]
   (let [survivor-list (survivors results)]
     (when (seq survivor-list)
       [:div.card
        [:h2 "Surviving Mutations"]
        [:ul.survivor-list
-        (for [{:keys [mutation tests-run]} survivor-list]
+        (for [{:keys [mutation tests-run triage witness proof reason]} survivor-list]
           (let [{:keys [file line operator original replacement]} mutation]
             [:li.survivor-item
-             [:div.survivor-location (str file ":" line)]
+             [:div.survivor-location
+              (str file ":" line)
+              (when triage
+                [:span.triage-badge {:class (str "triage-" (name triage))}
+                 (get triage-badge-labels triage (name triage))])]
              [:div.survivor-change
               [:span.code-snippet original]
               " → "
@@ -938,6 +981,12 @@
               " ("
               (name operator)
               ")"]
+             (when witness
+               [:div.survivor-witness "Witness: " [:span.code-snippet (pr-str witness)]])
+             (when proof
+               [:div.survivor-witness "Proof: " (name proof)])
+             (when (and reason (not witness) (not proof))
+               [:div.survivor-witness "Reason: " (name reason)])
              [:div.survivor-tests
               "Tests: "
               (if (empty? tests-run)
@@ -1096,16 +1145,17 @@
 ;; =============================================================================
 
 (defn- survivor-to-edn-map
-  "Convert a survivor result to an EDN-friendly map."
-  [{:keys [mutation tests-run]}]
+  "Convert a survivor result to an EDN-friendly map (incl. its triage verdict)."
+  [{:keys [mutation tests-run] :as result}]
   (let [{:keys [file line operator original replacement column]} mutation]
-    {:file file
-     :line line
-     :column column
-     :operator operator
-     :original (str original)
-     :replacement (str replacement)
-     :tests-run (vec (sort (map str tests-run)))}))
+    (merge {:file file
+            :line line
+            :column column
+            :operator operator
+            :original (str original)
+            :replacement (str replacement)
+            :tests-run (vec (sort (map str tests-run)))}
+           (triage-report-fields result identity))))
 
 (defn- edn-stats-by-file
   "Calculate stats for each file for EDN report."
