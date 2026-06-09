@@ -512,7 +512,7 @@
                   report-format (:report-format config)
                   output-path (:output-path config "target/heretic-report")]
 
-              ;; Step 6.5: Save mutation results for survivors command
+              ;; Step 6.5: Save mutation results for the survivors / no-coverage commands
               (let [results-file (io/file heretic-dir "mutation-results.edn")
                     survivors-data (mapv (fn [{:keys [mutation triage witness proof reason trials]}]
                                            (cond-> (select-keys mutation [:file :line :column :operator :original :replacement])
@@ -521,8 +521,16 @@
                                              proof   (assoc :proof proof)
                                              reason  (assoc :reason reason)
                                              trials  (assoc :trials trials)))
-                                         survivor-list)]
+                                         survivor-list)
+                    ;; Distinct uncovered mutation sites — the bigger latent gap than
+                    ;; survivors: forms no test in the indexed (keyless) suite reaches,
+                    ;; so they never got a chance to be killed. Reporting-only.
+                    no-coverage-data (->> all-results
+                                          (filter #(= :no-coverage (:status %)))
+                                          (map #(select-keys (:mutation %) [:file :line :column]))
+                                          distinct vec)]
                 (spit results-file (pr-str {:survivors survivors-data
+                                            :no-coverage no-coverage-data
                                             :summary final-result
                                             :timestamp (System/currentTimeMillis)})))
 
@@ -569,6 +577,24 @@
     (if (.exists results-file)
       (let [data (edn/read-string (slurp results-file))]
         (:survivors data))
+      (throw (ex-info "No mutation results found. Run `mutate!` first."
+                      {:path (.getPath results-file)})))))
+
+(defn no-coverage-sites
+  "Get the uncovered mutation sites from the last run.
+
+   Loads results from .heretic/mutation-results.edn if present. Returns a sequence
+   of distinct {:file :line :column} — forms that no test in the indexed (keyless)
+   suite exercises, so a mutation there was never run/killed. This is usually the
+   larger latent gap than survivors. NOTE: a form reachable only by an excluded
+   test (e.g. a key-gated integration/conformance suite) also shows here —
+   no-coverage means 'untested by the indexed suite', not 'dead code'."
+  [config]
+  (let [heretic-dir (:heretic-dir config)
+        results-file (io/file heretic-dir "mutation-results.edn")]
+    (if (.exists results-file)
+      (let [data (edn/read-string (slurp results-file))]
+        (:no-coverage data))
       (throw (ex-info "No mutation results found. Run `mutate!` first."
                       {:path (.getPath results-file)})))))
 
@@ -619,6 +645,27 @@
           (println (format "%nPROVEN EQUIVALENT (%d) — unkillable by construction; NOT test gaps:" (count eq)))
           (doseq [s eq] (println (line s) " | proof:" (name (:proof s)))))))))
 
+(defn print-no-coverage
+  "Print the last run's uncovered mutation sites grouped by file — the forms no test
+   in the indexed (keyless) suite exercises (so a mutation there is never run/killed).
+   Reads .heretic/mutation-results.edn (see `no-coverage-sites`); often the larger
+   latent gap than the survivor list. The canonical no-coverage printer — external
+   callers (e.g. a `bb` task) should call this rather than re-deriving the grouping."
+  [config]
+  (let [sites   (no-coverage-sites config)
+        by-file (->> sites (group-by :file) (sort-by key))]
+    (if-not (seq sites)
+      (println "No uncovered mutation sites.")
+      (do
+        (println (format "NO COVERAGE (%d sites in %d files) — no test in the indexed (keyless)"
+                         (count sites) (count by-file)))
+        (println "suite exercises these forms, so a mutation there is never run. Some may be reachable")
+        (println "only by excluded (e.g. key-gated) tests; add covering tests or adjust :exclude-test-namespaces.")
+        (doseq [[file fsites] by-file]
+          (println (format "  %s (%d): lines %s"
+                           file (count fsites)
+                           (str/join ", " (sort (distinct (map :line fsites)))))))))))
+
 (defn- print-status [config]
   (let [{:keys [stale-namespaces fresh-namespaces index-exists?]} (status config)]
     (println (format "Coverage index: %s" (if index-exists? "present" "missing")))
@@ -655,12 +702,13 @@
                       (mutate-in-sandbox! config :files files)
                       (mutate-in-sandbox! config)))
       "watch"     ((requiring-resolve 'heretic.watch/watch!) config)  ; blocks until interrupted
-      "status"    (print-status config)
-      "survivors" (print-survivors config)
-      "clean"     (clean! config)
+      "status"      (print-status config)
+      "survivors"   (print-survivors config)
+      "no-coverage" (print-no-coverage config)
+      "clean"       (clean! config)
       (do
         (println "Unknown command:" (pr-str cmd))
-        (println "Commands: collect | mutate | watch | status | survivors | clean")
+        (println "Commands: collect | mutate | watch | status | survivors | no-coverage | clean")
         (System/exit 1)))
     ;; watch blocks forever; every other command is one-shot.
     (when-not (= cmd "watch")
