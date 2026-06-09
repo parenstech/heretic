@@ -13,6 +13,7 @@
    - `generate-json-report` - Generate JSON report for programmatic access"
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
+            [clojure.walk :as walk]
             [heretic.diagnosis :as diagnosis]
             [heretic.subsumption :as subsumption]
             [hiccup2.core :as h]))
@@ -558,16 +559,38 @@
                     :score score})))
         {})))
 
+(defn summarize-witness
+  "Render a witness (the differential oracle's distinguishing input tuple) as a
+   compact, readable string for the reports + mutation-results.edn. Any Throwable
+   anywhere in the input is replaced by a tagged summary
+   `{:heretic/error <class> :message <msg>}` BEFORE printing, so a full stack
+   trace can't bloat the output — a real babel run pr-str'd missionary stack
+   traces and blew a ~100 KB EDN to 5.8 MB. The result is also length-capped as a
+   backstop against any other oversized value."
+  [witness]
+  (let [compact (walk/postwalk
+                 (fn [x]
+                   (if (instance? Throwable x)
+                     {:heretic/error (.getName (class x)) :message (ex-message x)}
+                     x))
+                 witness)
+        s   (pr-str compact)
+        cap 2000]
+    (if (> (count s) cap)
+      (str (subs s 0 cap) " …<" (count s) " chars truncated>")
+      s)))
+
 (defn- triage-report-fields
   "Report-serialized survivor-triage verdict for a result, or {} when triage did
    not run. `kw` controls how the label keywords serialize — `name` (string) for
    JSON, `identity` (keyword) for EDN, matching how each report renders :operator.
-   The witness (arbitrary data) is always pr-str'd to a string, matching
-   mutation-results.edn. See `heretic.oracle.triage` for the tagged-verdict shape."
+   The witness (arbitrary data) is summarized to a string (Throwables elided,
+   length-capped), matching mutation-results.edn. See `heretic.oracle.triage`
+   for the tagged-verdict shape."
   [{:keys [triage witness proof reason trials]} kw]
   (cond-> {}
     triage  (assoc :triage (kw triage))
-    witness (assoc :witness (pr-str witness))
+    witness (assoc :witness (summarize-witness witness))
     proof   (assoc :proof (kw proof))
     reason  (assoc :reason (kw reason))
     trials  (assoc :trials trials)))
@@ -982,7 +1005,7 @@
               (name operator)
               ")"]
              (when witness
-               [:div.survivor-witness "Witness: " [:span.code-snippet (pr-str witness)]])
+               [:div.survivor-witness "Witness: " [:span.code-snippet (summarize-witness witness)]])
              (when proof
                [:div.survivor-witness "Proof: " (name proof)])
              (when (and reason (not witness) (not proof))
