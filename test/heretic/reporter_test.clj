@@ -818,3 +818,64 @@
             (is (= 1 (n "Proof: ")) "only the proven-equivalent arm")
             (is (= 2 (n "Reason: ")) "the not-applicable + undetermined arms")))
         (finally (.delete tmp))))))
+
+;; =============================================================================
+;; No-coverage in reports (uncovered sites grouped by file)
+;; =============================================================================
+
+(def no-coverage-results
+  "Uncovered sites across 2 files, incl. a duplicate site (same file+line+column)
+   that must dedup, plus a killed result that must be excluded."
+  [(make-result :no-coverage {:file "src/a.clj" :line 20 :column 0 :operator :swap :original "a" :replacement "b"})
+   (make-result :no-coverage {:file "src/a.clj" :line 10 :column 2 :operator :swap :original "c" :replacement "d"})
+   (make-result :no-coverage {:file "src/a.clj" :line 10 :column 2 :operator :neg  :original "e" :replacement "f"})
+   (make-result :no-coverage {:file "src/b.clj" :line 5  :column 1 :operator :swap :original "g" :replacement "h"})
+   (make-result :killed)])
+
+(def expected-no-coverage
+  [{:file "src/a.clj" :sites 2 :lines [10 20]}
+   {:file "src/b.clj" :sites 1 :lines [5]}])
+
+(deftest no-coverage-by-file-dedups-groups-sorts
+  (testing "distinct file+line+column sites, grouped by file, lines sorted+deduped"
+    (is (= expected-no-coverage (reporter/no-coverage-by-file no-coverage-results))))
+  (testing "no uncovered sites → empty"
+    (is (= [] (reporter/no-coverage-by-file all-killed-results))))
+  (testing "a site without position metadata (nil :line) is dropped, not rendered as null"
+    (let [r [(make-result :no-coverage {:file "src/c.clj" :line nil :column nil :operator :x :original "p" :replacement "q"})
+             (make-result :no-coverage {:file "src/c.clj" :line 8 :column 0 :operator :y :original "r" :replacement "s"})]]
+      (is (= [{:file "src/c.clj" :sites 2 :lines [8]}] (reporter/no-coverage-by-file r))))))
+
+(deftest json-and-edn-reports-carry-no-coverage
+  (is (= expected-no-coverage (:noCoverage (reporter/json-report-data no-coverage-results)))
+      "JSON top-level :noCoverage")
+  (is (= expected-no-coverage (:no-coverage (reporter/edn-report-data no-coverage-results)))
+      "EDN top-level :no-coverage")
+  (testing "summary count still reflects no-coverage independently"
+    (is (= 4 (get-in (reporter/json-report-data no-coverage-results) [:summary :noCoverage])))))
+
+(deftest html-report-renders-no-coverage-section
+  (let [tmp (java.io.File/createTempFile "heretic-report" ".html")]
+    (try
+      (reporter/generate-html-report no-coverage-results (.getPath tmp))
+      (let [html (slurp tmp) has? (fn [s] (str/includes? html s))]
+        (is (has? "No Coverage (3 sites in 2 files)") "header totals")
+        (is (has? "src/a.clj") "file listed")
+        (is (has? "lines 10, 20") "sorted deduped lines")
+        (is (has? "2 sites") "plural per-file count")
+        (is (has? "1 site") "singular per-file count")
+        (is (not (has? "1 sites")) "no wrong plural anywhere")
+        (is (has? "lines 5")))
+      (finally (.delete tmp)))))
+
+(deftest html-no-coverage-header-pluralizes-singular
+  (testing "a single uncovered site in a single file reads 'No Coverage (1 site in 1 file)'"
+    (let [tmp (java.io.File/createTempFile "heretic-report" ".html")]
+      (try
+        (reporter/generate-html-report
+         [(make-result :no-coverage {:file "src/solo.clj" :line 7 :column 0 :operator :x :original "a" :replacement "b"})]
+         (.getPath tmp))
+        (let [html (slurp tmp)]
+          (is (str/includes? html "No Coverage (1 site in 1 file)")
+              "header must pluralize correctly at the singular boundary"))
+        (finally (.delete tmp))))))

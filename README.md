@@ -317,6 +317,8 @@ The HTML report includes:
 - Source file heatmap (visual killed/survived ratio per file)
 - Detailed survivor list with code snippets — each tagged with its triage badge
   (coverage-gap / equivalent / …) plus the witnessing input or equivalence proof
+- No-coverage section — uncovered sites grouped by file (the larger latent gap:
+  forms no test in the indexed suite reaches)
 - Test effectiveness ranking
 - Historical trends
 
@@ -328,10 +330,12 @@ for a proven-equivalent, `:trials` / `:reason` otherwise; JSON uses strings, EDN
 keeps keywords):
 
 ```clojure
-{:summary {:total 127 :killed 98 :survived 24 :score 0.803}
+{:summary {:total 127 :killed 98 :survived 24 :no-coverage 20 :score 0.803}
  :by-file {"src/my_app/core.clj" {:total 45 :killed 38}}
  :survivors [{:file "..." :line 42 :operator :swap-plus-minus
-              :triage :coverage-gap :witness "[1 2]"}]}
+              :triage :coverage-gap :witness "[1 2]"}]
+ ;; uncovered sites grouped by file (the larger latent gap than survivors)
+ :no-coverage [{:file "src/my_app/util.clj" :sites 3 :lines [12 40 41]}]}
 ```
 
 ## Future Work
