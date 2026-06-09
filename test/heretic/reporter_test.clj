@@ -778,23 +778,28 @@
         (is (not (contains? m k)) (str "no " k " when triage didn't run"))))))
 
 (deftest html-report-renders-triage-badges-and-lines
-  (testing "HTML carries a badge class + human label per arm, and the right detail line"
+  (testing "HTML carries a badge class + human label per arm, and each arm's own detail line"
     (let [tmp  (java.io.File/createTempFile "heretic-report" ".html")]
       (try
         (reporter/generate-html-report triaged-survivor-results (.getPath tmp))
         (let [html (slurp tmp)
-              has? (fn [s] (str/includes? html s))]
-          (testing "badge class + label for every arm"
+              has? (fn [s] (str/includes? html s))
+              n    (fn [s] (count (re-seq (re-pattern (java.util.regex.Pattern/quote s)) html)))]
+          (testing "rendered badge class (not the CSS rule) + human label for every arm"
             (doseq [[cls label] [["triage-coverage-gap" "COVERAGE GAP"]
                                  ["triage-proven-equivalent" "EQUIVALENT"]
                                  ["triage-candidate-equivalent" "LIKELY EQUIV"]
                                  ["triage-not-applicable" "N/A"]
                                  ["triage-undetermined" "UNDETERMINED"]]]
-              (is (has? cls) (str "badge class " cls))
+              ;; "triage-badge <cls>" is the rendered <span> attribute — discriminating
+              ;; from the bare ".cls {" CSS rule, which is present even with no survivors.
+              (is (has? (str "triage-badge " cls)) (str "rendered badge class " cls))
               (is (has? label) (str "badge label " label))))
-          (testing "detail line precedence: witness for the gap, proof for the equivalent, reason otherwise"
-            (is (has? "Witness: ") "coverage-gap shows the witness")
-            (is (has? "Proof: ") "proven-equivalent shows the proof")
-            ;; not-applicable / undetermined carry only :reason (no witness/proof)
-            (is (has? "Reason: ") "the reason-only arms show their reason")))
+          (testing "each arm renders exactly its own detail line, no spurious extras"
+            ;; The tagged-verdict shape gives one arm field per survivor; pin that the
+            ;; counts match the fixture (1 witness, 1 proof, 2 reason-only arms) rather
+            ;; than claiming a suppression-precedence the valid shape never triggers.
+            (is (= 1 (n "Witness: ")) "only the coverage-gap arm")
+            (is (= 1 (n "Proof: ")) "only the proven-equivalent arm")
+            (is (= 2 (n "Reason: ")) "the not-applicable + undetermined arms")))
         (finally (.delete tmp))))))
